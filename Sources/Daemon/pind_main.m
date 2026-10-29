@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <dlfcn.h>
 #import <notify.h>
 #import <signal.h>
 #import <sys/stat.h>
@@ -8,11 +9,69 @@
 #import "ScreenTouchEngine.h"
 #import "OrderScanner.h"
 
+typedef struct {
+    int32_t priority;
+    uint64_t user_data;
+} jetsam_priority_props_t;
+
+typedef int (*memorystatus_control_f)(uint32_t command, int32_t pid, uint32_t flags, void *buffer, size_t buffersize);
+
+#define MEMSTAT_CMD_SET_PRIORITY_PROPS   2
+#define MEMSTAT_CMD_SET_HIGH_WATER_MARK  5
+#define MEMSTAT_CMD_SET_TASK_LIMIT       6
+#define MEMSTAT_CMD_SET_IS_MANAGED       16
+#define MEMSTAT_CMD_SET_IS_FREEZABLE     18
+#define JETSAM_PRIO_CRITICAL             19
+
+static void liftJetsamAndAlignSession(void) {
+    pid_t me = getpid();
+
+    // Terminate any previous root/mobile pind instance while we still hold uid 0
+    @autoreleasepool {
+        pid_t oldPid = getRunningDaemonPID();
+        if (oldPid > 1 && oldPid != me) {
+            kill(oldPid, SIGTERM);
+            usleep(120000);
+            if (kill(oldPid, 0) == 0) {
+                kill(oldPid, SIGKILL);
+                usleep(60000);
+            }
+        }
+    }
+
+    memorystatus_control_f fnMemCtl = (memorystatus_control_f)dlsym(RTLD_DEFAULT, "memorystatus_control");
+    if (fnMemCtl) {
+        jetsam_priority_props_t props = { JETSAM_PRIO_CRITICAL, 0 };
+        fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS,  me, 0, &props, sizeof(props));
+        fnMemCtl(MEMSTAT_CMD_SET_HIGH_WATER_MARK, me, (uint32_t)-1, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      me, 512, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED,      me, 0, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE,    me, 0, NULL, 0);
+    }
+
+    // Ensure all shared files in /var/mobile/Library/Preferences belong to mobile (501:501)
+    NSArray<NSString *> *paths = @[kConfigPlistPath, kRuntimeStatePath, kDaemonLogPath, kDaemonPidPath];
+    for (NSString *p in paths) {
+        chown([p fileSystemRepresentation], 501, 501);
+        chmod([p fileSystemRepresentation], 0666);
+    }
+
+    // Align daemon UID/GID with mobile (501) user session just like TrollVNC so
+    // CARenderServer, Vision ANE, AudioServices haptics, and LSApplicationWorkspace connect cleanly
+    if (getgid() != 501) {
+        setgid(501);
+    }
+    if (getuid() != 501) {
+        setuid(501);
+    }
+}
+
 static volatile BOOL gShouldExit         = NO;
 static volatile BOOL gNeedsReload        = YES;
 static volatile BOOL gSkipPauseRequested = NO;
 static volatile BOOL gResetNavRequested  = NO;
 static volatile BOOL gResetCntRequested  = NO;
+static volatile BOOL gDiagRequested      = NO;
 
 static void handleSignal(int sig) {
     gShouldExit = YES;
@@ -30,6 +89,56 @@ static void resetBothNavLocks(RuntimeDaemonState *state, NSString *reasonLog) {
     }
 }
 
+static void runDiagnosticCapture4Sec(FilterConfig *config,
+                                     ScreenTouchEngine *engine,
+                                     OrderScanner *scanner) {
+    appendDaemonLog(@"[TEST 4s] Bắt đầu đếm ngược 4 giây -> Hãy mở sang Ảnh chụp màn hình ngay!");
+    notify_post(kNotifyStatsUpdated);
+
+    for (int i = 0; i < 8 && !gShouldExit; i++) {
+        usleep(500000);
+    }
+    if (gShouldExit) return;
+
+    CIImage *img = [engine captureScreenCIImage];
+    if (!img || !engine.lastCaptureHadPixels) {
+        triggerHapticFeedback(NO);
+        appendDaemonLog(@"[TEST LỖI] Khung hình trả về ĐEN/RỖNG! Hãy cài lại bản v3.2 qua TrollStore.");
+        notify_post(kNotifyStatsUpdated);
+        return;
+    }
+
+    ScreenAnalysis *ana = [scanner analyzeScreenImage:img
+                                           screenSize:engine.logicalScreenSize
+                                               config:config
+                                      priceRetryCount:0];
+
+    NSString *matched = @"Màn hình bình thường (không phải bảng đơn/chuyến)";
+    if (ana.hasOrderPopup) {
+        matched = [NSString stringWithFormat:@"BẢNG NỔ ĐƠN -> %@ tại (%.0f, %.0f)",
+                   ana.orderReason ?: @"", ana.orderTargetPoint.x, ana.orderTargetPoint.y];
+    } else if (ana.hasPassengerAndNav && ana.isPickupStage) {
+        matched = [NSString stringWithFormat:@"PHA 1 ĐÓN KHÁCH -> Tap nút xanh Điều hướng (%.0f, %.0f)",
+                   ana.navBluePoint.x, ana.navBluePoint.y];
+    } else if (ana.hasPassengerAndNav && ana.isDropoffStage) {
+        matched = [NSString stringWithFormat:@"PHA 2 TRẢ KHÁCH -> Tap nút xanh Điều hướng (%.0f, %.0f)",
+                   ana.navBluePoint.x, ana.navBluePoint.y];
+    } else if (ana.isPaymentConfirmScreen) {
+        matched = @"MÀN THANH TOÁN ('Xác nhận hoàn thành') -> Xóa sạch 2 chốt Map!";
+    } else if (ana.isLobbyOnline) {
+        matched = @"SẢNH ĐANG TRỰC TUYẾN -> Nút tắt [⏻] tại (40, 455)";
+    } else if (ana.isLobbyOffline) {
+        matched = [NSString stringWithFormat:@"SẢNH OFFLINE -> Nút [Mở nhận chuyến] tại (%.0f, %.0f)",
+                   ana.onlineStartPoint.x, ana.onlineStartPoint.y];
+    }
+
+    triggerHapticFeedback(YES);
+    appendDaemonLog(@"[TEST OK] Ảnh sáng nét! Đọc %ld cụm chữ: [%@]",
+                    (long)ana.ocrBlockCount, ana.ocrSampleSummary ?: @"");
+    appendDaemonLog(@"[KẾT QUẢ NHẬN DIỆN] %@", matched);
+    notify_post(kNotifyStatsUpdated);
+}
+
 static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                            RuntimeDaemonState *state,
                                            ScreenTouchEngine *engine,
@@ -37,11 +146,10 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
     FilterConfig *config = *ioConfig;
     gSkipPauseRequested = NO;
 
-    // --- BƯỚC A: Bấm nút [⏻] Tắt nhận chuyến cho về Offline sạch trên Server ---
     state.phaseDescription = @"Đang bấm [⏻] Tắt nhận chuyến...";
     [state saveStateAndNotify:YES];
 
-    usleep(1400000); // Chờ 1.4s sau khi bấm [X] để bảng đơn đóng hẳn về bản đồ
+    usleep(1400000);
 
     BOOL confirmedOffline = NO;
     for (int attempt = 0; attempt < 12 && !gShouldExit && !gSkipPauseRequested; attempt++) {
@@ -98,7 +206,6 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
 
     if (gShouldExit) return;
 
-    // --- BƯỚC B: Đếm ngược 2 phút (hoặc theo cấu hình) & Kill / Mở lại App ---
     NSInteger pauseSec = MAX(20, config.pauseDurationSec);
     double nowEpoch = [[NSDate date] timeIntervalSince1970];
     state.pauseEndEpoch    = nowEpoch + (double)pauseSec;
@@ -163,7 +270,6 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         usleep(2500000);
     }
 
-    // --- BƯỚC C: Đợi thấy nút 'Mở nhận chuyến' (tối đa 25s phòng 4G load chậm) rồi bấm Online lại ---
     state.phaseDescription = @"Đang bấm [Mở nhận chuyến]...";
     [state saveStateAndNotify:YES];
 
@@ -201,7 +307,7 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                 break;
             }
 
-            usleep(900000); // Chờ app tải bản đồ hiện chữ 'Mở nhận chuyến'
+            usleep(900000);
         }
     }
 
@@ -214,6 +320,9 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
 }
 
 int main(int argc, char *argv[]) {
+    // 1. Lift 2GB RAM Jetsam limit while uid=0, then drop to mobile (501) session
+    liftJetsamAndAlignSession();
+
     @autoreleasepool {
         signal(SIGHUP, SIG_IGN);
         signal(SIGTERM, handleSignal);
@@ -231,13 +340,14 @@ int main(int argc, char *argv[]) {
         chmod([kDaemonPidPath fileSystemRepresentation], 0666);
 
         dispatch_queue_t bgQ = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-        int reloadTok = 0, stopTok = 0, skipTok = 0, resetNavTok = 0, resetCntTok = 0;
+        int reloadTok = 0, stopTok = 0, skipTok = 0, resetNavTok = 0, resetCntTok = 0, diagTok = 0;
 
         notify_register_dispatch(kNotifyReloadConfig,  &reloadTok,   bgQ, ^(int t) { gNeedsReload = YES; });
         notify_register_dispatch(kNotifyStopDaemon,    &stopTok,     bgQ, ^(int t) { gShouldExit = YES; });
         notify_register_dispatch(kNotifySkipPause,     &skipTok,     bgQ, ^(int t) { gSkipPauseRequested = YES; });
         notify_register_dispatch(kNotifyResetNavLocks, &resetNavTok, bgQ, ^(int t) { gResetNavRequested = YES; });
         notify_register_dispatch(kNotifyResetCounters, &resetCntTok, bgQ, ^(int t) { gResetCntRequested = YES; });
+        notify_register_dispatch(kNotifyDiagCapture,   &diagTok,     bgQ, ^(int t) { gDiagRequested = YES; });
 
         FilterConfig *config = [FilterConfig loadFromDisk];
         RuntimeDaemonState *state = [RuntimeDaemonState loadState];
@@ -249,9 +359,14 @@ int main(int argc, char *argv[]) {
         ScreenTouchEngine *engine = [ScreenTouchEngine sharedEngine];
         OrderScanner *scanner     = [OrderScanner sharedScanner];
 
-        appendDaemonLog(@"pind v3.1 chạy (PID %d, Màn %.0fx%.0f). Giá Food >= %ldđ",
-                        getpid(), engine.logicalScreenSize.width, engine.logicalScreenSize.height,
+        CIImage *probeImg = [engine captureScreenCIImage];
+        BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
+
+        appendDaemonLog(@"pind v3.2 chạy (PID %d, UID %d, Màn %.0fx%.0f, Quét hình: %@). Giá Food >= %ldđ",
+                        getpid(), getuid(), engine.logicalScreenSize.width, engine.logicalScreenSize.height,
+                        screenOk ? @"OK" : @"LỖI ĐEN MÀN",
                         (long)config.minFoodPriceVND);
+        notify_post(kNotifyStatsUpdated);
 
         NSInteger priceRetryCount = 0;
 
@@ -274,6 +389,11 @@ int main(int argc, char *argv[]) {
                     state.statRejectedCount = 0;
                     [state saveStateAndNotify:YES];
                 }
+                if (gDiagRequested) {
+                    gDiagRequested = NO;
+                    runDiagnosticCapture4Sec(config, engine, scanner);
+                    continue;
+                }
 
                 if (!config.masterEnabled) {
                     usleep(400000);
@@ -291,23 +411,16 @@ int main(int argc, char *argv[]) {
                                                            config:config
                                                   priceRetryCount:priceRetryCount];
 
-                // =========================================================================
                 // 1. KIỂM TRA 4 ĐIỀU KIỆN MỞ KHÓA CHỐT ĐIỀU HƯỚNG (RESET VỀ FALSE)
-                // =========================================================================
                 if (ana.isPaymentConfirmScreen) {
-                    // Chốt vàng: Màn hình Thanh toán hiện chữ 'Xác nhận hoàn thành'
                     resetBothNavLocks(state, @"Thấy màn 'Xác nhận hoàn thành' -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.isLobbyOnline || ana.isLobbyOffline) {
-                    // Về lại sảnh chờ Đang trực tuyến / Mở nhận chuyến
                     resetBothNavLocks(state, @"Về màn hình sảnh chờ -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.hasPassengerAndNav && ana.isPickupStage && state.navDropoffLocked) {
-                    // Nối chuyến liên hoàn nhảy từ Pha 2 (Hoàn thành chuyến) về Pha 1 (Đã đến điểm đón)
                     resetBothNavLocks(state, @"Phát hiện cuốc nối chuyến mới -> Xóa chốt cũ đón khách mới!");
                 }
 
-                // =========================================================================
                 // 2. XỬ LÝ BẢNG NỔ ĐƠN MỚI ('Cước phí' + 'Nhận chuyến')
-                // =========================================================================
                 if (ana.hasOrderPopup) {
                     if (ana.orderAction == OrderActionWaitRetryPrice) {
                         priceRetryCount++;
@@ -330,6 +443,7 @@ int main(int argc, char *argv[]) {
                             appendDaemonLog(@"[THỬ] %@ | Tâm (%.0f, %.0f) trễ %ums",
                                             ana.orderReason, ana.orderTargetPoint.x, ana.orderTargetPoint.y, delayMs);
                             if (config.hapticEnabled) triggerHapticFeedback(isAccept);
+                            notify_post(kNotifyStatsUpdated);
                         } else {
                             CGPoint actualPt = ana.orderTargetPoint;
                             BOOL ok = [engine performHumanTapAtPoint:ana.orderTargetPoint
@@ -340,7 +454,6 @@ int main(int argc, char *argv[]) {
                             if (ok) {
                                 if (isAccept) {
                                     state.statAcceptedCount += 1;
-                                    // Vừa nhận cuốc mới -> Mở khóa sạch 2 chốt Map đón cuốc này
                                     state.navPickupLocked  = NO;
                                     state.navDropoffLocked = NO;
                                     state.phaseDescription = @"Vừa nhận chuyến mới";
@@ -352,10 +465,10 @@ int main(int argc, char *argv[]) {
                                 appendDaemonLog(@"%@ | Chạm (%.0f, %.0f) trễ %ums",
                                                 ana.orderReason, actualPt.x, actualPt.y, delayMs);
                                 if (config.hapticEnabled) triggerHapticFeedback(isAccept);
+                                notify_post(kNotifyStatsUpdated);
                             }
                         }
 
-                        // Nếu vừa bấm [X] hủy đơn Food rẻ VÀ bật chế độ Nghỉ 2 phút
                         if (!isAccept && ana.isGreenFood && config.pauseAfterRejectFood) {
                             runOfflinePauseAndRestartCycle(&config, state, engine, scanner);
                             continue;
@@ -369,20 +482,16 @@ int main(int argc, char *argv[]) {
                     priceRetryCount = 0;
                 }
 
-                // =========================================================================
                 // 3. XỬ LÝ AUTO TAP 2-3 LẦN NÚT TRÒN XANH 'ĐIỀU HƯỚNG' (CHỐNG LẶP 100%)
-                // =========================================================================
                 if (ana.hasPassengerAndNav) {
                     BOOL needPickupTap  = (ana.isPickupStage  && config.autoNavPickup  && !state.navPickupLocked);
                     BOOL needDropoffTap = (ana.isDropoffStage && config.autoNavDropoff && !state.navDropoffLocked);
 
                     if (needPickupTap || needDropoffTap) {
-                        // Chờ khung giao diện trượt lên đứng yên hoàn toàn (mặc định 650ms)
                         NSInteger settleMs = MAX(200, config.navSettleDelayMs);
                         usleep((useconds_t)(settleMs * 1000));
                         if (gShouldExit) break;
 
-                        // Chụp lại 1 khung hình tĩnh để lấy tọa độ tâm nút xanh chính xác tuyệt đối
                         CIImage *settledImg = [engine captureScreenCIImage];
                         ScreenAnalysis *settledAna = [scanner analyzeScreenImage:settledImg
                                                                       screenSize:engine.logicalScreenSize
@@ -394,7 +503,6 @@ int main(int argc, char *argv[]) {
                                            (needDropoffTap && settledAna.isDropoffStage));
 
                         if (stillValid) {
-                            // GÀI CHỐT KHÓA TRƯỚC KHI BẤM -> Không bao giờ lặp vô tận dù quay lại app!
                             if (needPickupTap) {
                                 state.navPickupLocked  = YES;
                                 state.phaseDescription = @"Đã mở Map Đón khách (Khóa Pha 1)";
@@ -425,13 +533,13 @@ int main(int argc, char *argv[]) {
                             }
 
                             if (config.hapticEnabled) triggerHapticFeedback(NO);
+                            notify_post(kNotifyStatsUpdated);
                             usleep(2000000);
                             continue;
                         }
                     }
                 }
 
-                // Ngủ theo chu kỳ quét
                 NSInteger sleepMs = MAX(150, config.scanIntervalMs);
                 usleep((useconds_t)(sleepMs * 1000));
             }
@@ -444,6 +552,7 @@ int main(int argc, char *argv[]) {
         notify_cancel(skipTok);
         notify_cancel(resetNavTok);
         notify_cancel(resetCntTok);
+        notify_cancel(diagTok);
     }
     return 0;
 }

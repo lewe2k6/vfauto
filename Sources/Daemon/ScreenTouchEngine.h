@@ -7,8 +7,9 @@
 
 @interface ScreenTouchEngine : NSObject
 
-@property (nonatomic, readonly) CGSize logicalScreenSize; // 375 x 667 on iPhone 8
-@property (nonatomic, readonly) CGFloat screenScale;      // 2.0 on iPhone 8
+@property (nonatomic, readonly) CGSize logicalScreenSize;   // 375 x 667 on iPhone 8
+@property (nonatomic, readonly) CGFloat screenScale;        // 2.0 on iPhone 8
+@property (nonatomic, readonly) BOOL lastCaptureHadPixels;  // YES when IOSurface has real non-black pixels
 
 + (instancetype)sharedEngine;
 

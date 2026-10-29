@@ -16,6 +16,7 @@
 #define kNotifySkipPause        "com.vn.utility.batterycheck.skippause"
 #define kNotifyResetNavLocks    "com.vn.utility.batterycheck.resetnav"
 #define kNotifyResetCounters    "com.vn.utility.batterycheck.resetcnt"
+#define kNotifyDiagCapture      "com.vn.utility.batterycheck.diag"
 
 // Native iPhone 8 logical screen points
 #define kDefaultScreenW         375.0

@@ -447,14 +447,17 @@ pid_t getRunningDaemonPID(void) {
 BOOL startFilterDaemonIfNeeded(void) {
     pid_t existing = getRunningDaemonPID();
     if (existing > 0) {
-        notify_post(kNotifyReloadConfig);
-        return YES;
+        // If existing daemon runs as mobile (501), kill(existing, 0) == 0; if old v3.1 uid-0 daemon, respawn v3.2
+        if (kill(existing, 0) == 0) {
+            notify_post(kNotifyReloadConfig);
+            return YES;
+        }
     }
     NSString *daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
     chmod([daemonPath fileSystemRepresentation], 0755);
     int res = spawnRoot(daemonPath, @[@"--daemon"]);
     if (res > 0) {
-        usleep(180000);
+        usleep(250000);
         return (getRunningDaemonPID() > 0);
     }
     appendDaemonLog(@"[LỖI] Không kích được pind (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
@@ -513,9 +516,11 @@ void clearDaemonLogs(void) {
 void triggerHapticFeedback(BOOL isAccept) {
     if (isAccept) {
         AudioServicesPlaySystemSound(1520);
-        usleep(140000);
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+        usleep(160000);
         AudioServicesPlaySystemSound(1520);
     } else {
         AudioServicesPlaySystemSound(1519);
+        AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
     }
 }

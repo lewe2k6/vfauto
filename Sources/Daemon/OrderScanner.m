@@ -144,7 +144,18 @@
     VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ciImage options:@{}];
     [handler performRequests:@[req] error:nil];
 
-    if (blocks.count == 0) return res;
+    if (blocks.count == 0) {
+        res.ocrBlockCount = 0;
+        res.ocrSampleSummary = @"(Không đọc được chữ nào)";
+        return res;
+    }
+
+    res.ocrBlockCount = blocks.count;
+    NSMutableArray<NSString *> *previewArr = [NSMutableArray array];
+    for (NSUInteger i = 0; i < MIN((NSUInteger)6, blocks.count); i++) {
+        [previewArr addObject:blocks[i].rawText];
+    }
+    res.ocrSampleSummary = [previewArr componentsJoinedByString:@" | "];
 
     // Scan all blocks once to classify screen markers
     OCRTextBlock *cuocPhiBlock      = nil;

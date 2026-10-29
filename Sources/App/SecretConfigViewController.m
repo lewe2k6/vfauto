@@ -82,7 +82,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v3.1";
+    self.title = @"Tinh Chỉnh Lọc Đơn v3.2";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -314,6 +314,16 @@
     [resetStatBtn addTarget:self action:@selector(resetStatsTapped) forControlEvents:UIControlEventTouchUpInside];
     [statRow addArrangedSubview:resetStatBtn];
     [statBody addArrangedSubview:statRow];
+
+    UIButton *diagBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [diagBtn setTitle:@"Test Quét Màn & Đọc Chữ (Sau 4 Giây)" forState:UIControlStateNormal];
+    [diagBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    diagBtn.titleLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightBold];
+    diagBtn.backgroundColor = [UIColor colorWithRed:0.16 green:0.45 blue:0.82 alpha:1.0];
+    diagBtn.layer.cornerRadius = 8;
+    [diagBtn.heightAnchor constraintEqualToConstant:40].active = YES;
+    [diagBtn addTarget:self action:@selector(diagCaptureTapped) forControlEvents:UIControlEventTouchUpInside];
+    [statBody addArrangedSubview:diagBtn];
 
     // --- CARD 1: FILTER & GREEN FOOD MIN PRICE ---
     UIStackView *sec1 = nil;
@@ -803,6 +813,14 @@
 
 - (void)skipPauseTapped {
     notify_post(kNotifySkipPause);
+}
+
+- (void)diagCaptureTapped {
+    if (getRunningDaemonPID() <= 0) {
+        startFilterDaemonIfNeeded();
+    }
+    notify_post(kNotifyDiagCapture);
+    [self refreshStatusAndLogs];
 }
 
 - (void)resetNavLocksTapped {

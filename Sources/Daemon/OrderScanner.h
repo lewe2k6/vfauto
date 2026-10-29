@@ -40,6 +40,10 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) BOOL isDropoffStage;         // Nút đáy 'Hoàn thành chuyến'
 @property (nonatomic, assign) CGPoint navBluePoint;        // Nút tròn xanh dương [➤] (323, 278)
 
+// 4. Live Diagnostic Info
+@property (nonatomic, assign) NSInteger ocrBlockCount;
+@property (nonatomic, copy)   NSString *ocrSampleSummary;
+
 @end
 
 @interface OrderScanner : NSObject

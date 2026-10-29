@@ -1,7 +1,9 @@
 #import "ScreenTouchEngine.h"
 #import "SharedConfig.h"
+#import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
+#import <objc/message.h>
 #import <math.h>
 #import <stdlib.h>
 #import <string.h>
@@ -11,21 +13,22 @@ typedef double IOHIDFloat;
 typedef uint32_t IOOptionBits;
 typedef CFTypeRef IOHIDEventRef;
 typedef CFTypeRef IOHIDEventSystemClientRef;
-typedef CFTypeRef IOHIDServiceClientRef;
+typedef struct __IOSurfaceAccelerator *IOSurfaceAcceleratorRef;
 
 typedef IOSurfaceRef (*IOSurfaceCreate_f)(CFDictionaryRef properties);
+typedef size_t (*IOSurfaceAlignProperty_f)(CFStringRef property, size_t value);
 typedef kern_return_t (*IOSurfaceLock_f)(IOSurfaceRef buffer, uint32_t options, uint32_t *seed);
 typedef kern_return_t (*IOSurfaceUnlock_f)(IOSurfaceRef buffer, uint32_t options, uint32_t *seed);
 typedef void *(*IOSurfaceGetBaseAddress_f)(IOSurfaceRef buffer);
 typedef size_t (*IOSurfaceGetAllocSize_f)(IOSurfaceRef buffer);
+typedef kern_return_t (*IOSurfaceAcceleratorCreate_f)(CFAllocatorRef allocator, CFDictionaryRef properties, IOSurfaceAcceleratorRef *outAcc);
+typedef kern_return_t (*IOSurfaceAcceleratorTransferSurface_f)(IOSurfaceAcceleratorRef acc, IOSurfaceRef src, IOSurfaceRef dst, void *, void *, void *, void *);
+
 #define kIOSurfaceLockReadOnlyFlag 0x00000001
 
 typedef void (*CARenderServerRenderDisplay_f)(kern_return_t, CFStringRef, IOSurfaceRef, int, int);
 
 typedef IOHIDEventSystemClientRef (*IOHIDEventSystemClientCreate_f)(CFAllocatorRef);
-typedef void (*IOHIDEventSystemClientSetMatching_f)(IOHIDEventSystemClientRef, CFDictionaryRef);
-typedef CFArrayRef (*IOHIDEventSystemClientCopyServices_f)(IOHIDEventSystemClientRef);
-typedef CFTypeRef (*IOHIDServiceClientGetRegistryID_f)(IOHIDServiceClientRef);
 typedef void (*IOHIDEventSystemClientDispatchEvent_f)(IOHIDEventSystemClientRef, IOHIDEventRef);
 
 typedef IOHIDEventRef (*IOHIDEventCreateDigitizerEvent_f)(
@@ -42,36 +45,47 @@ typedef IOHIDEventRef (*IOHIDEventCreateDigitizerFingerEvent_f)(
 typedef void (*IOHIDEventAppendEvent_f)(IOHIDEventRef parent, IOHIDEventRef child, IOOptionBits options);
 typedef void (*IOHIDEventSetSenderID_f)(IOHIDEventRef event, uint64_t senderID);
 typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field, CFIndex value);
+typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, IOHIDFloat value);
 
-#define kHIDTransducerHand              3
-#define kHIDDigitizerRange              (1 << 0)
-#define kHIDDigitizerTouch              (1 << 1)
-#define kHIDDigitizerPosition           (1 << 2)
-#define kHIDFieldDigitizerIsIntegrated  0xB0019
+// Exact IOKitSPI constants verified for iOS 15 / iOS 16 (STHIDEventGenerator)
+#define kIOHIDDigitizerTransducerTypeHand           3
+#define kIOHIDDigitizerEventRange                   (1 << 0)
+#define kIOHIDDigitizerEventTouch                   (1 << 1)
+#define kIOHIDDigitizerEventPosition                (1 << 2)
+#define kIOHIDDigitizerEventIdentity                (1 << 5)
+
+#define kIOHIDEventFieldIsBuiltIn                   4
+#define kIOHIDEventFieldDigitizerMajorRadius        0xB0014
+#define kIOHIDEventFieldDigitizerMinorRadius        0xB0015
+#define kIOHIDEventFieldDigitizerIsDisplayIntegrated 0xB0019
 
 @implementation ScreenTouchEngine {
     IOSurfaceCreate_f _fnSurfaceCreate;
+    IOSurfaceAlignProperty_f _fnSurfaceAlign;
     IOSurfaceLock_f _fnSurfaceLock;
     IOSurfaceUnlock_f _fnSurfaceUnlock;
     IOSurfaceGetBaseAddress_f _fnSurfaceBaseAddr;
     IOSurfaceGetAllocSize_f _fnSurfaceAllocSize;
+    IOSurfaceAcceleratorCreate_f _fnAccCreate;
+    IOSurfaceAcceleratorTransferSurface_f _fnAccTransfer;
 
     CARenderServerRenderDisplay_f _fnRenderDisplay;
+
     IOHIDEventSystemClientCreate_f _fnClientCreate;
-    IOHIDEventSystemClientSetMatching_f _fnClientSetMatching;
-    IOHIDEventSystemClientCopyServices_f _fnClientCopyServices;
-    IOHIDServiceClientGetRegistryID_f _fnServiceGetRegID;
     IOHIDEventSystemClientDispatchEvent_f _fnDispatchEvent;
     IOHIDEventCreateDigitizerEvent_f _fnCreateDigitizer;
     IOHIDEventCreateDigitizerFingerEvent_f _fnCreateFinger;
     IOHIDEventAppendEvent_f _fnAppendEvent;
     IOHIDEventSetSenderID_f _fnSetSenderID;
     IOHIDEventSetIntegerValue_f _fnSetIntVal;
+    IOHIDEventSetFloatValue_f _fnSetFloatVal;
 
     IOHIDEventSystemClientRef _hidClient;
-    uint64_t _digitizerSenderID;
-    IOSurfaceRef _captureSurface;
-    NSString *_activeDisplayName;
+    dispatch_queue_t _hidQueue;
+
+    IOSurfaceRef _srcSurface;
+    IOSurfaceRef _dstSurface;
+    IOSurfaceAcceleratorRef _accelerator;
 }
 
 + (instancetype)sharedEngine {
@@ -86,34 +100,49 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _logicalScreenSize = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
-        _screenScale = 2.0;
+        _logicalScreenSize    = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
+        _screenScale          = 2.0;
+        _lastCaptureHadPixels = NO;
 
-        // Dynamically query CADisplay.mainDisplay physical pixel size if available
-        Class caDispCls = NSClassFromString(@"CADisplay");
-        if (caDispCls && [caDispCls respondsToSelector:NSSelectorFromString(@"mainDisplay")]) {
-            id mainDisp = [caDispCls valueForKey:@"mainDisplay"];
-            if (mainDisp) {
-                NSValue *boundsVal = [mainDisp valueForKey:@"bounds"];
+        // Detect exact physical pixel resolution via _unjailedReferenceBoundsInPixels or CADisplay
+        CGSize pxSize = CGSizeZero;
+        SEL unjailedSel = NSSelectorFromString(@"_unjailedReferenceBoundsInPixels");
+        if ([[UIScreen mainScreen] respondsToSelector:unjailedSel]) {
+            CGRect r = ((CGRect (*)(id, SEL))objc_msgSend)([UIScreen mainScreen], unjailedSel);
+            pxSize = r.size;
+        }
+        if (pxSize.width < 640 || pxSize.height < 1136) {
+            Class caDispCls = NSClassFromString(@"CADisplay");
+            if (caDispCls && [caDispCls respondsToSelector:NSSelectorFromString(@"mainDisplay")]) {
+                id mainDisp = [caDispCls valueForKey:@"mainDisplay"];
+                NSValue *boundsVal = mainDisp ? [mainDisp valueForKey:@"bounds"] : nil;
                 if (boundsVal && strcmp([boundsVal objCType], @encode(CGRect)) == 0) {
-                    CGRect pxBounds = CGRectZero;
-                    [boundsVal getValue:&pxBounds];
-                    if (pxBounds.size.width >= 640 && pxBounds.size.height >= 1136) {
-                        if ((int)pxBounds.size.width == 750 && (int)pxBounds.size.height == 1334) {
-                            _logicalScreenSize = CGSizeMake(375.0, 667.0);
-                            _screenScale = 2.0;
-                        } else if ((int)pxBounds.size.width == 1242 || (int)pxBounds.size.width == 1170 || (int)pxBounds.size.width == 1125) {
-                            _screenScale = 3.0;
-                            _logicalScreenSize = CGSizeMake(pxBounds.size.width / 3.0, pxBounds.size.height / 3.0);
-                        }
-                    }
+                    CGRect r = CGRectZero;
+                    [boundsVal getValue:&r];
+                    pxSize = r.size;
                 }
             }
         }
 
+        if (pxSize.width >= 640 && pxSize.height >= 1136) {
+            if ((int)round(pxSize.width) == 750 && (int)round(pxSize.height) == 1334) {
+                _logicalScreenSize = CGSizeMake(375.0, 667.0);
+                _screenScale = 2.0;
+            } else if ((int)round(pxSize.width) >= 1080) {
+                _screenScale = 3.0;
+                _logicalScreenSize = CGSizeMake(round(pxSize.width / 3.0), round(pxSize.height / 3.0));
+            } else {
+                _screenScale = 2.0;
+                _logicalScreenSize = CGSizeMake(round(pxSize.width / 2.0), round(pxSize.height / 2.0));
+            }
+        }
+
+        dispatch_queue_attr_t qAttr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
+        _hidQueue = dispatch_queue_create("com.vn.utility.batterycheck.hid", qAttr);
+
         [self resolveSymbols];
-        [self setupDigitizerSender];
-        [self setupCaptureSurface];
+        [self setupHIDClient];
+        [self setupCaptureSurfaces];
     }
     return self;
 }
@@ -122,10 +151,21 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
     void *iosf = dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface", RTLD_LAZY);
     if (iosf) {
         _fnSurfaceCreate    = (IOSurfaceCreate_f)dlsym(iosf, "IOSurfaceCreate");
+        _fnSurfaceAlign     = (IOSurfaceAlignProperty_f)dlsym(iosf, "IOSurfaceAlignProperty");
         _fnSurfaceLock      = (IOSurfaceLock_f)dlsym(iosf, "IOSurfaceLock");
         _fnSurfaceUnlock    = (IOSurfaceUnlock_f)dlsym(iosf, "IOSurfaceUnlock");
         _fnSurfaceBaseAddr  = (IOSurfaceGetBaseAddress_f)dlsym(iosf, "IOSurfaceGetBaseAddress");
         _fnSurfaceAllocSize = (IOSurfaceGetAllocSize_f)dlsym(iosf, "IOSurfaceGetAllocSize");
+        _fnAccCreate        = (IOSurfaceAcceleratorCreate_f)dlsym(iosf, "IOSurfaceAcceleratorCreate");
+        _fnAccTransfer      = (IOSurfaceAcceleratorTransferSurface_f)dlsym(iosf, "IOSurfaceAcceleratorTransferSurface");
+    }
+
+    if (!_fnAccCreate) {
+        void *accLib = dlopen("/System/Library/PrivateFrameworks/IOSurfaceAccelerator.framework/IOSurfaceAccelerator", RTLD_LAZY);
+        if (accLib) {
+            _fnAccCreate   = (IOSurfaceAcceleratorCreate_f)dlsym(accLib, "IOSurfaceAcceleratorCreate");
+            _fnAccTransfer = (IOSurfaceAcceleratorTransferSurface_f)dlsym(accLib, "IOSurfaceAcceleratorTransferSurface");
+        }
     }
 
     void *qc = dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore", RTLD_LAZY);
@@ -135,70 +175,61 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
 
     void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
     if (iokit) {
-        _fnClientCreate       = (IOHIDEventSystemClientCreate_f)dlsym(iokit, "IOHIDEventSystemClientCreate");
-        _fnClientSetMatching  = (IOHIDEventSystemClientSetMatching_f)dlsym(iokit, "IOHIDEventSystemClientSetMatching");
-        _fnClientCopyServices = (IOHIDEventSystemClientCopyServices_f)dlsym(iokit, "IOHIDEventSystemClientCopyServices");
-        _fnServiceGetRegID    = (IOHIDServiceClientGetRegistryID_f)dlsym(iokit, "IOHIDServiceClientGetRegistryID");
-        _fnDispatchEvent      = (IOHIDEventSystemClientDispatchEvent_f)dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
-        _fnCreateDigitizer    = (IOHIDEventCreateDigitizerEvent_f)dlsym(iokit, "IOHIDEventCreateDigitizerEvent");
-        _fnCreateFinger       = (IOHIDEventCreateDigitizerFingerEvent_f)dlsym(iokit, "IOHIDEventCreateDigitizerFingerEvent");
-        _fnAppendEvent        = (IOHIDEventAppendEvent_f)dlsym(iokit, "IOHIDEventAppendEvent");
-        _fnSetSenderID        = (IOHIDEventSetSenderID_f)dlsym(iokit, "IOHIDEventSetSenderID");
-        _fnSetIntVal          = (IOHIDEventSetIntegerValue_f)dlsym(iokit, "IOHIDEventSetIntegerValue");
+        _fnClientCreate    = (IOHIDEventSystemClientCreate_f)dlsym(iokit, "IOHIDEventSystemClientCreate");
+        _fnDispatchEvent   = (IOHIDEventSystemClientDispatchEvent_f)dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
+        _fnCreateDigitizer = (IOHIDEventCreateDigitizerEvent_f)dlsym(iokit, "IOHIDEventCreateDigitizerEvent");
+        _fnCreateFinger    = (IOHIDEventCreateDigitizerFingerEvent_f)dlsym(iokit, "IOHIDEventCreateDigitizerFingerEvent");
+        _fnAppendEvent     = (IOHIDEventAppendEvent_f)dlsym(iokit, "IOHIDEventAppendEvent");
+        _fnSetSenderID     = (IOHIDEventSetSenderID_f)dlsym(iokit, "IOHIDEventSetSenderID");
+        _fnSetIntVal       = (IOHIDEventSetIntegerValue_f)dlsym(iokit, "IOHIDEventSetIntegerValue");
+        _fnSetFloatVal     = (IOHIDEventSetFloatValue_f)dlsym(iokit, "IOHIDEventSetFloatValue");
     }
 }
 
-- (void)setupDigitizerSender {
-    _digitizerSenderID = 0x8000000817319372ULL;
-    if (!_fnClientCreate) return;
-
-    _hidClient = _fnClientCreate(kCFAllocatorDefault);
-    if (!_hidClient || !_fnClientCopyServices || !_fnServiceGetRegID) return;
-
-    if (_fnClientSetMatching) {
-        NSDictionary *match = @{ @"PrimaryUsagePage": @(0x0D), @"PrimaryUsage": @(0x04) };
-        _fnClientSetMatching(_hidClient, (__bridge CFDictionaryRef)match);
-    }
-
-    CFArrayRef services = _fnClientCopyServices(_hidClient);
-    if (services) {
-        CFIndex count = CFArrayGetCount(services);
-        for (CFIndex i = 0; i < count; i++) {
-            IOHIDServiceClientRef svc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(services, i);
-            CFTypeRef regObj = _fnServiceGetRegID(svc);
-            if (regObj && CFGetTypeID(regObj) == CFNumberGetTypeID()) {
-                uint64_t sid = 0;
-                CFNumberGetValue((CFNumberRef)regObj, kCFNumberSInt64Type, &sid);
-                if (sid != 0) {
-                    _digitizerSenderID = sid;
-                    break;
-                }
-            }
-        }
-        CFRelease(services);
+- (void)setupHIDClient {
+    if (_fnClientCreate) {
+        _hidClient = _fnClientCreate(kCFAllocatorDefault);
     }
 }
 
-- (void)setupCaptureSurface {
+- (void)setupCaptureSurfaces {
     if (!_fnSurfaceCreate) return;
-    size_t pixelW = (size_t)(_logicalScreenSize.width * _screenScale);
-    size_t pixelH = (size_t)(_logicalScreenSize.height * _screenScale);
-    size_t bytesPerElement = 4;
-    size_t bytesPerRow = ((pixelW * bytesPerElement + 63) & ~63);
-    size_t allocSize = bytesPerRow * pixelH;
 
-    NSDictionary *props = @{
-        @"IOSurfaceIsGlobal":        @YES,
-        @"IOSurfaceWidth":           @(pixelW),
-        @"IOSurfaceHeight":          @(pixelH),
+    int pixelW = (int)round(_logicalScreenSize.width * _screenScale);
+    int pixelH = (int)round(_logicalScreenSize.height * _screenScale);
+    int bytesPerElement = 4;
+    size_t rawRow = (size_t)(pixelW * bytesPerElement);
+    size_t bytesPerRow = _fnSurfaceAlign
+        ? _fnSurfaceAlign(CFSTR("IOSurfaceBytesPerRow"), rawRow)
+        : ((rawRow + 63) & ~((size_t)63));
+    if (bytesPerRow < rawRow) {
+        bytesPerRow = ((rawRow + 63) & ~((size_t)63));
+    }
+    size_t allocSize = bytesPerRow * (size_t)pixelH;
+
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CFPropertyListRef csProp = cs ? CGColorSpaceCopyPropertyList(cs) : NULL;
+    if (cs) CGColorSpaceRelease(cs);
+
+    NSMutableDictionary *props = [@{
         @"IOSurfaceBytesPerElement": @(bytesPerElement),
         @"IOSurfaceBytesPerRow":     @(bytesPerRow),
-        @"IOSurfaceAllocSize":       @(allocSize),
-        @"IOSurfacePixelFormat":     @(0x42475241)
-    };
+        @"IOSurfaceWidth":           @(pixelW),
+        @"IOSurfaceHeight":          @(pixelH),
+        @"IOSurfacePixelFormat":     @(0x42475241), // 'BGRA' / 'ARGB'
+        @"IOSurfaceAllocSize":       @(allocSize)
+    } mutableCopy];
 
-    _captureSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)props);
-    _activeDisplayName = @"LCD";
+    if (csProp) {
+        props[@"IOSurfaceColorSpace"] = CFBridgingRelease(csProp);
+    }
+
+    _srcSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)props);
+    _dstSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)props);
+
+    if (_fnAccCreate) {
+        _fnAccCreate(kCFAllocatorDefault, NULL, &_accelerator);
+    }
 }
 
 - (BOOL)surfaceHasNonZeroContent:(IOSurfaceRef)surface {
@@ -209,7 +240,8 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
     size_t count = totalBytes / sizeof(uint32_t);
     BOOL nonZero = NO;
     if (pixels && count > 1000) {
-        size_t step = count / 33;
+        size_t step = count / 97;
+        if (step == 0) step = 1;
         for (size_t i = step; i < count; i += step) {
             if ((pixels[i] & 0x00FFFFFF) != 0) {
                 nonZero = YES;
@@ -222,70 +254,107 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
 }
 
 - (CIImage *)captureScreenCIImage {
-    if (!_fnRenderDisplay || !_captureSurface || !_fnSurfaceLock || !_fnSurfaceUnlock) return nil;
+    if (!_fnRenderDisplay || !_srcSurface) {
+        _lastCaptureHadPixels = NO;
+        return nil;
+    }
 
-    _fnSurfaceLock(_captureSurface, 0, NULL);
-    _fnRenderDisplay(0, (__bridge CFStringRef)_activeDisplayName, _captureSurface, 0, 0);
-    _fnSurfaceUnlock(_captureSurface, 0, NULL);
+    // 1. Primary path (exact TrollVNC iOS 16 pipeline): CARenderServerRenderDisplay -> IOSurfaceAcceleratorTransferSurface
+    _fnRenderDisplay(0, CFSTR("LCD"), _srcSurface, 0, 0);
 
-    if (![self surfaceHasNonZeroContent:_captureSurface]) {
-        NSArray<NSString *> *fallbacks = @[@"Main", @"TVOut"];
-        for (NSString *alt in fallbacks) {
-            _fnSurfaceLock(_captureSurface, 0, NULL);
-            _fnRenderDisplay(0, (__bridge CFStringRef)alt, _captureSurface, 0, 0);
-            _fnSurfaceUnlock(_captureSurface, 0, NULL);
-            if ([self surfaceHasNonZeroContent:_captureSurface]) {
-                _activeDisplayName = alt;
-                break;
-            }
-        }
-        if (![self surfaceHasNonZeroContent:_captureSurface]) {
-            _fnSurfaceLock(_captureSurface, 0, NULL);
-            _fnRenderDisplay(0, NULL, _captureSurface, 0, 0);
-            _fnSurfaceUnlock(_captureSurface, 0, NULL);
+    IOSurfaceRef activeSurface = _srcSurface;
+    if (_accelerator && _fnAccTransfer && _dstSurface) {
+        kern_return_t kr = _fnAccTransfer(_accelerator, _srcSurface, _dstSurface, NULL, NULL, NULL, NULL);
+        if (kr == KERN_SUCCESS && [self surfaceHasNonZeroContent:_dstSurface]) {
+            activeSurface = _dstSurface;
         }
     }
 
-    return [CIImage imageWithIOSurface:_captureSurface];
+    BOOL hasPixels = [self surfaceHasNonZeroContent:activeSurface];
+    if (!hasPixels && activeSurface != _srcSurface && [self surfaceHasNonZeroContent:_srcSurface]) {
+        activeSurface = _srcSurface;
+        hasPixels = YES;
+    }
+
+    // Fallback display name if LCD returned empty
+    if (!hasPixels) {
+        _fnRenderDisplay(0, NULL, _srcSurface, 0, 0);
+        if ([self surfaceHasNonZeroContent:_srcSurface]) {
+            activeSurface = _srcSurface;
+            hasPixels = YES;
+        }
+    }
+
+    _lastCaptureHadPixels = hasPixels;
+    if (!hasPixels) {
+        return nil;
+    }
+
+    return [CIImage imageWithIOSurface:activeSurface];
 }
 
 - (void)dispatchTouchPhase:(BOOL)isDown normX:(double)nx normY:(double)ny {
     if (!_hidClient || !_fnCreateDigitizer || !_fnCreateFinger || !_fnAppendEvent || !_fnDispatchEvent) return;
 
-    uint64_t now = mach_absolute_time();
-    uint32_t parentMask = kHIDDigitizerRange | kHIDDigitizerTouch;
-    uint32_t childMask  = isDown ? (kHIDDigitizerRange | kHIDDigitizerTouch | kHIDDigitizerPosition)
-                                 : (kHIDDigitizerRange | kHIDDigitizerTouch);
+    dispatch_sync(_hidQueue, ^{
+        uint64_t now = mach_absolute_time();
+        uint32_t eventMask = kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventIdentity;
 
-    IOHIDEventRef parent = _fnCreateDigitizer(
-        kCFAllocatorDefault, now, kHIDTransducerHand,
-        0, 0, parentMask, 0,
-        nx, ny, 0.0, isDown ? 1.0 : 0.0, 0.0,
-        isDown ? 1 : 0, isDown ? 1 : 0, 0
-    );
-    if (!parent) return;
+        // Parent Hand collection event (exact STHIDEventGenerator iOS 16 layout)
+        IOHIDEventRef parent = self->_fnCreateDigitizer(
+            kCFAllocatorDefault,
+            now,
+            kIOHIDDigitizerTransducerTypeHand,
+            0,
+            0,
+            eventMask,
+            0,
+            0.0, 0.0, 0.0,
+            0.0, 0.0,
+            0,
+            isDown ? 1 : 0,
+            0
+        );
+        if (!parent) return;
 
-    IOHIDEventRef child = _fnCreateFinger(
-        kCFAllocatorDefault, now, 1, 2,
-        childMask, nx, ny, 0.0,
-        isDown ? 1.0 : 0.0, 0.0,
-        isDown ? 1 : 0, isDown ? 1 : 0, 0
-    );
+        if (self->_fnSetIntVal) {
+            self->_fnSetIntVal(parent, kIOHIDEventFieldIsBuiltIn, 1);
+            self->_fnSetIntVal(parent, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
+        }
 
-    if (child) {
-        _fnAppendEvent(parent, child, 0);
-        CFRelease(child);
-    }
+        // Child Finger event
+        IOHIDEventRef child = self->_fnCreateFinger(
+            kCFAllocatorDefault,
+            now,
+            2,
+            2,
+            eventMask,
+            nx, ny, 0.0,
+            0.0,
+            90.0,
+            isDown ? 1 : 0,
+            isDown ? 1 : 0,
+            0
+        );
 
-    if (_fnSetIntVal) {
-        _fnSetIntVal(parent, kHIDFieldDigitizerIsIntegrated, 1);
-    }
-    if (_fnSetSenderID) {
-        _fnSetSenderID(parent, _digitizerSenderID);
-    }
+        if (child) {
+            if (self->_fnSetFloatVal) {
+                IOHIDFloat radius = isDown ? 5.0 : 0.0;
+                self->_fnSetFloatVal(child, kIOHIDEventFieldDigitizerMinorRadius, radius);
+                self->_fnSetFloatVal(child, kIOHIDEventFieldDigitizerMajorRadius, radius);
+            }
+            self->_fnAppendEvent(parent, child, 0);
+            CFRelease(child);
+        }
 
-    _fnDispatchEvent(_hidClient, parent);
-    CFRelease(parent);
+        if (self->_fnSetSenderID) {
+            // Verified iOS 15 - iOS 26 digitizer SenderID used by TrollVNC
+            self->_fnSetSenderID(parent, 0x8000000817319371ULL);
+        }
+
+        self->_fnDispatchEvent(self->_hidClient, parent);
+        CFRelease(parent);
+    });
 }
 
 - (BOOL)performHumanTapAtPoint:(CGPoint)logicalPoint
@@ -349,11 +418,6 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
         }
     }
     return anyOk;
-}
-
-- (void)dealloc {
-    if (_captureSurface) CFRelease((CFTypeRef)_captureSurface);
-    if (_hidClient) CFRelease(_hidClient);
 }
 
 @end
