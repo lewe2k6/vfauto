@@ -1,13 +1,13 @@
 #import "OrderScanner.h"
 #import <Vision/Vision.h>
 
-@implementation ScanDecision
+@implementation ScreenAnalysis
 @end
 
 @interface OCRTextBlock : NSObject
 @property (nonatomic, copy) NSString *rawText;
 @property (nonatomic, copy) NSString *normText;
-@property (nonatomic, assign) CGRect uiRect;     // In top-left logical screen points (e.g. 375x667)
+@property (nonatomic, assign) CGRect uiRect;
 @property (nonatomic, assign) CGPoint uiCenter;
 @end
 
@@ -31,11 +31,9 @@
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // Matches e.g. "17.000", "25,500", "120.000" (even if trailing 'đ' is read as 'd'/'0'/'₫')
         _thousandsFareRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:^|[^0-9])([0-9]{1,3})[., ]([0-9]{3})"
                                                                         options:0
                                                                           error:nil];
-        // Fallback if price ever shown without dot: e.g. "25000đ" or "17000d"
         _plainFareRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b([1-9][0-9]{1,2}000)\\s*[dđ₫]"
                                                                     options:NSRegularExpressionCaseInsensitive
                                                                       error:nil];
@@ -43,11 +41,9 @@
     return self;
 }
 
-// Parses Vietnamese currency string into integer VND (returns 0 if not a valid fare)
 - (NSInteger)extractFareVNDFromString:(NSString *)str {
     if (!str || str.length < 4) return 0;
 
-    // Exclude strings that clearly belong to distance ("km", "diem nhan", "diem giao")
     NSString *norm = NormalizeVNText(str);
     if ([norm containsString:@"km"] || [norm containsString:@"diem"]) {
         return 0;
@@ -81,15 +77,12 @@
     if (config.coordMode == CoordModeFixedManual) {
         return CGPointMake(config.manualCloseX, config.manualCloseY);
     }
-
-    // Mode 0: Auto OCR Anchor + Offset
-    double anchorY = 52.0; // Fallback Y on iPhone 8
+    double anchorY = 52.0;
     if (foodBlock) {
         anchorY = foodBlock.uiCenter.y;
     } else if (cuocPhiBlock) {
-        anchorY = MAX(28.0, cuocPhiBlock.uiCenter.y - 46.0);
+        anchorY = MAX(28.0, cuocPhiBlock.uiCenter.y - 49.0);
     }
-
     double x = (screenSize.width * config.closeXRatio) + config.closeOffsetX;
     double y = anchorY + config.closeOffsetY;
     return CGPointMake(x, y);
@@ -101,21 +94,21 @@
     if (config.coordMode == CoordModeFixedManual) {
         return CGPointMake(config.manualAcceptX, config.manualAcceptY);
     }
-
-    // Mode 0: Center horizontally on screen (or accept label center) + user offset
     double baseX = screenSize.width * 0.5;
-    double baseY = acceptBlock ? acceptBlock.uiCenter.y : (screenSize.height - 42.0);
+    double baseY = acceptBlock ? acceptBlock.uiCenter.y : 640.0;
     return CGPointMake(baseX + config.acceptOffsetX, baseY + config.acceptOffsetY);
 }
 
-- (ScanDecision *)analyzeScreenImage:(CIImage *)ciImage
-                          screenSize:(CGSize)screenSize
-                              config:(FilterConfig *)config
-                     priceRetryCount:(NSInteger)retryCount {
-    ScanDecision *decision = [[ScanDecision alloc] init];
-    decision.type = ScanDecisionNone;
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount {
+    ScreenAnalysis *res = [[ScreenAnalysis alloc] init];
+    res.offlinePowerPoint = CGPointMake(config.manualOfflineX, config.manualOfflineY);
+    res.onlineStartPoint  = CGPointMake(config.manualOnlineX, config.manualOnlineY);
+    res.navBluePoint      = CGPointMake(config.manualNavX, config.manualNavY);
 
-    if (!ciImage) return decision;
+    if (!ciImage) return res;
 
     __block NSMutableArray<OCRTextBlock *> *blocks = [NSMutableArray array];
 
@@ -125,7 +118,6 @@
             VNRecognizedText *top = [[obs topCandidates:1] firstObject];
             if (!top || top.string.length == 0) continue;
 
-            // Convert Vision bottom-left [0..1] box to UIKit top-left logical points
             CGRect bb = obs.boundingBox;
             CGFloat uiX = bb.origin.x * screenSize.width;
             CGFloat uiW = bb.size.width * screenSize.width;
@@ -141,7 +133,6 @@
         }
     }];
 
-    // Fast recognition reads Latin/VN text + digits on A11 in ~55ms without heavy NLP overhead
     req.recognitionLevel = VNRequestRecognitionLevelAccurate;
     req.usesLanguageCorrection = NO;
     if (@available(iOS 16.0, *)) {
@@ -153,125 +144,207 @@
     VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ciImage options:@{}];
     [handler performRequests:@[req] error:nil];
 
-    if (blocks.count == 0) return decision;
+    if (blocks.count == 0) return res;
 
-    // --- CHỐT KHÓA 1: Phải thấy cả "Cước phí" (nửa trên) VÀ "Nhận chuyến" (nửa dưới) ---
-    OCRTextBlock *cuocPhiBlock = nil;
-    OCRTextBlock *acceptBlock  = nil;
-    OCRTextBlock *foodBlock    = nil;
-    CGFloat kmLineY = screenSize.height * 0.42;
+    // Scan all blocks once to classify screen markers
+    OCRTextBlock *cuocPhiBlock      = nil;
+    OCRTextBlock *acceptBlock       = nil;
+    OCRTextBlock *foodBlock         = nil;
+    OCRTextBlock *moNhanChuyenBlock = nil;
+    OCRTextBlock *dangTrucTuyenBlk  = nil;
+    OCRTextBlock *xacNhanHTBlk      = nil;
+    OCRTextBlock *hanhKhachBlk      = nil;
+    OCRTextBlock *dieuHuongBlk      = nil;
+    OCRTextBlock *daDenDiemDonBlk   = nil;
+    OCRTextBlock *hoanThanhChuyenBlk= nil;
+    OCRTextBlock *confirmOfflineBlk = nil;
+
+    CGFloat kmLineY = screenSize.height * 0.45;
 
     for (OCRTextBlock *b in blocks) {
-        if (!cuocPhiBlock && b.uiCenter.y < screenSize.height * 0.48) {
-            if ([b.normText containsString:@"cuoc phi"] || [b.normText containsString:@"cuocphi"]) {
+        NSString *t = b.normText;
+
+        // 1. Lobby & Payment markers
+        if (!moNhanChuyenBlock && [t containsString:@"mo nhan chuyen"]) {
+            if (b.uiCenter.y > screenSize.height * 0.25 && b.uiCenter.y < screenSize.height * 0.72) {
+                moNhanChuyenBlock = b;
+            }
+        }
+        if (!dangTrucTuyenBlk && b.uiCenter.y > screenSize.height * 0.55) {
+            if ([t containsString:@"dang truc tuyen"] || [t containsString:@"truc tuyen"]) {
+                dangTrucTuyenBlk = b;
+            }
+        }
+        if (!xacNhanHTBlk && b.uiCenter.y > screenSize.height * 0.70) {
+            if ([t containsString:@"xac nhan hoan thanh"]) {
+                xacNhanHTBlk = b;
+            }
+        }
+
+        // Possible confirmation modal when turning offline ("Đồng ý" / "Xác nhận" / "Tắt trực tuyến")
+        if (!confirmOfflineBlk && b.uiCenter.y > screenSize.height * 0.35 && b.uiCenter.y < screenSize.height * 0.82) {
+            if (([t isEqualToString:@"xac nhan"] || [t isEqualToString:@"dong y"] ||
+                 [t containsString:@"tat truc tuyen"] || [t containsString:@"ngung nhan"]) &&
+                ![t containsString:@"hoan thanh"]) {
+                confirmOfflineBlk = b;
+            }
+        }
+
+        // 2. Active Trip markers ('Hành khách' + 'Điều hướng' + bottom stage button)
+        if (!hanhKhachBlk && b.uiCenter.x < screenSize.width * 0.58 &&
+            b.uiCenter.y > screenSize.height * 0.25 && b.uiCenter.y < screenSize.height * 0.70) {
+            if ([t containsString:@"hanh khach"]) {
+                hanhKhachBlk = b;
+            }
+        }
+        if (!dieuHuongBlk && b.uiCenter.x > screenSize.width * 0.60 &&
+            b.uiCenter.y > screenSize.height * 0.25 && b.uiCenter.y < screenSize.height * 0.70) {
+            if ([t containsString:@"dieu huong"]) {
+                dieuHuongBlk = b;
+            }
+        }
+        if (!daDenDiemDonBlk && b.uiCenter.y > screenSize.height * 0.78) {
+            if ([t containsString:@"da den diem don"] || [t containsString:@"den diem don"]) {
+                daDenDiemDonBlk = b;
+            }
+        }
+        if (!hoanThanhChuyenBlk && b.uiCenter.y > screenSize.height * 0.78) {
+            if ([t containsString:@"hoan thanh chuyen"]) {
+                hoanThanhChuyenBlk = b;
+            }
+        }
+
+        // 3. Order Popup markers
+        if (!cuocPhiBlock && b.uiCenter.y < screenSize.height * 0.45) {
+            if ([t containsString:@"cuoc phi"] || [t containsString:@"cuocphi"]) {
                 cuocPhiBlock = b;
             }
         }
-        if (!acceptBlock && b.uiCenter.y > screenSize.height * 0.65) {
-            if ([b.normText containsString:@"nhan chuyen"] || [b.normText containsString:@"nhanchuyen"]) {
+        if (!acceptBlock && b.uiCenter.y > screenSize.height * 0.78) {
+            if (([t containsString:@"nhan chuyen"] || [t containsString:@"nhanchuyen"]) &&
+                ![t containsString:@"mo nhan"]) {
                 acceptBlock = b;
             }
         }
-        if (!foodBlock && b.uiCenter.y < screenSize.height * 0.35) {
-            if ([b.normText containsString:@"green food"] ||
-                [b.normText containsString:@"greenfood"] ||
-                [b.normText containsString:@"sm ngon"]) {
+        if (!foodBlock && b.uiCenter.y < screenSize.height * 0.30) {
+            if ([t containsString:@"green food"] ||
+                [t containsString:@"greenfood"] ||
+                [t containsString:@"sm ngon"]) {
                 foodBlock = b;
             }
         }
-        if ([b.normText containsString:@"km"] && [b.normText containsString:@"diem"]) {
+        if ([t containsString:@"km"] && [t containsString:@"diem"]) {
             kmLineY = b.uiCenter.y;
         }
     }
 
-    if (!cuocPhiBlock || !acceptBlock) {
-        // Không phải màn hình nổ cuốc -> đứng im tuyệt đối
-        return decision;
+    // Populate Lobby & Payment states
+    res.isLobbyOnline          = (dangTrucTuyenBlk != nil);
+    res.isLobbyOffline         = (moNhanChuyenBlock != nil);
+    res.isPaymentConfirmScreen = (xacNhanHTBlk != nil);
+
+    if (moNhanChuyenBlock && config.coordMode == CoordModeAutoOCRWithOffset) {
+        res.onlineStartPoint = CGPointMake(moNhanChuyenBlock.uiCenter.x + config.onlineOffsetX,
+                                           moNhanChuyenBlock.uiCenter.y + config.onlineOffsetY);
+    }
+    if (confirmOfflineBlk) {
+        res.hasOfflineConfirmPopup = YES;
+        res.confirmPopupPoint = confirmOfflineBlk.uiCenter;
     }
 
-    // --- CHỐT KHÓA 2: Tách nhánh Đơn Bike/Khác vs Đơn Green Food ---
-    if (!foodBlock) {
-        decision.isGreenFood = NO;
-        if (!config.autoAcceptBike) {
-            decision.type = ScanDecisionSkipDisabled;
-            decision.reasonSummary = @"Đơn Bike/Khác (Công tắc Tự nhận Bike đang TẮT)";
-            return decision;
+    // Populate Active Trip states
+    if (hanhKhachBlk && dieuHuongBlk) {
+        res.hasPassengerAndNav = YES;
+        res.isPickupStage      = (daDenDiemDonBlk != nil);
+        res.isDropoffStage     = (hoanThanhChuyenBlk != nil);
+
+        if (config.coordMode == CoordModeAutoOCRWithOffset) {
+            res.navBluePoint = CGPointMake(dieuHuongBlk.uiCenter.x + config.navOffsetX,
+                                           dieuHuongBlk.uiCenter.y + config.navOffsetY);
+        } else {
+            res.navBluePoint = CGPointMake(config.manualNavX, config.manualNavY);
+        }
+    }
+
+    // Populate Order Popup state
+    if (cuocPhiBlock && acceptBlock) {
+        res.hasOrderPopup = YES;
+
+        if (!foodBlock) {
+            res.isGreenFood = NO;
+            if (!config.autoAcceptBike) {
+                res.orderAction = OrderActionSkipDisabled;
+                res.orderReason = @"Đơn Bike/Khác (Tự nhận đang TẮT)";
+                return res;
+            }
+
+            for (OCRTextBlock *b in blocks) {
+                if (b.uiCenter.x > screenSize.width * 0.40 && b.uiCenter.y < kmLineY) {
+                    NSInteger p = [self extractFareVNDFromString:b.rawText];
+                    if (p > 0) { res.detectedPriceVND = p; break; }
+                }
+            }
+
+            res.orderAction = OrderActionTapAccept;
+            res.orderTargetPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock screenSize:screenSize config:config];
+            res.orderReason = (res.detectedPriceVND > 0)
+                ? [NSString stringWithFormat:@"Green Bike (%ldđ) -> NHẬN CHUYẾN", (long)res.detectedPriceVND]
+                : @"Green Bike/Khác -> NHẬN CHUYẾN";
+            return res;
         }
 
-        // Bóc thử giá đơn Bike để ghi vào Log cho đẹp (không bắt buộc)
+        // Green Food branch
+        res.isGreenFood = YES;
+        if (config.rejectAllFood) {
+            res.orderAction = OrderActionTapRejectX;
+            res.orderTargetPoint = [self computeClosePointWithFoodBlock:foodBlock cuocPhiBlock:cuocPhiBlock screenSize:screenSize config:config];
+            res.orderReason = @"Green Food (Chế độ Hủy sạch Food) -> BẤM [X]";
+            return res;
+        }
+
+        NSInteger detectedFare = 0;
+        CGFloat minFareY = MAX(15.0, cuocPhiBlock.uiCenter.y - 60.0);
+        CGFloat maxFareY = MIN(kmLineY + 10.0, cuocPhiBlock.uiCenter.y + 65.0);
+
         for (OCRTextBlock *b in blocks) {
-            if (b.uiCenter.x > screenSize.width * 0.40 && b.uiCenter.y < kmLineY) {
-                NSInteger p = [self extractFareVNDFromString:b.rawText];
-                if (p > 0) { decision.detectedPriceVND = p; break; }
+            if (b.uiCenter.x >= screenSize.width * 0.38 &&
+                b.uiCenter.y >= minFareY &&
+                b.uiCenter.y <= maxFareY) {
+                NSInteger fare = [self extractFareVNDFromString:b.rawText];
+                if (fare > detectedFare) {
+                    detectedFare = fare;
+                }
             }
         }
 
-        decision.type = ScanDecisionTapAccept;
-        decision.targetLogicalPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock screenSize:screenSize config:config];
-        if (decision.detectedPriceVND > 0) {
-            decision.reasonSummary = [NSString stringWithFormat:@"Đơn Bike/Express (%ldđ) -> NHẬN CHUYẾN", (long)decision.detectedPriceVND];
-        } else {
-            decision.reasonSummary = @"Đơn Bike/Express -> NHẬN CHUYẾN";
-        }
-        return decision;
-    }
-
-    // --- CHỐT KHÓA 3: Xử lý đơn Green Food ---
-    decision.isGreenFood = YES;
-
-    if (config.rejectAllFood) {
-        decision.type = ScanDecisionTapRejectX;
-        decision.targetLogicalPoint = [self computeClosePointWithFoodBlock:foodBlock cuocPhiBlock:cuocPhiBlock screenSize:screenSize config:config];
-        decision.reasonSummary = @"Green Food (Chế độ Hủy mọi đơn Food) -> BẤM [X]";
-        return decision;
-    }
-
-    // Tìm số tiền cước phí nằm ở góc phải phía trên (x > 40% chiều ngang, ngang tầm chữ 'Cước phí', trên dòng km)
-    NSInteger detectedFare = 0;
-    CGFloat minFareY = MAX(15.0, cuocPhiBlock.uiCenter.y - 60.0);
-    CGFloat maxFareY = MIN(kmLineY + 10.0, cuocPhiBlock.uiCenter.y + 65.0);
-
-    for (OCRTextBlock *b in blocks) {
-        if (b.uiCenter.x >= screenSize.width * 0.38 &&
-            b.uiCenter.y >= minFareY &&
-            b.uiCenter.y <= maxFareY) {
-            NSInteger fare = [self extractFareVNDFromString:b.rawText];
-            if (fare > detectedFare) {
-                detectedFare = fare;
+        if (detectedFare <= 0) {
+            if (retryCount < 2) {
+                res.orderAction = OrderActionWaitRetryPrice;
+                res.orderReason = @"Đang lấy nét lại giá đơn Green Food...";
+                return res;
+            } else {
+                res.orderAction = OrderActionTapRejectX;
+                res.orderTargetPoint = [self computeClosePointWithFoodBlock:foodBlock cuocPhiBlock:cuocPhiBlock screenSize:screenSize config:config];
+                res.orderReason = @"Green Food (Không rõ giá) -> HỦY [X]";
+                return res;
             }
         }
-    }
 
-    // Nếu frame đầu số tiền bị mờ chưa đọc ra, cho phép đợi tối đa 2 nhịp (2 x 150ms) để đọc lại chắc chắn
-    if (detectedFare <= 0) {
-        if (retryCount < 2) {
-            decision.type = ScanDecisionWaitRetryPrice;
-            decision.reasonSummary = @"Thấy Green Food nhưng đang lấy nét lại giá tiền...";
-            return decision;
+        res.detectedPriceVND = detectedFare;
+        if (detectedFare >= config.minFoodPriceVND) {
+            res.orderAction = OrderActionTapAccept;
+            res.orderTargetPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock screenSize:screenSize config:config];
+            res.orderReason = [NSString stringWithFormat:@"Green Food %ldđ (>= %ldđ) -> ĐỚP ĐƠN!",
+                               (long)detectedFare, (long)config.minFoodPriceVND];
         } else {
-            // Hết 2 nhịp vẫn không đọc được giá -> An toàn nhất là bấm [X] hủy Food
-            decision.type = ScanDecisionTapRejectX;
-            decision.targetLogicalPoint = [self computeClosePointWithFoodBlock:foodBlock cuocPhiBlock:cuocPhiBlock screenSize:screenSize config:config];
-            decision.reasonSummary = @"Green Food (Không rõ giá sau 2 nhịp) -> BẤM [X]";
-            return decision;
+            res.orderAction = OrderActionTapRejectX;
+            res.orderTargetPoint = [self computeClosePointWithFoodBlock:foodBlock cuocPhiBlock:cuocPhiBlock screenSize:screenSize config:config];
+            res.orderReason = [NSString stringWithFormat:@"Green Food %ldđ (< %ldđ) -> HỦY [X]",
+                               (long)detectedFare, (long)config.minFoodPriceVND];
         }
     }
 
-    decision.detectedPriceVND = detectedFare;
-
-    if (detectedFare >= config.minFoodPriceVND) {
-        decision.type = ScanDecisionTapAccept;
-        decision.targetLogicalPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock screenSize:screenSize config:config];
-        decision.reasonSummary = [NSString stringWithFormat:@"Green Food %ldđ (>= %ldđ) -> ĐỚP ĐƠN!",
-                                  (long)detectedFare, (long)config.minFoodPriceVND];
-    } else {
-        decision.type = ScanDecisionTapRejectX;
-        decision.targetLogicalPoint = [self computeClosePointWithFoodBlock:foodBlock cuocPhiBlock:cuocPhiBlock screenSize:screenSize config:config];
-        decision.reasonSummary = [NSString stringWithFormat:@"Green Food %ldđ (< %ldđ) -> HỦY [X]",
-                                  (long)detectedFare, (long)config.minFoodPriceVND];
-    }
-
-    return decision;
+    return res;
 }
 
 @end

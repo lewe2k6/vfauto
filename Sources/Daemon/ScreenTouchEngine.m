@@ -1,10 +1,11 @@
 #import "ScreenTouchEngine.h"
 #import "SharedConfig.h"
-#import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
 #import <math.h>
 #import <stdlib.h>
+#import <string.h>
+#import <unistd.h>
 
 typedef double IOHIDFloat;
 typedef uint32_t IOOptionBits;
@@ -12,7 +13,6 @@ typedef CFTypeRef IOHIDEventRef;
 typedef CFTypeRef IOHIDEventSystemClientRef;
 typedef CFTypeRef IOHIDServiceClientRef;
 
-// Dynamic IOSurface C-API pointers (avoids iphoneos SDK header differences)
 typedef IOSurfaceRef (*IOSurfaceCreate_f)(CFDictionaryRef properties);
 typedef kern_return_t (*IOSurfaceLock_f)(IOSurfaceRef buffer, uint32_t options, uint32_t *seed);
 typedef kern_return_t (*IOSurfaceUnlock_f)(IOSurfaceRef buffer, uint32_t options, uint32_t *seed);
@@ -20,7 +20,6 @@ typedef void *(*IOSurfaceGetBaseAddress_f)(IOSurfaceRef buffer);
 typedef size_t (*IOSurfaceGetAllocSize_f)(IOSurfaceRef buffer);
 #define kIOSurfaceLockReadOnlyFlag 0x00000001
 
-// Function pointer typedefs for dynamic SPI resolution (zero private SDK stubs needed)
 typedef void (*CARenderServerRenderDisplay_f)(kern_return_t, CFStringRef, IOSurfaceRef, int, int);
 
 typedef IOHIDEventSystemClientRef (*IOHIDEventSystemClientCreate_f)(CFAllocatorRef);
@@ -44,7 +43,6 @@ typedef void (*IOHIDEventAppendEvent_f)(IOHIDEventRef parent, IOHIDEventRef chil
 typedef void (*IOHIDEventSetSenderID_f)(IOHIDEventRef event, uint64_t senderID);
 typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field, CFIndex value);
 
-// IOHID Digitizer Constants
 #define kHIDTransducerHand              3
 #define kHIDDigitizerRange              (1 << 0)
 #define kHIDDigitizerTouch              (1 << 1)
@@ -88,9 +86,30 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // Default to iPhone 8 375x667 @2x, query UIScreen if available
         _logicalScreenSize = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
         _screenScale = 2.0;
+
+        // Dynamically query CADisplay.mainDisplay physical pixel size if available
+        Class caDispCls = NSClassFromString(@"CADisplay");
+        if (caDispCls && [caDispCls respondsToSelector:NSSelectorFromString(@"mainDisplay")]) {
+            id mainDisp = [caDispCls valueForKey:@"mainDisplay"];
+            if (mainDisp) {
+                NSValue *boundsVal = [mainDisp valueForKey:@"bounds"];
+                if (boundsVal && strcmp([boundsVal objCType], @encode(CGRect)) == 0) {
+                    CGRect pxBounds = CGRectZero;
+                    [boundsVal getValue:&pxBounds];
+                    if (pxBounds.size.width >= 640 && pxBounds.size.height >= 1136) {
+                        if ((int)pxBounds.size.width == 750 && (int)pxBounds.size.height == 1334) {
+                            _logicalScreenSize = CGSizeMake(375.0, 667.0);
+                            _screenScale = 2.0;
+                        } else if ((int)pxBounds.size.width == 1242 || (int)pxBounds.size.width == 1170 || (int)pxBounds.size.width == 1125) {
+                            _screenScale = 3.0;
+                            _logicalScreenSize = CGSizeMake(pxBounds.size.width / 3.0, pxBounds.size.height / 3.0);
+                        }
+                    }
+                }
+            }
+        }
 
         [self resolveSymbols];
         [self setupDigitizerSender];
@@ -130,13 +149,12 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
 }
 
 - (void)setupDigitizerSender {
-    _digitizerSenderID = 0x8000000817319372ULL; // Fallback sender ID
+    _digitizerSenderID = 0x8000000817319372ULL;
     if (!_fnClientCreate) return;
 
     _hidClient = _fnClientCreate(kCFAllocatorDefault);
     if (!_hidClient || !_fnClientCopyServices || !_fnServiceGetRegID) return;
 
-    // Query real built-in Multitouch Digitizer Registry ID (PrimaryUsagePage=0x0D Digitizer, PrimaryUsage=0x04 TouchScreen)
     if (_fnClientSetMatching) {
         NSDictionary *match = @{ @"PrimaryUsagePage": @(0x0D), @"PrimaryUsage": @(0x04) };
         _fnClientSetMatching(_hidClient, (__bridge CFDictionaryRef)match);
@@ -163,10 +181,10 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
 
 - (void)setupCaptureSurface {
     if (!_fnSurfaceCreate) return;
-    size_t pixelW = (size_t)(_logicalScreenSize.width * _screenScale);   // 750 on iPhone 8
-    size_t pixelH = (size_t)(_logicalScreenSize.height * _screenScale);  // 1334 on iPhone 8
+    size_t pixelW = (size_t)(_logicalScreenSize.width * _screenScale);
+    size_t pixelH = (size_t)(_logicalScreenSize.height * _screenScale);
     size_t bytesPerElement = 4;
-    size_t bytesPerRow = ((pixelW * bytesPerElement + 63) & ~63);        // 64-byte aligned stride
+    size_t bytesPerRow = ((pixelW * bytesPerElement + 63) & ~63);
     size_t allocSize = bytesPerRow * pixelH;
 
     NSDictionary *props = @{
@@ -176,7 +194,7 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
         @"IOSurfaceBytesPerElement": @(bytesPerElement),
         @"IOSurfaceBytesPerRow":     @(bytesPerRow),
         @"IOSurfaceAllocSize":       @(allocSize),
-        @"IOSurfacePixelFormat":     @(0x42475241)    // 'BGRA'
+        @"IOSurfacePixelFormat":     @(0x42475241)
     };
 
     _captureSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)props);
@@ -301,12 +319,36 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
     NSInteger hi = MAX(lo + 5, holdMaxMs);
     uint32_t holdMs = (uint32_t)(lo + arc4random_uniform((uint32_t)(hi - lo + 1)));
 
-    // Finger Down -> Hold -> Finger Up
     [self dispatchTouchPhase:YES normX:nx normY:ny];
     usleep(holdMs * 1000);
     [self dispatchTouchPhase:NO normX:nx normY:ny];
 
     return YES;
+}
+
+- (BOOL)performMultiTapAtPoint:(CGPoint)logicalPoint
+                      tapCount:(NSInteger)tapCount
+                    intervalMs:(NSInteger)intervalMs
+                  jitterRadius:(double)jitterRadiusPt
+                     holdMinMs:(NSInteger)holdMinMs
+                     holdMaxMs:(NSInteger)holdMaxMs
+                  outLastPoint:(CGPoint *)outLastPoint {
+    NSInteger count = MAX(1, MIN(5, tapCount));
+    NSInteger gapMs = MAX(80, intervalMs);
+    BOOL anyOk = NO;
+    for (NSInteger i = 0; i < count; i++) {
+        BOOL ok = [self performHumanTapAtPoint:logicalPoint
+                                  jitterRadius:jitterRadiusPt
+                                     holdMinMs:holdMinMs
+                                     holdMaxMs:holdMaxMs
+                                outActualPoint:outLastPoint];
+        if (ok) anyOk = YES;
+        if (i + 1 < count) {
+            uint32_t jitterGap = (uint32_t)(gapMs + arc4random_uniform(35));
+            usleep(jitterGap * 1000);
+        }
+    }
+    return anyOk;
 }
 
 - (void)dealloc {

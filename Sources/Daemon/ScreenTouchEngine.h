@@ -7,21 +7,26 @@
 
 @interface ScreenTouchEngine : NSObject
 
-@property (nonatomic, readonly) CGSize logicalScreenSize; // e.g., 375 x 667 on iPhone 8
-@property (nonatomic, readonly) CGFloat screenScale;      // e.g., 2.0 on iPhone 8
+@property (nonatomic, readonly) CGSize logicalScreenSize; // 375 x 667 on iPhone 8
+@property (nonatomic, readonly) CGFloat screenScale;      // 2.0 on iPhone 8
 
 + (instancetype)sharedEngine;
 
-// Captures current full display silently into a CIImage (nil on failure)
 - (CIImage *)captureScreenCIImage;
 
-// Dispatches hardware-level digitizer tap with jitter & variable hold time.
-// Writes actual tapped point into outActualPoint if non-NULL.
 - (BOOL)performHumanTapAtPoint:(CGPoint)logicalPoint
                   jitterRadius:(double)jitterRadiusPt
                      holdMinMs:(NSInteger)holdMinMs
                      holdMaxMs:(NSInteger)holdMaxMs
                 outActualPoint:(CGPoint *)outActualPoint;
+
+- (BOOL)performMultiTapAtPoint:(CGPoint)logicalPoint
+                      tapCount:(NSInteger)tapCount
+                    intervalMs:(NSInteger)intervalMs
+                  jitterRadius:(double)jitterRadiusPt
+                     holdMinMs:(NSInteger)holdMinMs
+                     holdMaxMs:(NSInteger)holdMaxMs
+                  outLastPoint:(CGPoint *)outLastPoint;
 
 @end
 

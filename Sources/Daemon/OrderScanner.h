@@ -6,30 +6,50 @@
 #import <CoreImage/CoreImage.h>
 #import "SharedConfig.h"
 
-typedef NS_ENUM(NSInteger, ScanDecisionType) {
-    ScanDecisionNone            = 0, // Không có bảng nổ đơn trên màn hình
-    ScanDecisionWaitRetryPrice  = 1, // Thấy Green Food nhưng số tiền đang nhòe, chờ quét lại 1 nhịp
-    ScanDecisionSkipDisabled    = 2, // Có đơn Bike nhưng công tắc Tự nhận Bike đang TẮT
-    ScanDecisionTapAccept       = 3, // Bấm [Nhận chuyến] (Bike hoặc Green Food >= giá tối thiểu)
-    ScanDecisionTapRejectX      = 4  // Bấm [X] (Green Food < giá tối thiểu hoặc chế độ hủy mọi Food)
+typedef NS_ENUM(NSInteger, OrderActionType) {
+    OrderActionNone           = 0,
+    OrderActionWaitRetryPrice = 1,
+    OrderActionSkipDisabled   = 2,
+    OrderActionTapAccept      = 3,
+    OrderActionTapRejectX     = 4
 };
 
-@interface ScanDecision : NSObject
-@property (nonatomic, assign) ScanDecisionType type;
+@interface ScreenAnalysis : NSObject
+
+// 1. Order Popup State
+@property (nonatomic, assign) BOOL hasOrderPopup;
+@property (nonatomic, assign) OrderActionType orderAction;
 @property (nonatomic, assign) BOOL isGreenFood;
-@property (nonatomic, assign) NSInteger detectedPriceVND; // 0 nếu chưa đọc / không cần đọc
-@property (nonatomic, assign) CGPoint targetLogicalPoint; // Tọa độ mục tiêu trước khi cộng Jitter
-@property (nonatomic, copy)   NSString *reasonSummary;
+@property (nonatomic, assign) NSInteger detectedPriceVND;
+@property (nonatomic, assign) CGPoint orderTargetPoint;
+@property (nonatomic, copy)   NSString *orderReason;
+
+// 2. Lobby & Payment States
+@property (nonatomic, assign) BOOL isLobbyOnline;          // 'Đang trực tuyến'
+@property (nonatomic, assign) BOOL isLobbyOffline;         // 'Mở nhận chuyến'
+@property (nonatomic, assign) BOOL isPaymentConfirmScreen; // 'Xác nhận hoàn thành'
+@property (nonatomic, assign) BOOL hasOfflineConfirmPopup; // Hộp thoại hỏi xác nhận tắt trực tuyến (nếu có)
+
+@property (nonatomic, assign) CGPoint offlinePowerPoint;   // (40, 455)
+@property (nonatomic, assign) CGPoint onlineStartPoint;    // (187, 307) hoặc tâm chữ 'Mở nhận chuyến'
+@property (nonatomic, assign) CGPoint confirmPopupPoint;
+
+// 3. Active Trip Navigation States
+@property (nonatomic, assign) BOOL hasPassengerAndNav;     // Thấy cả 'Hành khách' + 'Điều hướng'
+@property (nonatomic, assign) BOOL isPickupStage;          // Nút đáy 'Đã đến điểm đón'
+@property (nonatomic, assign) BOOL isDropoffStage;         // Nút đáy 'Hoàn thành chuyến'
+@property (nonatomic, assign) CGPoint navBluePoint;        // Nút tròn xanh dương [➤] (323, 278)
+
 @end
 
 @interface OrderScanner : NSObject
 
 + (instancetype)sharedScanner;
 
-- (ScanDecision *)analyzeScreenImage:(CIImage *)ciImage
-                          screenSize:(CGSize)screenSize
-                              config:(FilterConfig *)config
-                     priceRetryCount:(NSInteger)retryCount;
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount;
 
 @end
 

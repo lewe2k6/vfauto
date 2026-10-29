@@ -6,14 +6,18 @@
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
+#define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
 #define kDaemonPidPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.pid"
 
 #define kNotifyReloadConfig     "com.vn.utility.batterycheck.reload"
 #define kNotifyStopDaemon       "com.vn.utility.batterycheck.stop"
 #define kNotifyStatsUpdated     "com.vn.utility.batterycheck.stats"
+#define kNotifySkipPause        "com.vn.utility.batterycheck.skippause"
+#define kNotifyResetNavLocks    "com.vn.utility.batterycheck.resetnav"
+#define kNotifyResetCounters    "com.vn.utility.batterycheck.resetcnt"
 
-// Default screen dimensions for iPhone 8 (logical points)
+// Native iPhone 8 logical screen points
 #define kDefaultScreenW         375.0
 #define kDefaultScreenH         667.0
 
@@ -22,50 +26,89 @@ typedef NS_ENUM(NSInteger, CoordMode) {
     CoordModeFixedManual       = 1
 };
 
+@interface InstalledAppInfo : NSObject
+@property (nonatomic, copy) NSString *bundleID;
+@property (nonatomic, copy) NSString *displayName;
+@property (nonatomic, copy) NSString *executableName;
+@end
+
+@interface RuntimeDaemonState : NSObject
+@property (nonatomic, assign) NSInteger statAcceptedCount;
+@property (nonatomic, assign) NSInteger statRejectedCount;
+@property (nonatomic, assign) BOOL navPickupLocked;
+@property (nonatomic, assign) BOOL navDropoffLocked;
+@property (nonatomic, assign) double pauseEndEpoch; // 0 if not pausing
+@property (nonatomic, copy)   NSString *phaseDescription;
+
++ (instancetype)loadState;
+- (void)saveStateAndNotify:(BOOL)sendNotify;
+@end
+
 @interface FilterConfig : NSObject
 
-// Master & Tactical Toggles
+// 1. Master & Price Filter Toggles
 @property (nonatomic, assign) BOOL masterEnabled;
 @property (nonatomic, assign) BOOL autoAcceptBike;
 @property (nonatomic, assign) BOOL rejectAllFood;
-@property (nonatomic, assign) NSInteger minFoodPriceVND; // e.g., 25000
+@property (nonatomic, assign) NSInteger minFoodPriceVND;      // Default 25000
 @property (nonatomic, assign) BOOL hapticEnabled;
 @property (nonatomic, assign) BOOL dryRunMode;
 
-// Coordinate Settings
+// 2. 2-Minute Pause & Kill/Relaunch Cycle After Rejecting Food
+@property (nonatomic, assign) BOOL pauseAfterRejectFood;      // Default YES
+@property (nonatomic, assign) NSInteger pauseDurationSec;     // Default 120 (2 mins)
+@property (nonatomic, assign) BOOL autoKillAndRelaunchApp;    // Default NO (user can toggle ON)
+@property (nonatomic, assign) NSInteger relaunchLeadSec;      // Default 15s before pause ends
+@property (nonatomic, copy)   NSString *driverAppBundleID;    // Auto-detected or user-picked
+@property (nonatomic, copy)   NSString *driverAppExecName;
+@property (nonatomic, copy)   NSString *driverAppDisplayName;
+
+// 3. Auto-Tap Blue Navigation Button (Pickup & Dropoff, Anti-Loop)
+@property (nonatomic, assign) BOOL autoNavPickup;             // Default YES ('Đã đến điểm đón')
+@property (nonatomic, assign) BOOL autoNavDropoff;            // Default YES ('Hoàn thành chuyến')
+@property (nonatomic, assign) NSInteger navTapCount;          // Default 3 (1..4 taps)
+@property (nonatomic, assign) NSInteger navTapIntervalMs;     // Default 180 ms
+@property (nonatomic, assign) NSInteger navSettleDelayMs;     // Default 650 ms
+
+// 4. Coordinate Settings (5 Buttons)
 @property (nonatomic, assign) CoordMode coordMode;
 
 // Mode 0: Auto OCR Anchor + Offset
-@property (nonatomic, assign) double closeXRatio;       // Default 0.912 (~342pt on 375w)
-@property (nonatomic, assign) double closeOffsetX;      // -50 .. +50 pt
-@property (nonatomic, assign) double closeOffsetY;      // -50 .. +50 pt
-@property (nonatomic, assign) double acceptOffsetX;     // -80 .. +80 pt
-@property (nonatomic, assign) double acceptOffsetY;     // -50 .. +50 pt
+@property (nonatomic, assign) double closeXRatio;             // Measured 0.903 (339pt / 375pt)
+@property (nonatomic, assign) double closeOffsetX;
+@property (nonatomic, assign) double closeOffsetY;
+@property (nonatomic, assign) double acceptOffsetX;
+@property (nonatomic, assign) double acceptOffsetY;
+@property (nonatomic, assign) double onlineOffsetX;
+@property (nonatomic, assign) double onlineOffsetY;
+@property (nonatomic, assign) double navOffsetX;              // Offset from 'Điều hướng' text X
+@property (nonatomic, assign) double navOffsetY;              // Default -26.0 pt above 'Điều hướng' text Y
 
-// Mode 1: Fixed Manual Coordinates (375 x 667 space)
-@property (nonatomic, assign) double manualCloseX;      // Default 342.0
-@property (nonatomic, assign) double manualCloseY;      // Default 52.0
-@property (nonatomic, assign) double manualAcceptX;     // Default 187.5
-@property (nonatomic, assign) double manualAcceptY;     // Default 625.0
+// Mode 1: Fixed Manual Coordinates (Measured from real iPhone 8 screenshots)
+@property (nonatomic, assign) double manualCloseX;            // Default 339.0
+@property (nonatomic, assign) double manualCloseY;            // Default 52.0
+@property (nonatomic, assign) double manualAcceptX;           // Default 187.0
+@property (nonatomic, assign) double manualAcceptY;           // Default 640.0
+@property (nonatomic, assign) double manualOfflineX;          // Default 40.0  (Teal power [⏻])
+@property (nonatomic, assign) double manualOfflineY;          // Default 455.0
+@property (nonatomic, assign) double manualOnlineX;           // Default 187.0 ('Mở nhận chuyến')
+@property (nonatomic, assign) double manualOnlineY;           // Default 307.0
+@property (nonatomic, assign) double manualNavX;              // Default 323.0 (Blue circle [➤])
+@property (nonatomic, assign) double manualNavY;              // Default 278.0
 
-// Timing & Humanizer (ms)
-@property (nonatomic, assign) NSInteger scanIntervalMs; // Default 350
-@property (nonatomic, assign) NSInteger acceptDelayMinMs; // Default 180
-@property (nonatomic, assign) NSInteger acceptDelayMaxMs; // Default 420
-@property (nonatomic, assign) NSInteger rejectDelayMinMs; // Default 400
-@property (nonatomic, assign) NSInteger rejectDelayMaxMs; // Default 850
-@property (nonatomic, assign) double jitterRadiusPt;    // Default 6.0
-@property (nonatomic, assign) NSInteger holdMinMs;      // Default 45
-@property (nonatomic, assign) NSInteger holdMaxMs;      // Default 85
-@property (nonatomic, assign) NSInteger cooldownMs;     // Default 2500
-
-// Daily Counters
-@property (nonatomic, assign) NSInteger statAcceptedCount;
-@property (nonatomic, assign) NSInteger statRejectedCount;
+// 5. Timing & Humanizer (ms)
+@property (nonatomic, assign) NSInteger scanIntervalMs;       // Default 350
+@property (nonatomic, assign) NSInteger acceptDelayMinMs;     // Default 180
+@property (nonatomic, assign) NSInteger acceptDelayMaxMs;     // Default 420
+@property (nonatomic, assign) NSInteger rejectDelayMinMs;     // Default 400
+@property (nonatomic, assign) NSInteger rejectDelayMaxMs;     // Default 850
+@property (nonatomic, assign) double jitterRadiusPt;          // Default 5.0
+@property (nonatomic, assign) NSInteger holdMinMs;            // Default 45
+@property (nonatomic, assign) NSInteger holdMaxMs;            // Default 85
+@property (nonatomic, assign) NSInteger cooldownMs;           // Default 2500
 
 + (instancetype)loadFromDisk;
 - (void)saveToDiskAndNotify:(BOOL)sendNotify;
-- (void)resetDailyStats;
 
 @end
 
@@ -78,11 +121,17 @@ static inline NSString *NormalizeVNText(NSString *input) {
     return [mutableStr copy];
 }
 
-// Daemon & System Helpers (implemented in TSUtil.m)
+// Daemon, App Lifecycle & System Helpers (implemented in TSUtil.m)
 int spawnRoot(NSString *path, NSArray<NSString *> *args);
 pid_t getRunningDaemonPID(void);
 BOOL startFilterDaemonIfNeeded(void);
 void stopFilterDaemon(void);
+
+NSArray<InstalledAppInfo *> *listInstalledUserApps(void);
+InstalledAppInfo *autoDetectDriverApp(void);
+BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName);
+BOOL launchAppByBundleID(NSString *bundleID);
+
 void appendDaemonLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 NSString *readDaemonLogs(void);
 void clearDaemonLogs(void);

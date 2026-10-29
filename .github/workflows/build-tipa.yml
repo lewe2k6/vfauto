@@ -36,9 +36,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2-ts
-          name: "Pin & Nhiệt Độ v1.2 (TrollStore iOS 16)"
-          body: "Tải trực tiếp file **PinNhietDo_TS.tipa** trên Safari iPhone 8 -> Mở qua **TrollStore** để cài đặt."
+          tag_name: v3.1-ts
+          name: "Pin & Nhiệt Độ v3.1 Full Combo (TrollStore iOS 16)"
+          body: "Bản v3.1 chuẩn tọa độ iPhone 8: Lọc giá Green Food + Nghỉ 2 phút & Kill/Relaunch App + Auto Tap Điều hướng 2 pha (chốt mở khóa Xác nhận hoàn thành). Tải trực tiếp **PinNhietDo_TS.tipa** trên Safari -> Mở qua **TrollStore** -> Install."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

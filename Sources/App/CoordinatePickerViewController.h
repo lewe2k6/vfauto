@@ -4,15 +4,17 @@
 #import <UIKit/UIKit.h>
 #import "SharedConfig.h"
 
-typedef void (^CoordPickerSaveBlock)(CGPoint closePt, CGPoint acceptPt);
+typedef void (^CoordPickerSaveAllBlock)(CGPoint closePt,
+                                        CGPoint acceptPt,
+                                        CGPoint offlinePt,
+                                        CGPoint onlinePt,
+                                        CGPoint navPt);
 
 @interface CoordinatePickerViewController : UIViewController
 
 - (instancetype)initWithScreenshot:(UIImage *)screenshot
-                         closePoint:(CGPoint)closePt
-                        acceptPoint:(CGPoint)acceptPt
-                       jitterRadius:(CGFloat)jitterRadius
-                             onSave:(CoordPickerSaveBlock)onSave;
+                            config:(FilterConfig *)cfg
+                            onSave:(CoordPickerSaveAllBlock)onSave;
 
 @end
 
