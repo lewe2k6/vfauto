@@ -128,7 +128,7 @@
 
 #pragma mark - UI Helpers
 
-- (UIView *)makeCardWithTitle:(NSString *)title addTo:(UIStackView *)parent outBody:(UIStackView **)outBody {
+- (UIView *)makeCardWithTitle:(NSString *)title addTo:(UIStackView *)parent outBody:(UIStackView * __strong *)outBody {
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = [UIColor colorWithRed:0.12 green:0.13 blue:0.16 alpha:1.0];
     card.layer.cornerRadius = 14;
@@ -198,7 +198,7 @@
 - (UISlider *)addSliderRowTo:(UIStackView *)stack
                          min:(float)minVal
                          max:(float)maxVal
-                    outLabel:(UILabel **)outLbl
+                    outLabel:(UILabel * __strong *)outLbl
                       action:(SEL)sel {
     UIStackView *wrap = [[UIStackView alloc] init];
     wrap.axis = UILayoutConstraintAxisVertical;

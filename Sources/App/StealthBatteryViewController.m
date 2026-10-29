@@ -32,7 +32,7 @@
     return UIStatusBarStyleLightContent;
 }
 
-- (UIView *)makeMetricCardWithTitle:(NSString *)title valueLabel:(UILabel **)outLbl {
+- (UIView *)makeMetricCardWithTitle:(NSString *)title valueLabel:(UILabel * __strong *)outLbl {
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = [UIColor colorWithRed:0.13 green:0.14 blue:0.18 alpha:1.0];
     card.layer.cornerRadius = 14;
