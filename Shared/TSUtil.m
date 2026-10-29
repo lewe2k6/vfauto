@@ -7,6 +7,7 @@
 #import <notify.h>
 #import <sys/stat.h>
 #import <unistd.h>
+#import <errno.h>
 
 #define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 1
 typedef int (*persona_np_f)(const posix_spawnattr_t * __restrict, uid_t, uint32_t);

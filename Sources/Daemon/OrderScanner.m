@@ -133,7 +133,7 @@
         }
     }];
 
-    req.recognitionLevel = VNRequestRecognitionLevelAccurate;
+    req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
     req.usesLanguageCorrection = NO;
     if (@available(iOS 16.0, *)) {
         req.recognitionLanguages = @[@"vi-VN", @"en-US"];
