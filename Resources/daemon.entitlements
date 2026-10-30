@@ -42,7 +42,11 @@
 	<true/>
 	<key>com.apple.frontboard.launchapplications</key>
 	<true/>
+	<key>com.apple.frontboard.layout-monitor</key>
+	<true/>
 	<key>com.apple.frontboard.shutdown</key>
+	<true/>
+	<key>com.apple.springboard.topapp</key>
 	<true/>
 	<key>com.apple.springboard.launchapplications</key>
 	<true/>

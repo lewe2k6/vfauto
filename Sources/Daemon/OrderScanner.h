@@ -9,9 +9,10 @@
 typedef NS_ENUM(NSInteger, OrderActionType) {
     OrderActionNone           = 0,
     OrderActionWaitRetryPrice = 1,
-    OrderActionSkipDisabled   = 2,
-    OrderActionTapAccept      = 3,
-    OrderActionTapRejectX     = 4
+    OrderActionHeaderCovered  = 2,
+    OrderActionSkipDisabled   = 3,
+    OrderActionTapAccept      = 4,
+    OrderActionTapRejectX     = 5
 };
 
 @interface ScreenAnalysis : NSObject
@@ -20,6 +21,7 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) BOOL hasOrderPopup;
 @property (nonatomic, assign) OrderActionType orderAction;
 @property (nonatomic, assign) BOOL isGreenFood;
+@property (nonatomic, copy)   NSString *detectedServiceTitle;
 @property (nonatomic, assign) NSInteger detectedPriceVND;
 @property (nonatomic, assign) CGPoint orderTargetPoint;
 @property (nonatomic, copy)   NSString *orderReason;
@@ -28,7 +30,7 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) BOOL isLobbyOnline;          // 'Đang trực tuyến'
 @property (nonatomic, assign) BOOL isLobbyOffline;         // 'Mở nhận chuyến'
 @property (nonatomic, assign) BOOL isPaymentConfirmScreen; // 'Xác nhận hoàn thành'
-@property (nonatomic, assign) BOOL hasOfflineConfirmPopup; // Hộp thoại hỏi xác nhận tắt trực tuyến (nếu có)
+@property (nonatomic, assign) BOOL hasOfflineConfirmPopup; // Hộp thoại hỏi xác nhận tắt trực tuyến
 
 @property (nonatomic, assign) CGPoint offlinePowerPoint;   // (40, 455)
 @property (nonatomic, assign) CGPoint onlineStartPoint;    // (187, 307) hoặc tâm chữ 'Mở nhận chuyến'
@@ -38,7 +40,7 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) BOOL hasPassengerAndNav;     // Thấy cả 'Hành khách' + 'Điều hướng'
 @property (nonatomic, assign) BOOL isPickupStage;          // Nút đáy 'Đã đến điểm đón'
 @property (nonatomic, assign) BOOL isDropoffStage;         // Nút đáy 'Hoàn thành chuyến'
-@property (nonatomic, assign) CGPoint navBluePoint;        // Nút tròn xanh dương [➤] (323, 278)
+@property (nonatomic, assign) CGPoint navBluePoint;        // Nút tròn xanh dương [Map] (323, 278)
 
 // 4. Live Diagnostic Info
 @property (nonatomic, assign) NSInteger ocrBlockCount;

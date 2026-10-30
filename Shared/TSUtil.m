@@ -1,5 +1,6 @@
 #import "SharedConfig.h"
 #import <AudioToolbox/AudioToolbox.h>
+#import <mach/mach.h>
 #import <objc/message.h>
 #import <dlfcn.h>
 #import <spawn.h>
@@ -14,6 +15,7 @@ typedef int (*persona_np_f)(const posix_spawnattr_t * __restrict, uid_t, uint32_
 typedef int (*persona_id_f)(const posix_spawnattr_t * __restrict, uid_t);
 typedef void (*BKSTerminateApp_f)(CFStringRef bundleID, int reasonID, bool report, CFStringRef description);
 typedef int (*SBSLaunchApp_f)(CFStringRef bundleID, Boolean suspended);
+typedef CFStringRef (*SBSCopyFrontmostApp_f)(void);
 extern char **environ;
 
 @implementation InstalledAppInfo
@@ -24,13 +26,14 @@ extern char **environ;
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _statAcceptedCount = 0;
-        _statRejectedCount = 0;
-        _navPickupLocked   = NO;
-        _navDropoffLocked  = NO;
-        _pauseEndEpoch     = 0.0;
-        _phaseDescription  = @"Đang rảnh / Canh đơn";
-        _daemonVersion     = @"";
+        _statAcceptedCount    = 0;
+        _statRejectedCount    = 0;
+        _navPickupLocked      = NO;
+        _navDropoffLocked     = NO;
+        _pauseEndEpoch        = 0.0;
+        _workerHeartbeatEpoch = 0.0;
+        _phaseDescription     = @"Đang rảnh / Canh đơn";
+        _daemonVersion        = @"";
     }
     return self;
 }
@@ -39,25 +42,27 @@ extern char **environ;
     RuntimeDaemonState *st = [[RuntimeDaemonState alloc] init];
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kRuntimeStatePath];
     if (!d) return st;
-    if (d[@"statAcceptedCount"]) st.statAcceptedCount = [d[@"statAcceptedCount"] integerValue];
-    if (d[@"statRejectedCount"]) st.statRejectedCount = [d[@"statRejectedCount"] integerValue];
-    if (d[@"navPickupLocked"])   st.navPickupLocked   = [d[@"navPickupLocked"] boolValue];
-    if (d[@"navDropoffLocked"])  st.navDropoffLocked  = [d[@"navDropoffLocked"] boolValue];
-    if (d[@"pauseEndEpoch"])     st.pauseEndEpoch     = [d[@"pauseEndEpoch"] doubleValue];
-    if (d[@"phaseDescription"])  st.phaseDescription  = d[@"phaseDescription"];
-    if (d[@"daemonVersion"])     st.daemonVersion     = d[@"daemonVersion"];
+    if (d[@"statAcceptedCount"])    st.statAcceptedCount    = [d[@"statAcceptedCount"] integerValue];
+    if (d[@"statRejectedCount"])    st.statRejectedCount    = [d[@"statRejectedCount"] integerValue];
+    if (d[@"navPickupLocked"])      st.navPickupLocked      = [d[@"navPickupLocked"] boolValue];
+    if (d[@"navDropoffLocked"])     st.navDropoffLocked     = [d[@"navDropoffLocked"] boolValue];
+    if (d[@"pauseEndEpoch"])        st.pauseEndEpoch        = [d[@"pauseEndEpoch"] doubleValue];
+    if (d[@"workerHeartbeatEpoch"]) st.workerHeartbeatEpoch = [d[@"workerHeartbeatEpoch"] doubleValue];
+    if (d[@"phaseDescription"])     st.phaseDescription     = d[@"phaseDescription"];
+    if (d[@"daemonVersion"])        st.daemonVersion        = d[@"daemonVersion"];
     return st;
 }
 
 - (void)saveStateAndNotify:(BOOL)sendNotify {
     NSDictionary *d = @{
-        @"statAcceptedCount": @(self.statAcceptedCount),
-        @"statRejectedCount": @(self.statRejectedCount),
-        @"navPickupLocked":   @(self.navPickupLocked),
-        @"navDropoffLocked":  @(self.navDropoffLocked),
-        @"pauseEndEpoch":     @(self.pauseEndEpoch),
-        @"phaseDescription":  self.phaseDescription ?: @"",
-        @"daemonVersion":     self.daemonVersion ?: @""
+        @"statAcceptedCount":    @(self.statAcceptedCount),
+        @"statRejectedCount":    @(self.statRejectedCount),
+        @"navPickupLocked":      @(self.navPickupLocked),
+        @"navDropoffLocked":     @(self.navDropoffLocked),
+        @"pauseEndEpoch":        @(self.pauseEndEpoch),
+        @"workerHeartbeatEpoch": @(self.workerHeartbeatEpoch),
+        @"phaseDescription":     self.phaseDescription ?: @"",
+        @"daemonVersion":        self.daemonVersion ?: @""
     };
     [d writeToFile:kRuntimeStatePath atomically:YES];
     chmod([kRuntimeStatePath fileSystemRepresentation], 0666);
@@ -77,6 +82,8 @@ extern char **environ;
         _autoAcceptBike         = YES;
         _rejectAllFood          = NO;
         _minFoodPriceVND        = 25000;
+        _smartCoolMode          = YES;
+        _tapVerifyRetries       = 2;
         _hapticEnabled          = YES;
         _dryRunMode             = NO;
 
@@ -134,7 +141,6 @@ extern char **environ;
     FilterConfig *cfg = [[FilterConfig alloc] init];
     NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:kConfigPlistPath];
     if (!dict) {
-        // Attempt auto-detection of driver app on first load
         InstalledAppInfo *detected = autoDetectDriverApp();
         if (detected) {
             cfg.driverAppBundleID    = detected.bundleID;
@@ -148,6 +154,8 @@ extern char **environ;
     if (dict[@"autoAcceptBike"])         cfg.autoAcceptBike         = [dict[@"autoAcceptBike"] boolValue];
     if (dict[@"rejectAllFood"])          cfg.rejectAllFood          = [dict[@"rejectAllFood"] boolValue];
     if (dict[@"minFoodPriceVND"])        cfg.minFoodPriceVND        = [dict[@"minFoodPriceVND"] integerValue];
+    if (dict[@"smartCoolMode"])          cfg.smartCoolMode          = [dict[@"smartCoolMode"] boolValue];
+    if (dict[@"tapVerifyRetries"])       cfg.tapVerifyRetries       = [dict[@"tapVerifyRetries"] integerValue];
     if (dict[@"hapticEnabled"])          cfg.hapticEnabled          = [dict[@"hapticEnabled"] boolValue];
     if (dict[@"dryRunMode"])             cfg.dryRunMode             = [dict[@"dryRunMode"] boolValue];
 
@@ -213,6 +221,8 @@ extern char **environ;
     if (cfg.pauseDurationSec < 20) cfg.pauseDurationSec = 20;
     if (cfg.navTapCount < 1) cfg.navTapCount = 1;
     if (cfg.navTapCount > 5) cfg.navTapCount = 5;
+    if (cfg.tapVerifyRetries < 0) cfg.tapVerifyRetries = 0;
+    if (cfg.tapVerifyRetries > 4) cfg.tapVerifyRetries = 4;
 
     return cfg;
 }
@@ -223,6 +233,8 @@ extern char **environ;
         @"autoAcceptBike":         @(self.autoAcceptBike),
         @"rejectAllFood":          @(self.rejectAllFood),
         @"minFoodPriceVND":        @(self.minFoodPriceVND),
+        @"smartCoolMode":          @(self.smartCoolMode),
+        @"tapVerifyRetries":       @(self.tapVerifyRetries),
         @"hapticEnabled":          @(self.hapticEnabled),
         @"dryRunMode":             @(self.dryRunMode),
 
@@ -282,6 +294,89 @@ extern char **environ;
 }
 
 @end
+
+#pragma mark - Frontmost App, Screen Lock & Memory Footprint Helpers
+
+NSString *currentFrontmostAppBundleID(void) {
+    static SBSCopyFrontmostApp_f sFnFrontApp = NULL;
+    static dispatch_once_t sOnce;
+    dispatch_once(&sOnce, ^{
+        void *sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
+        if (sbs) {
+            sFnFrontApp = (SBSCopyFrontmostApp_f)dlsym(sbs, "SBSCopyFrontmostApplicationDisplayIdentifier");
+        }
+        dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
+    });
+
+    if (sFnFrontApp) {
+        CFStringRef cfBid = sFnFrontApp();
+        if (cfBid) {
+            NSString *bid = CFBridgingRelease(cfBid);
+            if (bid.length > 0) {
+                return bid;
+            }
+        }
+    }
+
+    // Fallback via FBSDisplayLayoutMonitor singleton on iOS 15 / iOS 16
+    static id sLayoutMonitor = nil;
+    static dispatch_once_t sMonOnce;
+    dispatch_once(&sMonOnce, ^{
+        Class monCls = NSClassFromString(@"FBSDisplayLayoutMonitor");
+        SEL sharedSel = NSSelectorFromString(@"sharedMonitorForDisplayType:");
+        if (monCls && [monCls respondsToSelector:sharedSel]) {
+            sLayoutMonitor = ((id (*)(id, SEL, NSInteger))objc_msgSend)(monCls, sharedSel, 0);
+        }
+    });
+
+    if (sLayoutMonitor) {
+        @try {
+            id layout = [sLayoutMonitor valueForKey:@"currentLayout"];
+            NSArray *elements = layout ? [layout valueForKey:@"elements"] : nil;
+            NSString *topBundle = nil;
+            NSInteger topLevel = NSIntegerMin;
+            for (id elem in elements) {
+                NSString *bid = [elem valueForKey:@"bundleIdentifier"];
+                if (!bid || bid.length == 0) continue;
+                NSNumber *lvlNum = [elem valueForKey:@"level"];
+                NSInteger lvl = lvlNum ? [lvlNum integerValue] : 0;
+                if (lvl >= topLevel) {
+                    topLevel = lvl;
+                    topBundle = bid;
+                }
+            }
+            if (topBundle.length > 0) {
+                return topBundle;
+            }
+        } @catch (NSException *ex) {}
+    }
+
+    return nil;
+}
+
+BOOL isDeviceScreenLocked(void) {
+    static int sLockToken = -1;
+    static dispatch_once_t sLockOnce;
+    dispatch_once(&sLockOnce, ^{
+        notify_register_check("com.apple.springboard.lockstate", &sLockToken);
+    });
+    if (sLockToken == -1) return NO;
+    uint64_t state64 = 0;
+    if (notify_get_state(sLockToken, &state64) == NOTIFY_STATUS_OK) {
+        return (state64 != 0);
+    }
+    return NO;
+}
+
+uint64_t currentProcessFootprintMB(void) {
+    task_vm_info_data_t vmInfo;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    kern_return_t kr = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vmInfo, &count);
+    if (kr == KERN_SUCCESS) {
+        return (uint64_t)(vmInfo.phys_footprint / (1024ULL * 1024ULL));
+    }
+    return 0;
+}
 
 #pragma mark - LaunchServices App Discovery, Kill & Relaunch
 
@@ -399,7 +494,7 @@ BOOL launchAppByBundleID(NSString *bundleID) {
     return NO;
 }
 
-#pragma mark - TrollStore Root Spawner & Daemon Control
+#pragma mark - TrollStore Root Spawner & Dual-Process Daemon Control
 
 int spawnRoot(NSString *path, NSArray<NSString *> *args) {
     NSMutableArray *fullArgs = [NSMutableArray arrayWithObject:path];
@@ -436,8 +531,8 @@ int spawnRoot(NSString *path, NSArray<NSString *> *args) {
     return (ret == 0) ? (int)pid : -ret;
 }
 
-pid_t getRunningDaemonPID(void) {
-    NSString *pidStr = [NSString stringWithContentsOfFile:kDaemonPidPath encoding:NSUTF8StringEncoding error:nil];
+static pid_t readAlivePidFromFile(NSString *filePath) {
+    NSString *pidStr = [NSString stringWithContentsOfFile:filePath encoding:NSUTF8StringEncoding error:nil];
     if (!pidStr) return 0;
     pid_t pid = (pid_t)[pidStr intValue];
     if (pid <= 1) return 0;
@@ -447,34 +542,61 @@ pid_t getRunningDaemonPID(void) {
     return 0;
 }
 
+pid_t getRunningDaemonPID(void) {
+    return readAlivePidFromFile(kDaemonPidPath);
+}
+
+pid_t getRunningWatchdogPID(void) {
+    return readAlivePidFromFile(kWatchdogPidPath);
+}
+
 BOOL startFilterDaemonIfNeeded(void) {
-    pid_t existing = getRunningDaemonPID();
-    if (existing > 0) {
+    pid_t existingWorker   = getRunningDaemonPID();
+    pid_t existingWatchdog = getRunningWatchdogPID();
+
+    if (existingWorker > 0 && existingWatchdog > 0) {
         RuntimeDaemonState *st = [RuntimeDaemonState loadState];
-        if (kill(existing, 0) == 0 && [st.daemonVersion isEqualToString:kCurrentDaemonVersion]) {
+        if ([st.daemonVersion isEqualToString:kCurrentDaemonVersion]) {
             notify_post(kNotifyReloadConfig);
             return YES;
         }
+    }
+
+    if (existingWorker > 0 || existingWatchdog > 0) {
         stopFilterDaemon();
     }
+
     NSString *daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
     chmod([daemonPath fileSystemRepresentation], 0755);
-    int res = spawnRoot(daemonPath, @[@"--daemon"]);
+    int res = spawnRoot(daemonPath, @[@"--watchdog"]);
     if (res > 0) {
-        usleep(250000);
-        return (getRunningDaemonPID() > 0);
+        for (int i = 0; i < 10; i++) {
+            usleep(60000);
+            if (getRunningDaemonPID() > 0 || getRunningWatchdogPID() > 0) {
+                return YES;
+            }
+        }
+        return YES;
     }
-    appendDaemonLog(@"[LỖI] Không kích được pind (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+    appendDaemonLog(@"[LỖI] Không kích được pind v4.0 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
     return NO;
 }
 
 void stopFilterDaemon(void) {
     notify_post(kNotifyStopDaemon);
-    usleep(150000);
-    pid_t pid = getRunningDaemonPID();
-    if (pid > 0) {
-        kill(pid, SIGTERM);
+    usleep(180000);
+
+    pid_t wdPid = getRunningWatchdogPID();
+    pid_t wkPid = getRunningDaemonPID();
+    if (wdPid > 1) {
+        kill(wdPid, SIGTERM);
     }
+    if (wkPid > 1) {
+        kill(wkPid, SIGTERM);
+    }
+    usleep(80000);
+
+    unlink([kWatchdogPidPath fileSystemRepresentation]);
     unlink([kDaemonPidPath fileSystemRepresentation]);
 }
 

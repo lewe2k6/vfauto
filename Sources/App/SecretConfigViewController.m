@@ -17,6 +17,7 @@
 
     // Card 1: Core Switches & Green Food Min Price
     UISwitch *_swMaster;
+    UISwitch *_swSmartCool;
     UISwitch *_swAutoBike;
     UISwitch *_swRejectAllFood;
     UILabel  *_lblMinFoodPrice;
@@ -65,6 +66,7 @@
     UILabel *_lblManNavY;      UISlider *_slManNavY;
 
     // Card 5: Timing & Humanizer + Live Log
+    UILabel *_lblTapRetries;   UISlider *_slTapRetries;
     UILabel *_lblScanMs;       UISlider *_slScanMs;
     UILabel *_lblAccMinMs;     UISlider *_slAccMinMs;
     UILabel *_lblAccMaxMs;     UISlider *_slAccMaxMs;
@@ -82,7 +84,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v3.3";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.0";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -330,16 +332,21 @@
 
     // --- CARD 1: FILTER & GREEN FOOD MIN PRICE ---
     UIStackView *sec1 = nil;
-    [self makeCardWithTitle:@"1. Lọc Đơn & Ngưỡng Giá Green Food" addTo:_stackView outBody:&sec1];
+    [self makeCardWithTitle:@"1. Lọc Đơn, Hạ Nhiệt & Ngưỡng Giá Food" addTo:_stackView outBody:&sec1];
 
     _swMaster = [self addSwitchRowTo:sec1
-                               title:@"Chạy Lõi Auto Ngầm (Master)"
-                            subtitle:@"Bật xong vuốt tắt app này lõi vẫn chạy 24/7"
+                               title:@"Chạy Lõi Auto Bất Tử (Master)"
+                            subtitle:@"Watchdog 2 tầng tự hồi sinh ngầm 24/7 trên iPhone 8 2GB"
                               action:@selector(masterSwitchChanged:)];
 
+    _swSmartCool = [self addSwitchRowTo:sec1
+                                  title:@"Chế độ Siêu Mát (Smart-Sleep Hạ Nhiệt)"
+                               subtitle:@"Ngắt 100% quét khi đang mở Google Maps/khóa máy & chống gọi AI thừa"
+                                 action:@selector(generalControlChanged)];
+
     _swAutoBike = [self addSwitchRowTo:sec1
-                                 title:@"Tự động [Nhận] chuyến Bike / Khác"
-                              subtitle:@"Đớp ngay các đơn không phải Green Food"
+                                 title:@"Tự động [Nhận] Bike, Express, Express 2H..."
+                              subtitle:@"Đớp trọn mọi đơn chở khách & giao hàng (chỉ lọc riêng Green Food)"
                                 action:@selector(generalControlChanged)];
 
     _swRejectAllFood = [self addSwitchRowTo:sec1
@@ -492,8 +499,9 @@
 
     // --- CARD 5: TIMING, JITTER & LIVE LOG ---
     UIStackView *sec5 = nil;
-    [self makeCardWithTitle:@"5. Random Delay, Jitter & Nhật Ký Trực Tiếp" addTo:_stackView outBody:&sec5];
+    [self makeCardWithTitle:@"5. Chạm Bồi Kiểm Chứng, Delay & Nhật Ký" addTo:_stackView outBody:&sec5];
 
+    _slTapRetries = [self addSliderRowTo:sec5 min:0.0f max:4.0f outLabel:&_lblTapRetries action:@selector(sliderChanged)];
     _slScanMs   = [self addSliderRowTo:sec5 min:150.0f  max:1500.0f outLabel:&_lblScanMs action:@selector(sliderChanged)];
     _slAccMinMs = [self addSliderRowTo:sec5 min:80.0f   max:2000.0f outLabel:&_lblAccMinMs action:@selector(sliderChanged)];
     _slAccMaxMs = [self addSliderRowTo:sec5 min:120.0f  max:3000.0f outLabel:&_lblAccMaxMs action:@selector(sliderChanged)];
@@ -531,6 +539,7 @@
 
 - (void)syncUIFromConfig {
     _swMaster.on        = _cfg.masterEnabled;
+    _swSmartCool.on     = _cfg.smartCoolMode;
     _swAutoBike.on      = _cfg.autoAcceptBike;
     _swRejectAllFood.on = _cfg.rejectAllFood;
     _swHaptic.on        = _cfg.hapticEnabled;
@@ -570,6 +579,7 @@
     _slManNavX.value     = (float)_cfg.manualNavX;
     _slManNavY.value     = (float)_cfg.manualNavY;
 
+    _slTapRetries.value = (float)_cfg.tapVerifyRetries;
     _slScanMs.value   = (float)_cfg.scanIntervalMs;
     _slAccMinMs.value = (float)_cfg.acceptDelayMinMs;
     _slAccMaxMs.value = (float)_cfg.acceptDelayMaxMs;
@@ -627,6 +637,7 @@
     _lblManOfflineX.text = [NSString stringWithFormat:@"3. Tọa độ X nút tròn [⏻ Tắt trực tuyến]: %.0f pt", _cfg.manualOfflineX];
     _lblManOfflineY.text = [NSString stringWithFormat:@"3. Tọa độ Y nút tròn [⏻ Tắt trực tuyến]: %.0f pt", _cfg.manualOfflineY];
 
+    _lblTapRetries.text = [NSString stringWithFormat:@"Số lần chạm bồi kiểm chứng chống trượt đơn: %ld lần", (long)_cfg.tapVerifyRetries];
     _lblScanMs.text   = [NSString stringWithFormat:@"Chu kỳ quét màn hình: %ld ms", (long)_cfg.scanIntervalMs];
     _lblAccMinMs.text = [NSString stringWithFormat:@"Delay bấm [Nhận] Min: %ld ms", (long)_cfg.acceptDelayMinMs];
     _lblAccMaxMs.text = [NSString stringWithFormat:@"Delay bấm [Nhận] Max: %ld ms", (long)_cfg.acceptDelayMaxMs];
@@ -658,6 +669,7 @@
 }
 
 - (void)generalControlChanged {
+    _cfg.smartCoolMode          = _swSmartCool.isOn;
     _cfg.autoAcceptBike         = _swAutoBike.isOn;
     _cfg.rejectAllFood          = _swRejectAllFood.isOn;
     _cfg.hapticEnabled          = _swHaptic.isOn;
@@ -701,6 +713,7 @@
     _cfg.manualNavX     = roundf(_slManNavX.value);
     _cfg.manualNavY     = roundf(_slManNavY.value);
 
+    _cfg.tapVerifyRetries = (NSInteger)roundf(_slTapRetries.value);
     _cfg.scanIntervalMs   = (NSInteger)(roundf(_slScanMs.value / 10.0f) * 10);
     _cfg.acceptDelayMinMs = (NSInteger)(roundf(_slAccMinMs.value / 10.0f) * 10);
     _cfg.acceptDelayMaxMs = MAX(_cfg.acceptDelayMinMs + 30, (NSInteger)(roundf(_slAccMaxMs.value / 10.0f) * 10));
@@ -850,12 +863,15 @@
 }
 
 - (void)refreshStatusAndLogs {
-    pid_t pid = getRunningDaemonPID();
+    pid_t wkPid = getRunningDaemonPID();
+    pid_t wdPid = getRunningWatchdogPID();
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
 
-    if (pid > 0 && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG CHẠY NGẦM (PID: %d)%@",
-                                   pid, _cfg.dryRunMode ? @" [CHẠY THỬ]" : @""];
+    if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.0 (WD:%d | WK:%d)%@%@",
+                                   wdPid, wkPid,
+                                   _cfg.smartCoolMode ? @" [MÁT]" : @"",
+                                   _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";
@@ -863,7 +879,7 @@
     }
 
     double now = [[NSDate date] timeIntervalSince1970];
-    if (st.pauseEndEpoch > now && pid > 0 && _cfg.masterEnabled) {
+    if (st.pauseEndEpoch > now && (wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
         int rem = (int)ceil(st.pauseEndEpoch - now);
         _phaseLabel.text = [NSString stringWithFormat:@"⏳ ĐANG NGHỈ XẢ ĐƠN FOOD — Tự bật lại sau: %02d:%02d", rem / 60, rem % 60];
         _skipPauseBtn.hidden = NO;

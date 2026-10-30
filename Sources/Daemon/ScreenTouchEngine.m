@@ -48,16 +48,25 @@ typedef void (*IOHIDEventSetIntegerValue_f)(IOHIDEventRef event, uint32_t field,
 typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, IOHIDFloat value);
 
 // Exact IOKitSPI constants verified for iOS 15 / iOS 16 (STHIDEventGenerator)
-#define kIOHIDDigitizerTransducerTypeHand           3
-#define kIOHIDDigitizerEventRange                   (1 << 0)
-#define kIOHIDDigitizerEventTouch                   (1 << 1)
-#define kIOHIDDigitizerEventPosition                (1 << 2)
-#define kIOHIDDigitizerEventIdentity                (1 << 5)
+#define kIOHIDDigitizerTransducerTypeHand            3
+#define kIOHIDDigitizerEventRange                    (1 << 0)
+#define kIOHIDDigitizerEventTouch                    (1 << 1)
+#define kIOHIDDigitizerEventPosition                 (1 << 2)
+#define kIOHIDDigitizerEventIdentity                 (1 << 5)
 
-#define kIOHIDEventFieldIsBuiltIn                   4
-#define kIOHIDEventFieldDigitizerMajorRadius        0xB0014
-#define kIOHIDEventFieldDigitizerMinorRadius        0xB0015
+#define kIOHIDEventFieldIsBuiltIn                    4
+#define kIOHIDEventFieldDigitizerMajorRadius         0xB0014
+#define kIOHIDEventFieldDigitizerMinorRadius         0xB0015
 #define kIOHIDEventFieldDigitizerIsDisplayIntegrated 0xB0019
+
+#define kGridDim 16
+#define kGridCount (kGridDim * kGridDim)
+
+typedef NS_ENUM(NSInteger, TouchPhaseMode) {
+    TouchPhaseDown = 0,
+    TouchPhaseMove = 1,
+    TouchPhaseUp   = 2
+};
 
 @implementation ScreenTouchEngine {
     IOSurfaceCreate_f _fnSurfaceCreate;
@@ -86,6 +95,18 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
     IOSurfaceRef _srcSurface;
     IOSurfaceRef _dstSurface;
     IOSurfaceAcceleratorRef _accelerator;
+
+    int _pixelW;
+    int _pixelH;
+    size_t _bytesPerRow;
+
+    BOOL _hasAnalyzedBaseline;
+    uint8_t _currentR[kGridCount];
+    uint8_t _currentG[kGridCount];
+    uint8_t _currentB[kGridCount];
+    uint8_t _analyzedR[kGridCount];
+    uint8_t _analyzedG[kGridCount];
+    uint8_t _analyzedB[kGridCount];
 }
 
 + (instancetype)sharedEngine {
@@ -100,11 +121,13 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _logicalScreenSize    = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
-        _screenScale          = 2.0;
-        _lastCaptureHadPixels = NO;
+        _logicalScreenSize            = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
+        _screenScale                  = 2.0;
+        _lastCaptureHadPixels         = NO;
+        _lastFrameLikelyHasOrderPopup = NO;
+        _lastFrameChangedSamples      = kGridCount;
+        _hasAnalyzedBaseline          = NO;
 
-        // Detect exact physical pixel resolution via _unjailedReferenceBoundsInPixels or CADisplay
         CGSize pxSize = CGSizeZero;
         SEL unjailedSel = NSSelectorFromString(@"_unjailedReferenceBoundsInPixels");
         if ([[UIScreen mainScreen] respondsToSelector:unjailedSel]) {
@@ -195,17 +218,17 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
 - (void)setupCaptureSurfaces {
     if (!_fnSurfaceCreate) return;
 
-    int pixelW = (int)round(_logicalScreenSize.width * _screenScale);
-    int pixelH = (int)round(_logicalScreenSize.height * _screenScale);
+    _pixelW = (int)round(_logicalScreenSize.width * _screenScale);
+    _pixelH = (int)round(_logicalScreenSize.height * _screenScale);
     int bytesPerElement = 4;
-    size_t rawRow = (size_t)(pixelW * bytesPerElement);
-    size_t bytesPerRow = _fnSurfaceAlign
+    size_t rawRow = (size_t)(_pixelW * bytesPerElement);
+    _bytesPerRow = _fnSurfaceAlign
         ? _fnSurfaceAlign(CFSTR("IOSurfaceBytesPerRow"), rawRow)
         : ((rawRow + 63) & ~((size_t)63));
-    if (bytesPerRow < rawRow) {
-        bytesPerRow = ((rawRow + 63) & ~((size_t)63));
+    if (_bytesPerRow < rawRow) {
+        _bytesPerRow = ((rawRow + 63) & ~((size_t)63));
     }
-    size_t allocSize = bytesPerRow * (size_t)pixelH;
+    size_t allocSize = _bytesPerRow * (size_t)_pixelH;
 
     CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CFPropertyListRef csProp = cs ? CGColorSpaceCopyPropertyList(cs) : NULL;
@@ -213,10 +236,10 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
 
     NSMutableDictionary *props = [@{
         @"IOSurfaceBytesPerElement": @(bytesPerElement),
-        @"IOSurfaceBytesPerRow":     @(bytesPerRow),
-        @"IOSurfaceWidth":           @(pixelW),
-        @"IOSurfaceHeight":          @(pixelH),
-        @"IOSurfacePixelFormat":     @(0x42475241), // 'BGRA' / 'ARGB'
+        @"IOSurfaceBytesPerRow":     @(_bytesPerRow),
+        @"IOSurfaceWidth":           @(_pixelW),
+        @"IOSurfaceHeight":          @(_pixelH),
+        @"IOSurfacePixelFormat":     @(0x42475241), // 'BGRA'
         @"IOSurfaceAllocSize":       @(allocSize)
     } mutableCopy];
 
@@ -232,54 +255,135 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
     }
 }
 
-- (BOOL)surfaceHasNonZeroContent:(IOSurfaceRef)surface {
+- (BOOL)inspectSurfacePixelsAndSensors:(IOSurfaceRef)surface updateMetrics:(BOOL)updateMetrics {
     if (!surface || !_fnSurfaceLock || !_fnSurfaceUnlock || !_fnSurfaceBaseAddr || !_fnSurfaceAllocSize) return NO;
+
     _fnSurfaceLock(surface, kIOSurfaceLockReadOnlyFlag, NULL);
-    const uint32_t *pixels = (const uint32_t *)_fnSurfaceBaseAddr(surface);
-    size_t totalBytes = _fnSurfaceAllocSize(surface);
-    size_t count = totalBytes / sizeof(uint32_t);
+    const uint8_t *base = (const uint8_t *)_fnSurfaceBaseAddr(surface);
+    size_t totalBytes   = _fnSurfaceAllocSize(surface);
+
+    if (!base || totalBytes < _bytesPerRow * (size_t)_pixelH || _pixelW < 100 || _pixelH < 100) {
+        _fnSurfaceUnlock(surface, kIOSurfaceLockReadOnlyFlag, NULL);
+        return NO;
+    }
+
     BOOL nonZero = NO;
-    if (pixels && count > 1000) {
-        size_t step = count / 97;
-        if (step == 0) step = 1;
-        for (size_t i = step; i < count; i += step) {
-            if ((pixels[i] & 0x00FFFFFF) != 0) {
-                nonZero = YES;
-                break;
-            }
+    const uint32_t *u32 = (const uint32_t *)base;
+    size_t count = totalBytes / sizeof(uint32_t);
+    size_t step = count / 97;
+    if (step == 0) step = 1;
+    for (size_t i = step; i < count; i += step) {
+        if ((u32[i] & 0x00FFFFFF) != 0) {
+            nonZero = YES;
+            break;
         }
     }
+
+    if (nonZero && updateMetrics) {
+        // 1. Sample 16x16 UI grid ( focusing on y = 25%..97% where Xanh SM cards/buttons live so map shimmer is minimized )
+        int idx = 0;
+        NSInteger changed = 0;
+        for (int gy = 0; gy < kGridDim; gy++) {
+            // Focus y from 6% to 97%
+            int py = (int)((0.06 + (0.91 * (double)gy / (double)(kGridDim - 1))) * (double)(_pixelH - 1));
+            const uint8_t *row = base + (size_t)py * _bytesPerRow;
+            for (int gx = 0; gx < kGridDim; gx++) {
+                int px = (int)((0.08 + (0.84 * (double)gx / (double)(kGridDim - 1))) * (double)(_pixelW - 1));
+                uint32_t bgra = *((const uint32_t *)(row + (size_t)px * 4));
+                uint8_t b = bgra & 0xFF;
+                uint8_t g = (bgra >> 8) & 0xFF;
+                uint8_t r = (bgra >> 16) & 0xFF;
+
+                _currentR[idx] = r;
+                _currentG[idx] = g;
+                _currentB[idx] = b;
+
+                // Weight UI card & header zones (y < 22% or y > 52%) strictly; ignore minor GPS map tile drift in middle
+                int thresh = (gy >= 4 && gy <= 8) ? 38 : 22;
+                if (!_hasAnalyzedBaseline ||
+                    abs((int)r - (int)_analyzedR[idx]) >= thresh ||
+                    abs((int)g - (int)_analyzedG[idx]) >= thresh ||
+                    abs((int)b - (int)_analyzedB[idx]) >= thresh) {
+                    changed++;
+                }
+                idx++;
+            }
+        }
+        _lastFrameChangedSamples = changed;
+
+        // 2. Fast Order Popup Sensor (0.01ms): Teal 'Nhận chuyến' button at y ~ 95.8% + White card at y ~ 15.0%
+        int yAccept = (int)(0.958 * (double)(_pixelH - 1));
+        int yFareCard = (int)(0.155 * (double)(_pixelH - 1));
+        int yMidCard  = (int)(0.340 * (double)(_pixelH - 1));
+        const uint8_t *rowAccept = base + (size_t)yAccept * _bytesPerRow;
+        const uint8_t *rowFare   = base + (size_t)yFareCard * _bytesPerRow;
+        const uint8_t *rowMid    = base + (size_t)yMidCard * _bytesPerRow;
+
+        int tealHits  = 0;
+        int whiteHits = 0;
+        for (int s = 0; s < 12; s++) {
+            int px = (int)((0.16 + (0.68 * (double)s / 11.0)) * (double)(_pixelW - 1));
+            uint32_t pAcc = *((const uint32_t *)(rowAccept + (size_t)px * 4));
+            uint8_t bA = pAcc & 0xFF, gA = (pAcc >> 8) & 0xFF, rA = (pAcc >> 16) & 0xFF;
+            if (gA >= 110 && bA >= 110 && (int)gA - (int)rA >= 45 && (int)bA - (int)rA >= 45) {
+                tealHits++;
+            }
+
+            uint32_t pFare = *((const uint32_t *)(rowFare + (size_t)px * 4));
+            uint8_t bF = pFare & 0xFF, gF = (pFare >> 8) & 0xFF, rF = (pFare >> 16) & 0xFF;
+            uint32_t pMid = *((const uint32_t *)(rowMid + (size_t)px * 4));
+            uint8_t bM = pMid & 0xFF, gM = (pMid >> 8) & 0xFF, rM = (pMid >> 16) & 0xFF;
+            if ((rF >= 232 && gF >= 232 && bF >= 232) || (rM >= 235 && gM >= 235 && bM >= 235)) {
+                whiteHits++;
+            }
+        }
+        _lastFrameLikelyHasOrderPopup = (tealHits >= 5 && whiteHits >= 6);
+    }
+
     _fnSurfaceUnlock(surface, kIOSurfaceLockReadOnlyFlag, NULL);
     return nonZero;
+}
+
+- (void)markCurrentFrameAnalyzed {
+    memcpy(_analyzedR, _currentR, kGridCount);
+    memcpy(_analyzedG, _currentG, kGridCount);
+    memcpy(_analyzedB, _currentB, kGridCount);
+    _hasAnalyzedBaseline = YES;
+}
+
+- (void)invalidateAnalyzedBaseline {
+    _hasAnalyzedBaseline = NO;
+    _lastFrameChangedSamples = kGridCount;
 }
 
 - (CIImage *)captureScreenCIImage {
     if (!_fnRenderDisplay || !_srcSurface) {
         _lastCaptureHadPixels = NO;
+        _lastFrameLikelyHasOrderPopup = NO;
         return nil;
     }
 
-    // 1. Primary path (exact TrollVNC iOS 16 pipeline): CARenderServerRenderDisplay -> IOSurfaceAcceleratorTransferSurface
     _fnRenderDisplay(0, CFSTR("LCD"), _srcSurface, 0, 0);
 
     IOSurfaceRef activeSurface = _srcSurface;
+    BOOL hasPixels = NO;
+
     if (_accelerator && _fnAccTransfer && _dstSurface) {
         kern_return_t kr = _fnAccTransfer(_accelerator, _srcSurface, _dstSurface, NULL, NULL, NULL, NULL);
-        if (kr == KERN_SUCCESS && [self surfaceHasNonZeroContent:_dstSurface]) {
+        if (kr == KERN_SUCCESS && [self inspectSurfacePixelsAndSensors:_dstSurface updateMetrics:YES]) {
             activeSurface = _dstSurface;
+            hasPixels = YES;
         }
     }
 
-    BOOL hasPixels = [self surfaceHasNonZeroContent:activeSurface];
-    if (!hasPixels && activeSurface != _srcSurface && [self surfaceHasNonZeroContent:_srcSurface]) {
+    if (!hasPixels && [self inspectSurfacePixelsAndSensors:_srcSurface updateMetrics:YES]) {
         activeSurface = _srcSurface;
         hasPixels = YES;
     }
 
-    // Fallback display name if LCD returned empty
     if (!hasPixels) {
         _fnRenderDisplay(0, NULL, _srcSurface, 0, 0);
-        if ([self surfaceHasNonZeroContent:_srcSurface]) {
+        if ([self inspectSurfacePixelsAndSensors:_srcSurface updateMetrics:YES]) {
             activeSurface = _srcSurface;
             hasPixels = YES;
         }
@@ -287,20 +391,23 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
 
     _lastCaptureHadPixels = hasPixels;
     if (!hasPixels) {
+        _lastFrameLikelyHasOrderPopup = NO;
         return nil;
     }
 
     return [CIImage imageWithIOSurface:activeSurface];
 }
 
-- (void)dispatchTouchPhase:(BOOL)isDown normX:(double)nx normY:(double)ny {
+- (void)dispatchTouchMode:(TouchPhaseMode)mode normX:(double)nx normY:(double)ny {
     if (!_hidClient || !_fnCreateDigitizer || !_fnCreateFinger || !_fnAppendEvent || !_fnDispatchEvent) return;
 
     dispatch_sync(_hidQueue, ^{
         uint64_t now = mach_absolute_time();
-        uint32_t eventMask = kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventIdentity;
+        BOOL isDown = (mode != TouchPhaseUp);
+        uint32_t eventMask = (mode == TouchPhaseMove)
+            ? kIOHIDDigitizerEventPosition
+            : (kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventIdentity);
 
-        // Parent Hand collection event (exact STHIDEventGenerator iOS 16 layout)
         IOHIDEventRef parent = self->_fnCreateDigitizer(
             kCFAllocatorDefault,
             now,
@@ -322,7 +429,6 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
             self->_fnSetIntVal(parent, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
         }
 
-        // Child Finger event
         IOHIDEventRef child = self->_fnCreateFinger(
             kCFAllocatorDefault,
             now,
@@ -348,7 +454,6 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
         }
 
         if (self->_fnSetSenderID) {
-            // Verified iOS 15 - iOS 26 digitizer SenderID used by TrollVNC
             self->_fnSetSenderID(parent, 0x8000000817319371ULL);
         }
 
@@ -388,9 +493,9 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
     NSInteger hi = MAX(lo + 5, holdMaxMs);
     uint32_t holdMs = (uint32_t)(lo + arc4random_uniform((uint32_t)(hi - lo + 1)));
 
-    [self dispatchTouchPhase:YES normX:nx normY:ny];
+    [self dispatchTouchMode:TouchPhaseDown normX:nx normY:ny];
     usleep(holdMs * 1000);
-    [self dispatchTouchPhase:NO normX:nx normY:ny];
+    [self dispatchTouchMode:TouchPhaseUp normX:nx normY:ny];
 
     return YES;
 }
@@ -418,6 +523,33 @@ typedef void (*IOHIDEventSetFloatValue_f)(IOHIDEventRef event, uint32_t field, I
         }
     }
     return anyOk;
+}
+
+- (BOOL)performQuickSwipeFromPoint:(CGPoint)startPt
+                           toPoint:(CGPoint)endPt
+                        durationMs:(NSInteger)durationMs {
+    if (!_hidClient || !_fnDispatchEvent) return NO;
+
+    int steps = 6;
+    NSInteger totalMs = MAX(35, durationMs);
+    useconds_t stepUs = (useconds_t)((totalMs * 1000) / steps);
+
+    double sx = fmax(2.0, fmin(_logicalScreenSize.width - 2.0, startPt.x)) / _logicalScreenSize.width;
+    double sy = fmax(2.0, fmin(_logicalScreenSize.height - 2.0, startPt.y)) / _logicalScreenSize.height;
+    double ex = fmax(2.0, fmin(_logicalScreenSize.width - 2.0, endPt.x)) / _logicalScreenSize.width;
+    double ey = fmax(2.0, fmin(_logicalScreenSize.height - 2.0, endPt.y)) / _logicalScreenSize.height;
+
+    [self dispatchTouchMode:TouchPhaseDown normX:sx normY:sy];
+    for (int i = 1; i <= steps; i++) {
+        usleep(stepUs);
+        double t = (double)i / (double)steps;
+        double mx = sx + (ex - sx) * t;
+        double my = sy + (ey - sy) * t;
+        [self dispatchTouchMode:TouchPhaseMove normX:mx normY:my];
+    }
+    usleep(8000);
+    [self dispatchTouchMode:TouchPhaseUp normX:ex normY:ey];
+    return YES;
 }
 
 @end
