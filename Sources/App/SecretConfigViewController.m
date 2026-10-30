@@ -82,7 +82,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v3.2";
+    self.title = @"Tinh Chỉnh Lọc Đơn v3.3";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -93,6 +93,9 @@
     self.navigationItem.rightBarButtonItem = closeItem;
 
     _cfg = [FilterConfig loadFromDisk];
+    if (_cfg.masterEnabled) {
+        startFilterDaemonIfNeeded();
+    }
 
     [self buildScrollLayout];
     [self syncUIFromConfig];

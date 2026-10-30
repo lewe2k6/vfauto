@@ -352,6 +352,7 @@ int main(int argc, char *argv[]) {
         FilterConfig *config = [FilterConfig loadFromDisk];
         RuntimeDaemonState *state = [RuntimeDaemonState loadState];
         state.pauseEndEpoch    = 0.0;
+        state.daemonVersion    = kCurrentDaemonVersion;
         state.phaseDescription = @"Đang trực tuyến / Canh đơn";
         [state saveStateAndNotify:YES];
         gNeedsReload = NO;
@@ -362,7 +363,7 @@ int main(int argc, char *argv[]) {
         CIImage *probeImg = [engine captureScreenCIImage];
         BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
 
-        appendDaemonLog(@"pind v3.2 chạy (PID %d, UID %d, Màn %.0fx%.0f, Quét hình: %@). Giá Food >= %ldđ",
+        appendDaemonLog(@"pind v3.3 chạy (PID %d, UID %d, Màn %.0fx%.0f, Quét hình: %@). Giá Food >= %ldđ",
                         getpid(), getuid(), engine.logicalScreenSize.width, engine.logicalScreenSize.height,
                         screenOk ? @"OK" : @"LỖI ĐEN MÀN",
                         (long)config.minFoodPriceVND);
@@ -411,7 +412,8 @@ int main(int argc, char *argv[]) {
                                                            config:config
                                                   priceRetryCount:priceRetryCount];
 
-                // 1. KIỂM TRA 4 ĐIỀU KIỆN MỞ KHÓA CHỐT ĐIỀU HƯỚNG (RESET VỀ FALSE)
+                // 1. KIỂM TRA 3 ĐIỀU KIỆN MỞ KHÓA CHỐT ĐIỀU HƯỚNG (RESET VỀ FALSE)
+                // (Tuyệt đối KHÔNG reset khi vừa bấm 'Nhận chuyến', tránh lỗi lặp Map khi đớp cuốc nối chuyến giữa đường)
                 if (ana.isPaymentConfirmScreen) {
                     resetBothNavLocks(state, @"Thấy màn 'Xác nhận hoàn thành' -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.isLobbyOnline || ana.isLobbyOffline) {
@@ -454,8 +456,8 @@ int main(int argc, char *argv[]) {
                             if (ok) {
                                 if (isAccept) {
                                     state.statAcceptedCount += 1;
-                                    state.navPickupLocked  = NO;
-                                    state.navDropoffLocked = NO;
+                                    // Giữ nguyên navPickupLocked & navDropoffLocked để nếu là đơn nối chuyến
+                                    // khi chưa xong cuốc hiện tại thì quay về màn cuốc cũ KHÔNG bị tap lại Map!
                                     state.phaseDescription = @"Vừa nhận chuyến mới";
                                 } else {
                                     state.statRejectedCount += 1;

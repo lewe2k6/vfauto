@@ -36,9 +36,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.2-ts
-          name: "Pin & Nhiệt Độ v3.2 Fix Quét Màn & Chạm iOS 16 (TrollStore)"
-          body: "Bản v3.2 chuẩn iOS 16.3.1 iPhone 8: Đã thêm quyền QuartzCore global-capture + IOSurface + nâng trần RAM Jetsam 512MB cho Vision OCR + chuẩn hóa tín hiệu chạm STHIDEventGenerator iOS 16 + Nút Test Quét Màn & Đọc Chữ Sau 4 Giây."
+          tag_name: v3.3-ts
+          name: "Pin & Nhiệt Độ v3.3 Chuẩn Nối Chuyến (TrollStore iOS 16)"
+          body: "Bản v3.3 chuẩn nối chuyến: Đã bỏ reset chốt Điều hướng khi bấm Nhận chuyến (giữ nguyên khóa Map của cuốc đang chở dở khi nổ cuốc nối tiếp), chỉ mở khóa khi tới màn Xác nhận hoàn thành, về Sảnh chờ, hoặc chuyển sang màn Đã đến điểm đón của khách nối tiếp."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

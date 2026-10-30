@@ -30,6 +30,7 @@ extern char **environ;
         _navDropoffLocked  = NO;
         _pauseEndEpoch     = 0.0;
         _phaseDescription  = @"Đang rảnh / Canh đơn";
+        _daemonVersion     = @"";
     }
     return self;
 }
@@ -44,6 +45,7 @@ extern char **environ;
     if (d[@"navDropoffLocked"])  st.navDropoffLocked  = [d[@"navDropoffLocked"] boolValue];
     if (d[@"pauseEndEpoch"])     st.pauseEndEpoch     = [d[@"pauseEndEpoch"] doubleValue];
     if (d[@"phaseDescription"])  st.phaseDescription  = d[@"phaseDescription"];
+    if (d[@"daemonVersion"])     st.daemonVersion     = d[@"daemonVersion"];
     return st;
 }
 
@@ -54,7 +56,8 @@ extern char **environ;
         @"navPickupLocked":   @(self.navPickupLocked),
         @"navDropoffLocked":  @(self.navDropoffLocked),
         @"pauseEndEpoch":     @(self.pauseEndEpoch),
-        @"phaseDescription":  self.phaseDescription ?: @""
+        @"phaseDescription":  self.phaseDescription ?: @"",
+        @"daemonVersion":     self.daemonVersion ?: @""
     };
     [d writeToFile:kRuntimeStatePath atomically:YES];
     chmod([kRuntimeStatePath fileSystemRepresentation], 0666);
@@ -447,11 +450,12 @@ pid_t getRunningDaemonPID(void) {
 BOOL startFilterDaemonIfNeeded(void) {
     pid_t existing = getRunningDaemonPID();
     if (existing > 0) {
-        // If existing daemon runs as mobile (501), kill(existing, 0) == 0; if old v3.1 uid-0 daemon, respawn v3.2
-        if (kill(existing, 0) == 0) {
+        RuntimeDaemonState *st = [RuntimeDaemonState loadState];
+        if (kill(existing, 0) == 0 && [st.daemonVersion isEqualToString:kCurrentDaemonVersion]) {
             notify_post(kNotifyReloadConfig);
             return YES;
         }
+        stopFilterDaemon();
     }
     NSString *daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
     chmod([daemonPath fileSystemRepresentation], 0755);

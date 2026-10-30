@@ -5,6 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
+#define kCurrentDaemonVersion   @"3.3"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
@@ -40,6 +41,7 @@ typedef NS_ENUM(NSInteger, CoordMode) {
 @property (nonatomic, assign) BOOL navDropoffLocked;
 @property (nonatomic, assign) double pauseEndEpoch; // 0 if not pausing
 @property (nonatomic, copy)   NSString *phaseDescription;
+@property (nonatomic, copy)   NSString *daemonVersion;
 
 + (instancetype)loadState;
 - (void)saveStateAndNotify:(BOOL)sendNotify;
