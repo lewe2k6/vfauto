@@ -18,6 +18,8 @@
     NSRegularExpression *_thousandsFareRegex;
     NSRegularExpression *_plainFareRegex;
     NSRegularExpression *_bareThousandsRegex;
+    NSRegularExpression *_nonFoodHeaderRegex;
+    NSRegularExpression *_foodHeaderRegex;
 }
 
 + (instancetype)sharedScanner {
@@ -39,6 +41,12 @@
                                                                     options:NSRegularExpressionCaseInsensitive
                                                                       error:nil];
         _bareThousandsRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b([1-9][0-9]{1,2}000)\\b"
+                                                                        options:0
+                                                                          error:nil];
+        _foodHeaderRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b(green\\s*f[o0]{1,2}d|greenf[o0]{1,2}d|f[o0]{2}d|focd|foad|sm\\s*ngon|smngon|xanh\\s*ngon|do\\s*an)\\b|green\\s*fo"
+                                                                     options:0
+                                                                       error:nil];
+        _nonFoodHeaderRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b(green\\s*bike|greenbike|bike\\s*plus|bike|b1ke|green\\s*express|greenexpress|express|expres|sieu\\s*toc|sieutoc|giao\\s*hang|giaohang)\\b"
                                                                         options:0
                                                                           error:nil];
     }
@@ -114,38 +122,14 @@
     return CGPointMake(baseX + config.acceptOffsetX, baseY + config.acceptOffsetY);
 }
 
-+ (BOOL)headerNormMatchesFood:(NSString *)hNorm {
-    if (!hNorm || hNorm.length == 0) return NO;
-    return ([hNorm containsString:@"food"] ||
-            [hNorm containsString:@"f00d"] ||
-            [hNorm containsString:@"fo0d"] ||
-            [hNorm containsString:@"f0od"] ||
-            [hNorm containsString:@"focd"] ||
-            [hNorm containsString:@"foad"] ||
-            [hNorm containsString:@"green fo"] ||
-            [hNorm containsString:@"sm ngon"] ||
-            [hNorm containsString:@"smngon"] ||
-            [hNorm containsString:@"xanh ngon"] ||
-            [hNorm containsString:@"do an"]);
+- (BOOL)headerNormMatchesFood:(NSString *)hNorm {
+    if (!hNorm || hNorm.length == 0 || !_foodHeaderRegex) return NO;
+    return ([_foodHeaderRegex firstMatchInString:hNorm options:0 range:NSMakeRange(0, hNorm.length)] != nil);
 }
 
-+ (BOOL)headerNormMatchesNonFoodService:(NSString *)hNorm {
-    if (!hNorm || hNorm.length == 0) return NO;
-    return ([hNorm containsString:@"bike"] ||
-            [hNorm containsString:@"b1ke"] ||
-            [hNorm containsString:@"express"] ||
-            [hNorm containsString:@"expres"] ||
-            [hNorm containsString:@"expr"] ||
-            [hNorm containsString:@"2h"] ||
-            [hNorm containsString:@"4h"] ||
-            [hNorm containsString:@"sieu toc"] ||
-            [hNorm containsString:@"sieutoc"] ||
-            [hNorm containsString:@"giao hang"] ||
-            [hNorm containsString:@"giaohang"] ||
-            [hNorm containsString:@"plus"] ||
-            [hNorm containsString:@"car"] ||
-            [hNorm containsString:@"luxury"] ||
-            [hNorm containsString:@"taxi"]);
+- (BOOL)headerNormMatchesNonFoodService:(NSString *)hNorm {
+    if (!hNorm || hNorm.length == 0 || !_nonFoodHeaderRegex) return NO;
+    return ([_nonFoodHeaderRegex firstMatchInString:hNorm options:0 range:NSMakeRange(0, hNorm.length)] != nil);
 }
 
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
@@ -217,6 +201,7 @@
     OCRTextBlock *daDenDiemDonBlk    = nil;
     OCRTextBlock *hoanThanhChuyenBlk = nil;
     OCRTextBlock *confirmOfflineBlk  = nil;
+    OCRTextBlock *rejectConfirmBlk   = nil;
 
     BOOL hasPassengerRoute = NO; // 'điểm đến' hoặc 'Insurance' (đặc quyền của Bike chở người)
     BOOL hasDeliveryRoute  = NO; // 'điểm nhận' hoặc 'điểm giao' (chung cho cả Express & Food)
@@ -234,7 +219,7 @@
             }
         }
         if (!dangTrucTuyenBlk && b.uiCenter.y > screenSize.height * 0.55) {
-            if ([t containsString:@"dang truc tuyen"] || [t containsString:@"truc tuyen"]) {
+            if ([t containsString:@"dang truc tuyen"]) {
                 dangTrucTuyenBlk = b;
             }
         }
@@ -249,6 +234,14 @@
                  [t containsString:@"tat truc tuyen"] || [t containsString:@"ngung nhan"]) &&
                 ![t containsString:@"hoan thanh"]) {
                 confirmOfflineBlk = b;
+            }
+        }
+
+        if (!rejectConfirmBlk && b.uiCenter.y > screenSize.height * 0.38 && b.uiCenter.y < screenSize.height * 0.82) {
+            if ([t isEqualToString:@"tu choi"] ||
+                [t isEqualToString:@"xac nhan tu choi"] ||
+                [t isEqualToString:@"dong y"]) {
+                rejectConfirmBlk = b;
             }
         }
 
@@ -306,21 +299,7 @@
         }
     }
 
-    // 2. Populate Lobby & Payment states
-    res.isLobbyOnline          = (dangTrucTuyenBlk != nil);
-    res.isLobbyOffline         = (moNhanChuyenBlock != nil);
-    res.isPaymentConfirmScreen = (xacNhanHTBlk != nil);
-
-    if (moNhanChuyenBlock && config.coordMode == CoordModeAutoOCRWithOffset) {
-        res.onlineStartPoint = CGPointMake(moNhanChuyenBlock.uiCenter.x + config.onlineOffsetX,
-                                           moNhanChuyenBlock.uiCenter.y + config.onlineOffsetY);
-    }
-    if (confirmOfflineBlk) {
-        res.hasOfflineConfirmPopup = YES;
-        res.confirmPopupPoint = confirmOfflineBlk.uiCenter;
-    }
-
-    // 3. Populate Active Trip states
+    // 2. Populate Active Trip states first so Lobby check never conflicts with an Active Trip
     if (hanhKhachBlk && dieuHuongBlk) {
         res.hasPassengerAndNav = YES;
         res.isPickupStage      = (daDenDiemDonBlk != nil);
@@ -332,6 +311,24 @@
         } else {
             res.navBluePoint = CGPointMake(config.manualNavX, config.manualNavY);
         }
+    }
+
+    // 3. Populate Lobby & Payment states (strictly guarded against active trip / order popup)
+    res.isLobbyOnline          = (dangTrucTuyenBlk != nil && !res.hasPassengerAndNav && !acceptBlock);
+    res.isLobbyOffline         = (moNhanChuyenBlock != nil && !res.hasPassengerAndNav && !acceptBlock);
+    res.isPaymentConfirmScreen = (xacNhanHTBlk != nil);
+
+    if (moNhanChuyenBlock && config.coordMode == CoordModeAutoOCRWithOffset) {
+        res.onlineStartPoint = CGPointMake(moNhanChuyenBlock.uiCenter.x + config.onlineOffsetX,
+                                           moNhanChuyenBlock.uiCenter.y + config.onlineOffsetY);
+    }
+    if (confirmOfflineBlk) {
+        res.hasOfflineConfirmPopup = YES;
+        res.confirmPopupPoint = confirmOfflineBlk.uiCenter;
+    }
+    if (rejectConfirmBlk) {
+        res.hasRejectConfirmPopup = YES;
+        res.rejectConfirmPoint = rejectConfirmBlk.uiCenter;
     }
 
     // 4. Inspect Service Header Bar ROI (strictly above 'Cước phí' / y = 20..92pt on iPhone 8)
@@ -354,16 +351,22 @@
 
     NSMutableArray<NSString *> *headerNormParts = [NSMutableArray array];
     NSMutableArray<NSString *> *headerRawParts  = [NSMutableArray array];
-    OCRTextBlock *primaryHeaderBlk = headerBlocks.firstObject;
+    OCRTextBlock *foodAnchorBlk = nil;
     for (OCRTextBlock *hb in headerBlocks) {
         [headerNormParts addObject:hb.normText];
         [headerRawParts addObject:hb.rawText];
+        if (!foodAnchorBlk && ([self headerNormMatchesFood:hb.normText] || [hb.normText containsString:@"green"])) {
+            foodAnchorBlk = hb;
+        }
+    }
+    if (!foodAnchorBlk) {
+        foodAnchorBlk = headerBlocks.lastObject;
     }
     NSString *joinedHeaderNorm = [headerNormParts componentsJoinedByString:@" "];
     NSString *joinedHeaderRaw  = [headerRawParts componentsJoinedByString:@" "];
 
-    BOOL isHeaderFood    = [OrderScanner headerNormMatchesFood:joinedHeaderNorm];
-    BOOL isHeaderNonFood = (!isHeaderFood && [OrderScanner headerNormMatchesNonFoodService:joinedHeaderNorm]);
+    BOOL isHeaderFood    = [self headerNormMatchesFood:joinedHeaderNorm];
+    BOOL isHeaderNonFood = (!isHeaderFood && [self headerNormMatchesNonFoodService:joinedHeaderNorm]);
 
     // 5. Banner-tolerant Order Popup check:
     // Bottom 'Nhận chuyến' + ANY body/header confirmation marker
@@ -400,7 +403,7 @@
 
             if (config.rejectAllFood) {
                 res.orderAction = OrderActionTapRejectX;
-                res.orderTargetPoint = [self computeClosePointWithHeaderBlock:primaryHeaderBlk
+                res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
                                                                  cuocPhiBlock:cuocPhiBlock
                                                                    screenSize:screenSize
                                                                        config:config];
@@ -415,7 +418,7 @@
                     return res;
                 } else {
                     res.orderAction = OrderActionTapRejectX;
-                    res.orderTargetPoint = [self computeClosePointWithHeaderBlock:primaryHeaderBlk
+                    res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
                                                                      cuocPhiBlock:cuocPhiBlock
                                                                        screenSize:screenSize
                                                                            config:config];
@@ -433,7 +436,7 @@
                                    (long)detectedFare, (long)config.minFoodPriceVND];
             } else {
                 res.orderAction = OrderActionTapRejectX;
-                res.orderTargetPoint = [self computeClosePointWithHeaderBlock:primaryHeaderBlk
+                res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
                                                                  cuocPhiBlock:cuocPhiBlock
                                                                    screenSize:screenSize
                                                                        config:config];

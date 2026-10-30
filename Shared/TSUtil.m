@@ -297,56 +297,147 @@ extern char **environ;
 
 #pragma mark - Frontmost App, Screen Lock & Memory Footprint Helpers
 
-NSString *currentFrontmostAppBundleID(void) {
-    static SBSCopyFrontmostApp_f sFnFrontApp = NULL;
-    static dispatch_once_t sOnce;
-    dispatch_once(&sOnce, ^{
-        void *sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
-        if (sbs) {
-            sFnFrontApp = (SBSCopyFrontmostApp_f)dlsym(sbs, "SBSCopyFrontmostApplicationDisplayIdentifier");
-        }
-        dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
-    });
+static BOOL bundleIDMatchesDriverOrAllowed(NSString *bid, FilterConfig *config) {
+    if (!bid || bid.length == 0) return NO;
+    if (config && config.driverAppBundleID.length > 0 && [bid isEqualToString:config.driverAppBundleID]) {
+        return YES;
+    }
+    NSString *lower = bid.lowercaseString;
+    if ([lower containsString:@"gsm"] ||
+        [lower containsString:@"xanhsm"] ||
+        [lower containsString:@"greensm"] ||
+        [lower containsString:@"vinfast"]) {
+        return YES;
+    }
+    if (config && config.dryRunMode && [bid isEqualToString:@"com.apple.mobileslideshow"]) {
+        return YES;
+    }
+    return NO;
+}
 
-    if (sFnFrontApp) {
-        CFStringRef cfBid = sFnFrontApp();
-        if (cfBid) {
-            NSString *bid = CFBridgingRelease(cfBid);
-            if (bid.length > 0) {
-                return bid;
+NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
+    static id sLayoutMonitor = nil;
+    static id sAppStateMon   = nil;
+    static id sLatestLayout  = nil;
+    static NSLock *sLayoutLock = nil;
+    static dispatch_once_t sOnce;
+
+    dispatch_once(&sOnce, ^{
+        sLayoutLock = [[NSLock alloc] init];
+        dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
+        dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
+
+        // 1. Modern iOS 14 - iOS 18 FrontBoardServices layout monitor
+        Class cfgCls = NSClassFromString(@"FBSDisplayLayoutMonitorConfiguration");
+        Class monCls = NSClassFromString(@"FBSDisplayLayoutMonitor");
+        SEL cfgSel = NSSelectorFromString(@"configurationForDefaultMainDisplayMonitor");
+        SEL monSel = NSSelectorFromString(@"monitorWithConfiguration:");
+
+        if (cfgCls && monCls && [cfgCls respondsToSelector:cfgSel] && [monCls respondsToSelector:monSel]) {
+            @try {
+                id mCfg = ((id (*)(id, SEL))objc_msgSend)(cfgCls, cfgSel);
+                if (mCfg) {
+                    SEL prioSel = NSSelectorFromString(@"setNeedsUserInteractivePriority:");
+                    if ([mCfg respondsToSelector:prioSel]) {
+                        ((void (*)(id, SEL, BOOL))objc_msgSend)(mCfg, prioSel, YES);
+                    }
+                    SEL handlerSel = NSSelectorFromString(@"setTransitionHandler:");
+                    if ([mCfg respondsToSelector:handlerSel]) {
+                        void (^handlerBlock)(id, id) = ^(id mon, id layout) {
+                            if (layout) {
+                                [sLayoutLock lock];
+                                sLatestLayout = layout;
+                                [sLayoutLock unlock];
+                            }
+                        };
+                        ((void (*)(id, SEL, id))objc_msgSend)(mCfg, handlerSel, handlerBlock);
+                    }
+                    sLayoutMonitor = ((id (*)(id, SEL, id))objc_msgSend)(monCls, monSel, mCfg);
+                }
+            } @catch (NSException *ex) {}
+        }
+
+        // Legacy fallback if needed
+        if (!sLayoutMonitor && monCls) {
+            SEL sharedSel = NSSelectorFromString(@"sharedMonitorForDisplayType:");
+            if ([monCls respondsToSelector:sharedSel]) {
+                @try {
+                    sLayoutMonitor = ((id (*)(id, SEL, NSInteger))objc_msgSend)(monCls, sharedSel, 0);
+                } @catch (NSException *ex) {}
             }
         }
-    }
 
-    // Fallback via FBSDisplayLayoutMonitor singleton on iOS 15 / iOS 16
-    static id sLayoutMonitor = nil;
-    static dispatch_once_t sMonOnce;
-    dispatch_once(&sMonOnce, ^{
-        Class monCls = NSClassFromString(@"FBSDisplayLayoutMonitor");
-        SEL sharedSel = NSSelectorFromString(@"sharedMonitorForDisplayType:");
-        if (monCls && [monCls respondsToSelector:sharedSel]) {
-            sLayoutMonitor = ((id (*)(id, SEL, NSInteger))objc_msgSend)(monCls, sharedSel, 0);
+        // 2. BackBoardServices state monitor backup
+        Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
+        if (bksMonCls) {
+            @try {
+                sAppStateMon = [[bksMonCls alloc] init];
+            } @catch (NSException *ex) {}
         }
     });
 
+    // Layer A: Inspect visible windows via FBSDisplayLayoutMonitor
     if (sLayoutMonitor) {
         @try {
             id layout = [sLayoutMonitor valueForKey:@"currentLayout"];
+            if (!layout) {
+                [sLayoutLock lock];
+                layout = sLatestLayout;
+                [sLayoutLock unlock];
+            }
             NSArray *elements = layout ? [layout valueForKey:@"elements"] : nil;
-            NSString *topBundle = nil;
+            NSString *topAppBundle = nil;
             NSInteger topLevel = NSIntegerMin;
+
             for (id elem in elements) {
                 NSString *bid = [elem valueForKey:@"bundleIdentifier"];
                 if (!bid || bid.length == 0) continue;
+
+                // If Xanh SM (or Photos in Dry-Run) is visible anywhere on screen, prioritize it even under a banner!
+                if (bundleIDMatchesDriverOrAllowed(bid, config)) {
+                    return bid;
+                }
+
                 NSNumber *lvlNum = [elem valueForKey:@"level"];
                 NSInteger lvl = lvlNum ? [lvlNum integerValue] : 0;
                 if (lvl >= topLevel) {
                     topLevel = lvl;
-                    topBundle = bid;
+                    topAppBundle = bid;
                 }
             }
-            if (topBundle.length > 0) {
-                return topBundle;
+            if (topAppBundle.length > 0) {
+                return topAppBundle;
+            }
+        } @catch (NSException *ex) {}
+    }
+
+    // Layer B: Direct BackBoardServices state check (8 == BKSApplicationStateForeground)
+    SEL appStateSel = NSSelectorFromString(@"applicationStateForApplication:");
+    if (sAppStateMon && [sAppStateMon respondsToSelector:appStateSel]) {
+        @try {
+            if (config && config.dryRunMode) {
+                unsigned int photoSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    sAppStateMon, appStateSel, @"com.apple.mobileslideshow");
+                if (photoSt == 8) {
+                    return @"com.apple.mobileslideshow";
+                }
+            }
+
+            unsigned int mapsSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                sAppStateMon, appStateSel, @"com.google.Maps");
+            if (mapsSt == 8) {
+                return @"com.google.Maps";
+            }
+
+            if (config && config.driverAppBundleID.length > 0) {
+                unsigned int drvSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    sAppStateMon, appStateSel, config.driverAppBundleID);
+                if (drvSt == 8) {
+                    return config.driverAppBundleID;
+                }
+                if (drvSt == 1 || drvSt == 2 || drvSt == 4) {
+                    return @"com.apple.springboard";
+                }
             }
         } @catch (NSException *ex) {}
     }
@@ -578,7 +669,7 @@ BOOL startFilterDaemonIfNeeded(void) {
         }
         return YES;
     }
-    appendDaemonLog(@"[LỖI] Không kích được pind v4.0 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+    appendDaemonLog(@"[LỖI] Không kích được pind v4.1 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
     return NO;
 }
 
@@ -608,22 +699,33 @@ void appendDaemonLog(NSString *format, ...) {
     NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
 
-    NSDateFormatter *df = [[NSDateFormatter alloc] init];
-    df.dateFormat = @"HH:mm:ss";
-    NSString *line = [NSString stringWithFormat:@"[%@] %@", [df stringFromDate:[NSDate date]], msg];
+    static dispatch_queue_t sLogQueue = nil;
+    static NSDateFormatter *sDateFmt  = nil;
+    static dispatch_once_t sLogOnce;
+    dispatch_once(&sLogOnce, ^{
+        sLogQueue = dispatch_queue_create("com.vn.utility.batterycheck.logq", DISPATCH_QUEUE_SERIAL);
+        sDateFmt  = [[NSDateFormatter alloc] init];
+        sDateFmt.dateFormat = @"HH:mm:ss";
+    });
 
-    NSString *existing = [NSString stringWithContentsOfFile:kDaemonLogPath encoding:NSUTF8StringEncoding error:nil];
-    NSMutableArray<NSString *> *lines = existing ? [[existing componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] mutableCopy] : [NSMutableArray array];
-    [lines removeObject:@""];
-    [lines addObject:line];
+    dispatch_sync(sLogQueue, ^{
+        NSString *line = [NSString stringWithFormat:@"[%@] %@", [sDateFmt stringFromDate:[NSDate date]], msg];
 
-    while (lines.count > 65) {
-        [lines removeObjectAtIndex:0];
-    }
+        NSString *existing = [NSString stringWithContentsOfFile:kDaemonLogPath encoding:NSUTF8StringEncoding error:nil];
+        NSMutableArray<NSString *> *lines = existing
+            ? [[existing componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] mutableCopy]
+            : [NSMutableArray array];
+        [lines removeObject:@""];
+        [lines addObject:line];
 
-    NSString *joined = [lines componentsJoinedByString:@"\n"];
-    [joined writeToFile:kDaemonLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    chmod([kDaemonLogPath fileSystemRepresentation], 0666);
+        while (lines.count > 65) {
+            [lines removeObjectAtIndex:0];
+        }
+
+        NSString *joined = [lines componentsJoinedByString:@"\n"];
+        [joined writeToFile:kDaemonLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        chmod([kDaemonLogPath fileSystemRepresentation], 0666);
+    });
 }
 
 NSString *readDaemonLogs(void) {

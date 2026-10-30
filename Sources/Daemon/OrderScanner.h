@@ -31,10 +31,12 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) BOOL isLobbyOffline;         // 'Mở nhận chuyến'
 @property (nonatomic, assign) BOOL isPaymentConfirmScreen; // 'Xác nhận hoàn thành'
 @property (nonatomic, assign) BOOL hasOfflineConfirmPopup; // Hộp thoại hỏi xác nhận tắt trực tuyến
+@property (nonatomic, assign) BOOL hasRejectConfirmPopup;  // Hộp thoại hỏi xác nhận từ chối chuyến (nếu có)
 
 @property (nonatomic, assign) CGPoint offlinePowerPoint;   // (40, 455)
 @property (nonatomic, assign) CGPoint onlineStartPoint;    // (187, 307) hoặc tâm chữ 'Mở nhận chuyến'
 @property (nonatomic, assign) CGPoint confirmPopupPoint;
+@property (nonatomic, assign) CGPoint rejectConfirmPoint;
 
 // 3. Active Trip Navigation States
 @property (nonatomic, assign) BOOL hasPassengerAndNav;     // Thấy cả 'Hành khách' + 'Điều hướng'

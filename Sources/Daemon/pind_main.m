@@ -420,6 +420,21 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                 config = *ioConfig;
                 gNeedsReload = NO;
             }
+            if (gResetNavRequested) {
+                gResetNavRequested = NO;
+                state.navPickupLocked  = NO;
+                state.navDropoffLocked = NO;
+                state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
+                [state saveStateAndNotify:YES];
+                appendDaemonLog(@"Đã Reset thủ công cả 2 chốt khóa Điều hướng về FALSE.");
+            }
+            if (gResetCntRequested) {
+                gResetCntRequested = NO;
+                state.statAcceptedCount = 0;
+                state.statRejectedCount = 0;
+                state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
+                [state saveStateAndNotify:YES];
+            }
 
             double cur = [[NSDate date] timeIntervalSince1970];
             if (cur - lastHbSave >= 3.0) {
@@ -561,7 +576,7 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.0 Bất Tử + Siêu Mát chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+            appendDaemonLog(@"pind v4.1 Bất Tử + Siêu Mát chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
                             getRunningWatchdogPID(), getpid(),
                             screenOk ? @"OK" : @"LỖI",
                             (long)config.minFoodPriceVND);
@@ -623,7 +638,7 @@ static int runWorkerMain(void) {
                 // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI MÀN HÌNH KHÓA HOẶC ĐANG MỞ GOOGLE MAPS ---
                 if (config.smartCoolMode) {
                     BOOL screenLocked = isDeviceScreenLocked();
-                    NSString *frontBid = screenLocked ? nil : currentFrontmostAppBundleID();
+                    NSString *frontBid = screenLocked ? nil : currentFrontmostAppBundleIDForConfig(config);
                     BOOL canScan = (!screenLocked && isFrontmostAppAllowedForScan(frontBid, config));
 
                     if (!canScan) {
@@ -846,6 +861,19 @@ static int runWorkerMain(void) {
                                                                           screenSize:engine.logicalScreenSize
                                                                               config:config
                                                                      priceRetryCount:2];
+                                if (!isAccept && chkAna.hasRejectConfirmPopup) {
+                                    CGPoint cfmPt = CGPointZero;
+                                    [engine performHumanTapAtPoint:chkAna.rejectConfirmPoint
+                                                      jitterRadius:config.jitterRadiusPt
+                                                         holdMinMs:config.holdMinMs
+                                                         holdMaxMs:config.holdMaxMs
+                                                    outActualPoint:&cfmPt];
+                                    appendDaemonLog(@"Đã bấm xác nhận từ chối đơn Food tại (%.0f, %.0f)", cfmPt.x, cfmPt.y);
+                                    usleep(350000);
+                                    confirmedGone = YES;
+                                    break;
+                                }
+
                                 if (!chkAna.hasOrderPopup) {
                                     confirmedGone = YES;
                                     break;

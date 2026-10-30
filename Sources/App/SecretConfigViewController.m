@@ -84,7 +84,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.0";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.1";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -868,7 +868,7 @@
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.0 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.1 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];

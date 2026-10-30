@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"4.0"
+#define kCurrentDaemonVersion   @"4.1"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
@@ -140,7 +140,7 @@ InstalledAppInfo *autoDetectDriverApp(void);
 BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName);
 BOOL launchAppByBundleID(NSString *bundleID);
 
-NSString *currentFrontmostAppBundleID(void);
+NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config);
 BOOL isDeviceScreenLocked(void);
 uint64_t currentProcessFootprintMB(void);
 

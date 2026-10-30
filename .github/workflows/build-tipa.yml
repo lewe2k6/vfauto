@@ -36,9 +36,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.0-ts
-          name: "Pin & Nhiệt Độ v4.0 Bất Tử + Siêu Mát + Khóa Chặt Food (TrollStore iOS 16)"
-          body: "Bản nâng cấp lớn v4.0: (1) Đớp trọn Bike + Express + Express 2H, chỉ lọc riêng Green Food kèm hất banner thông báo & khóa xác nhận giá 2 khung hình chống nhầm Food 17k; (2) Kiến trúc 2 tầng Watchdog bất tử + chạm bồi kiểm chứng vòng kín chống trượt đơn trên iPhone 8 2GB; (3) Động cơ Smart-Sleep ngắt 100% nhiệt khi đang mở Google Maps/khóa máy."
+          tag_name: v4.1-ts
+          name: "Pin & Nhiệt Độ v4.1 Bản Vá Chuẩn Hạ Nhiệt iOS 16 & Khóa Banner (TrollStore)"
+          body: "Bản vá lỗi tinh gọn v4.1 (không thêm tính năng thừa): (1) Vá dứt điểm dò App tiền cảnh trên iOS 15/16 bằng FBSDisplayLayoutMonitorConfiguration + BKSApplicationStateMonitor để tắt sạch 100% OCR khi đang mở Google Maps; (2) Regex ranh giới từ nghiêm ngặt chặn banner '2h' / 'car' nhận nhầm Food thành Express 2H; (3) Khóa mỏ neo tung độ Y nút [X] chuẩn vào tiêu đề Food & tự bấm xác nhận nếu có hộp thoại hỏi từ chối; (4) Chống ghi đè Reset chốt Map/bộ đếm trong lúc nghỉ 2 phút & bảo vệ luồng ghi Log."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa
