@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <fcntl.h>
+#import <limits.h>
 #import <notify.h>
 #import <signal.h>
 #import <spawn.h>
@@ -13,6 +15,10 @@
 #import "SharedConfig.h"
 #import "ScreenTouchEngine.h"
 #import "OrderScanner.h"
+
+#ifndef POSIX_SPAWN_CLOEXEC_DEFAULT
+#define POSIX_SPAWN_CLOEXEC_DEFAULT 0x4000
+#endif
 
 extern char **environ;
 
@@ -29,22 +35,50 @@ typedef int (*memorystatus_control_f)(uint32_t command, int32_t pid, uint32_t fl
 #define MEMSTAT_CMD_SET_IS_MANAGED       16
 #define MEMSTAT_CMD_SET_IS_FREEZABLE     18
 #define JETSAM_PRIO_CRITICAL             19
+#define JETSAM_PRIO_IMPORTANT            18
 
 #define kExitCodeProactiveRAMTrim        42
+
+static void ignoreBenignDaemonSignals(void) {
+    signal(SIGHUP,  SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGXCPU, SIG_IGN);
+    signal(SIGXFSZ, SIG_IGN);
+}
+
+static pid_t readRawPidValueFromFile(NSString *path) {
+    if (!path) return 0;
+    NSData *d = [NSData dataWithContentsOfFile:path options:NSDataReadingUncached error:nil];
+    if (!d || d.length == 0) return 0;
+    NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+    return s ? (pid_t)[s intValue] : 0;
+}
+
+static void unlinkPidFileIfOwnedByMe(NSString *path) {
+    pid_t owner = readRawPidValueFromFile(path);
+    if (owner == getpid()) {
+        unlink([path fileSystemRepresentation]);
+    }
+}
 
 static void applyCriticalJetsamToPid(pid_t targetPid, int32_t limitMB) {
     memorystatus_control_f fnMemCtl = (memorystatus_control_f)dlsym(RTLD_DEFAULT, "memorystatus_control");
     if (fnMemCtl) {
         jetsam_priority_props_t props = { JETSAM_PRIO_CRITICAL, 0 };
-        fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS,  targetPid, 0, &props, sizeof(props));
+        if (fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props)) != 0) {
+            props.priority = JETSAM_PRIO_IMPORTANT;
+            fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props));
+        }
+        int32_t safeLimitMB = (limitMB < 1024) ? 1024 : limitMB;
         fnMemCtl(MEMSTAT_CMD_SET_HIGH_WATER_MARK, targetPid, (uint32_t)-1, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      targetPid, (uint32_t)limitMB, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      targetPid, (uint32_t)safeLimitMB, NULL, 0);
         fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED,      targetPid, 0, NULL, 0);
         fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE,    targetPid, 0, NULL, 0);
     }
 }
 
 static void ensureSharedFilesPermissions(void) {
+    upgradeSharedFilesProtectionNone();
     NSArray<NSString *> *paths = @[
         kConfigPlistPath,
         kRuntimeStatePath,
@@ -53,8 +87,13 @@ static void ensureSharedFilesPermissions(void) {
         kWatchdogPidPath
     ];
     for (NSString *p in paths) {
-        chown([p fileSystemRepresentation], 501, 501);
-        chmod([p fileSystemRepresentation], 0666);
+        const char *cPath = [p fileSystemRepresentation];
+        if (cPath && access(cPath, F_OK) == 0) {
+            if (geteuid() == 0) {
+                chown(cPath, 501, 501);
+            }
+            chmod(cPath, 0666);
+        }
     }
 }
 
@@ -134,25 +173,81 @@ static int runKillPidMain(pid_t targetPid) {
     return 0;
 }
 
-static int runWatchdogMain(const char *execPath) {
-    pid_t me = getpid();
+static int runDaemonizeMain(const char *execPath) {
+    ignoreBenignDaemonSignals();
+    setsid();
+    for (int fd = 3; fd < 128; fd++) {
+        close(fd);
+    }
+
+    char resolvedPath[PATH_MAX];
+    const char *finalPath = execPath;
+    if (execPath && realpath(execPath, resolvedPath) != NULL) {
+        finalPath = resolvedPath;
+    }
 
     @autoreleasepool {
+        NSString *execStr = [NSString stringWithUTF8String:finalPath];
+        int res = spawnRoot(execStr, @[@"--watchdog"]);
+        if (res <= 0) {
+            posix_spawn_file_actions_t fa;
+            posix_spawn_file_actions_init(&fa);
+            posix_spawn_file_actions_addopen(&fa, STDIN_FILENO,  "/dev/null", O_RDONLY, 0);
+            posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+            posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+
+            posix_spawnattr_t attr;
+            posix_spawnattr_init(&attr);
+            posix_spawnattr_setpgroup(&attr, 0);
+            posix_spawnattr_setflags(&attr, (short)(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT));
+
+            char *cArgv[3] = { (char *)finalPath, "--watchdog", NULL };
+            pid_t wdPid = 0;
+            if (posix_spawn(&wdPid, finalPath, &fa, &attr, cArgv, environ) != 0) {
+                posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+                posix_spawn(&wdPid, finalPath, &fa, &attr, cArgv, environ);
+            }
+            posix_spawn_file_actions_destroy(&fa);
+            posix_spawnattr_destroy(&attr);
+        }
+    }
+
+    // Exit immediately so launchd (PID 1) adopts Watchdog cleanly outside UI App Switcher coalition!
+    _exit(0);
+    return 0;
+}
+
+static BOOL isMasterConfirmedDisabledTwice(void) {
+    if (readMasterEnabledSafely(YES)) {
+        return NO;
+    }
+    usleep(250000);
+    return !readMasterEnabledSafely(YES);
+}
+
+static int runWatchdogMain(const char *execPath) {
+    pid_t me = getpid();
+    char resolvedExec[PATH_MAX];
+    const char *workerExecPath = execPath;
+    if (execPath && realpath(execPath, resolvedExec) != NULL) {
+        workerExecPath = resolvedExec;
+    }
+
+    @autoreleasepool {
+        ignoreBenignDaemonSignals();
+        signal(SIGTERM, handleWatchdogSignal);
+        signal(SIGINT,  handleWatchdogSignal);
+        setsid();
+
         // Terminate any previous watchdog or worker instance cleanly while uid=0
         killAllOtherPindProcesses();
 
-        applyCriticalJetsamToPid(me, 64);
+        // 1024 MB ceiling (never 64 MB!) so linked frameworks can NEVER trigger per-process-limit Jetsam kill
+        applyCriticalJetsamToPid(me, 1024);
         ensureSharedFilesPermissions();
 
-        signal(SIGHUP, SIG_IGN);
-        signal(SIGTERM, handleWatchdogSignal);
-        signal(SIGINT, handleWatchdogSignal);
-        setsid();
-
         NSString *wdPidStr = [NSString stringWithFormat:@"%d", me];
-        [wdPidStr writeToFile:kWatchdogPidPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        chown([kWatchdogPidPath fileSystemRepresentation], 501, 501);
-        chmod([kWatchdogPidPath fileSystemRepresentation], 0666);
+        writeStringUnprotectedAtomically(wdPidStr, kWatchdogPidPath);
 
         dispatch_queue_t wdQ = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
         int stopTok = 0;
@@ -162,30 +257,50 @@ static int runWatchdogMain(const char *execPath) {
 
         while (!gWatchdogExit) {
             @autoreleasepool {
-                FilterConfig *cfg = [FilterConfig loadFromDisk];
-                if (!cfg.masterEnabled) {
+                if (isMasterConfirmedDisabledTwice()) {
+                    appendDaemonLog(@"[WATCHDOG] Công tắc tổng TẮT -> Dừng Lõi Ngầm an toàn.");
                     break;
                 }
 
+                if (readRawPidValueFromFile(kWatchdogPidPath) != me) {
+                    writeStringUnprotectedAtomically(wdPidStr, kWatchdogPidPath);
+                }
+
+                posix_spawn_file_actions_t fa;
+                posix_spawn_file_actions_init(&fa);
+                posix_spawn_file_actions_addopen(&fa, STDIN_FILENO,  "/dev/null", O_RDONLY, 0);
+                posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+                posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+
+                posix_spawnattr_t attr;
+                posix_spawnattr_init(&attr);
+                posix_spawnattr_setflags(&attr, (short)POSIX_SPAWN_CLOEXEC_DEFAULT);
+
                 char *childArgv[3];
-                childArgv[0] = (char *)execPath;
+                childArgv[0] = (char *)workerExecPath;
                 childArgv[1] = "--worker";
                 childArgv[2] = NULL;
 
                 pid_t workerPid = 0;
-                int spRet = posix_spawn(&workerPid, execPath, NULL, NULL, childArgv, environ);
+                int spRet = posix_spawn(&workerPid, workerExecPath, &fa, &attr, childArgv, environ);
+                if (spRet != 0) {
+                    spRet = posix_spawn(&workerPid, workerExecPath, &fa, NULL, childArgv, environ);
+                }
+                posix_spawn_file_actions_destroy(&fa);
+                posix_spawnattr_destroy(&attr);
+
                 if (spRet != 0 || workerPid <= 0) {
-                    usleep(1000000);
+                    usleep(800000);
                     continue;
                 }
 
-                applyCriticalJetsamToPid(workerPid, 512);
+                applyCriticalJetsamToPid(workerPid, 1024);
 
                 int status = 0;
                 int tickCount = 0;
                 BOOL workerAlive = YES;
                 double lastLoopWallEpoch = [[NSDate date] timeIntervalSince1970];
-                double wakeGraceUntilEpoch = lastLoopWallEpoch + 25.0;
+                double wakeGraceUntilEpoch = lastLoopWallEpoch + 30.0;
 
                 while (workerAlive && !gWatchdogExit) {
                     pid_t w = waitpid(workerPid, &status, WNOHANG);
@@ -196,23 +311,26 @@ static int runWatchdogMain(const char *execPath) {
 
                     double nowWall = [[NSDate date] timeIntervalSince1970];
                     if (nowWall - lastLoopWallEpoch > 3.0) {
-                        // Device just woke up from iOS deep sleep -> grant Worker 25s grace to refresh heartbeat
-                        wakeGraceUntilEpoch = nowWall + 25.0;
+                        // Device just woke up from iOS deep sleep -> grant Worker 30s grace to refresh heartbeat
+                        wakeGraceUntilEpoch = nowWall + 30.0;
                     }
                     lastLoopWallEpoch = nowWall;
 
                     tickCount++;
-                    if (tickCount % 20 == 0) { // Every ~5s check heartbeat & master switch
+                    if (tickCount % 20 == 0) { // Every ~5s self-heal PID file, check master switch & heartbeat
                         @autoreleasepool {
-                            FilterConfig *chkCfg = [FilterConfig loadFromDisk];
-                            if (!chkCfg.masterEnabled) {
+                            if (readRawPidValueFromFile(kWatchdogPidPath) != me) {
+                                writeStringUnprotectedAtomically(wdPidStr, kWatchdogPidPath);
+                            }
+                            if (isMasterConfirmedDisabledTwice()) {
+                                appendDaemonLog(@"[WATCHDOG] Công tắc tổng TẮT -> Dừng Lõi Ngầm an toàn.");
                                 gWatchdogExit = YES;
                                 break;
                             }
                             if (nowWall > wakeGraceUntilEpoch) {
                                 RuntimeDaemonState *st = [RuntimeDaemonState loadState];
-                                if (st.workerHeartbeatEpoch > 0.0 && (nowWall - st.workerHeartbeatEpoch) > 55.0) {
-                                    appendDaemonLog(@"[WATCHDOG] Worker phản hồi chậm >55s -> Làm mới tiến trình ngay!");
+                                if (st.workerHeartbeatEpoch > 0.0 && (nowWall - st.workerHeartbeatEpoch) > 65.0) {
+                                    appendDaemonLog(@"[WATCHDOG] Worker phản hồi chậm >65s -> Làm mới tiến trình ngay!");
                                     kill(workerPid, SIGKILL);
                                 }
                             }
@@ -243,20 +361,24 @@ static int runWatchdogMain(const char *execPath) {
                 // Worker exited while masterEnabled is still ON -> Auto-revive!
                 BOOL wasCleanRAMTrim = (WIFEXITED(status) && WEXITSTATUS(status) == kExitCodeProactiveRAMTrim);
                 if (wasCleanRAMTrim) {
-                    usleep(100000);
+                    usleep(80000);
                 } else {
-                    FilterConfig *chkCfg = [FilterConfig loadFromDisk];
-                    if (!chkCfg.masterEnabled) break;
-                    appendDaemonLog(@"[WATCHDOG] iOS thiếu RAM đóng Worker -> Đã tự hồi sinh Worker mới trong 0.15s!");
+                    if (isMasterConfirmedDisabledTwice()) {
+                        appendDaemonLog(@"[WATCHDOG] Công tắc tổng TẮT -> Dừng Lõi Ngầm an toàn.");
+                        break;
+                    }
+                    int termSig  = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+                    int exitCode = WIFEXITED(status)   ? WEXITSTATUS(status) : 0;
+                    appendDaemonLog(@"[WATCHDOG] Worker đóng (sig:%d code:%d) -> Đã tự hồi sinh tức thì trong 0.12s!",
+                                    termSig, exitCode);
                     notify_post(kNotifyStatsUpdated);
-                    usleep(150000);
+                    usleep(120000);
                 }
             }
         }
 
         notify_cancel(stopTok);
-        unlink([kWatchdogPidPath fileSystemRepresentation]);
-        unlink([kDaemonPidPath fileSystemRepresentation]);
+        unlinkPidFileIfOwnedByMe(kWatchdogPidPath);
     }
     return 0;
 }
@@ -276,7 +398,7 @@ static void handleWorkerSignal(int sig) {
 
 static void prepareWorkerSession(void) {
     pid_t me = getpid();
-    applyCriticalJetsamToPid(me, 512);
+    applyCriticalJetsamToPid(me, 1024);
     ensureSharedFilesPermissions();
 
     if (getgid() != 501) {
@@ -539,7 +661,11 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         @autoreleasepool {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
             if (gNeedsReload) {
-                *ioConfig = [FilterConfig loadFromDisk];
+                FilterConfig *reloaded = [FilterConfig loadFromDisk];
+                if (!reloaded.masterEnabled && readMasterEnabledSafely(YES)) {
+                    reloaded.masterEnabled = YES;
+                }
+                *ioConfig = reloaded;
                 config = *ioConfig;
                 gNeedsReload = NO;
                 resetFrontmostAppMonitors();
@@ -713,13 +839,13 @@ static int runWorkerMain(void) {
     prepareWorkerSession();
 
     @autoreleasepool {
-        signal(SIGHUP, SIG_IGN);
+        ignoreBenignDaemonSignals();
         signal(SIGTERM, handleWorkerSignal);
-        signal(SIGINT, handleWorkerSignal);
+        signal(SIGINT,  handleWorkerSignal);
 
-        NSString *myPidStr = [NSString stringWithFormat:@"%d", getpid()];
-        [myPidStr writeToFile:kDaemonPidPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        chmod([kDaemonPidPath fileSystemRepresentation], 0666);
+        pid_t myPid = getpid();
+        NSString *myPidStr = [NSString stringWithFormat:@"%d", myPid];
+        writeStringUnprotectedAtomically(myPidStr, kDaemonPidPath);
 
         dispatch_queue_t bgQ = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
         int reloadTok = 0, stopTok = 0, skipTok = 0, resetNavTok = 0, resetCntTok = 0, diagTok = 0;
@@ -732,6 +858,9 @@ static int runWorkerMain(void) {
         notify_register_dispatch(kNotifyDiagCapture,   &diagTok,     bgQ, ^(int t) { gDiagRequested = YES; });
 
         FilterConfig *config      = [FilterConfig loadFromDisk];
+        if (!config.masterEnabled && readMasterEnabledSafely(YES)) {
+            config.masterEnabled = YES;
+        }
         RuntimeDaemonState *state = [RuntimeDaemonState loadState];
         double bootEpoch          = [[NSDate date] timeIntervalSince1970];
         BOOL hadPreviousVersion   = [state.daemonVersion isEqualToString:kCurrentDaemonVersion];
@@ -751,8 +880,8 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.4 Bất Tử + Chống Chèn Đơn & Nối Chuyến chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
-                            getRunningWatchdogPID(), getpid(),
+            appendDaemonLog(@"pind v4.5 Bất Tử Tuyệt Đối (launchd) chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+                            getRunningWatchdogPID(), myPid,
                             screenOk ? @"OK" : @"LỖI",
                             (long)config.minFoodPriceVND);
             notify_post(kNotifyStatsUpdated);
@@ -778,17 +907,25 @@ static int runWorkerMain(void) {
 
         while (!gShouldExit) {
             @autoreleasepool {
+                @try {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 double now = [[NSDate date] timeIntervalSince1970];
 
                 if (now - lastHeartbeatSaveEpoch >= 4.0) {
+                    if (readRawPidValueFromFile(kDaemonPidPath) != myPid) {
+                        writeStringUnprotectedAtomically(myPidStr, kDaemonPidPath);
+                    }
                     state.workerHeartbeatEpoch = now;
                     [state saveStateAndNotify:NO];
                     lastHeartbeatSaveEpoch = now;
                 }
 
                 if (gNeedsReload) {
-                    config = [FilterConfig loadFromDisk];
+                    FilterConfig *reloaded = [FilterConfig loadFromDisk];
+                    if (!reloaded.masterEnabled && readMasterEnabledSafely(YES)) {
+                        reloaded.masterEnabled = YES;
+                    }
+                    config = reloaded;
                     gNeedsReload = NO;
                     resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
@@ -814,8 +951,12 @@ static int runWorkerMain(void) {
                 }
 
                 if (!config.masterEnabled) {
-                    usleep(450000);
-                    continue;
+                    if (readMasterEnabledSafely(YES)) {
+                        config.masterEnabled = YES;
+                    } else {
+                        usleep(450000);
+                        continue;
+                    }
                 }
 
                 // Always track lock-screen state so unlocking after >= 3 mins spawns a 100% fresh Worker
@@ -1293,10 +1434,16 @@ static int runWorkerMain(void) {
                     ? MIN(180, MAX(140, config.scanIntervalMs))
                     : MAX(150, config.scanIntervalMs);
                 usleep((useconds_t)(sleepMs * 1000));
+                } @catch (NSException *ex) {
+                    appendDaemonLog(@"[TỰ PHỤC HỒI] Bắt ngoại lệ %@ -> Tự làm mới và tiếp tục canh đơn!", ex.name ?: @"ObjC");
+                    resetFrontmostAppMonitors();
+                    [engine invalidateAnalyzedBaseline];
+                    usleep(250000);
+                }
             }
         }
 
-        unlink([kDaemonPidPath fileSystemRepresentation]);
+        unlinkPidFileIfOwnedByMe(kDaemonPidPath);
         notify_cancel(reloadTok);
         notify_cancel(stopTok);
         notify_cancel(skipTok);
@@ -1308,6 +1455,9 @@ static int runWorkerMain(void) {
 }
 
 int main(int argc, char *argv[]) {
+    if (argc >= 2 && strcmp(argv[1], "--daemonize") == 0) {
+        return runDaemonizeMain(argv[0]);
+    }
     if (argc >= 2 && strcmp(argv[1], "--stop") == 0) {
         return runStopMain();
     }

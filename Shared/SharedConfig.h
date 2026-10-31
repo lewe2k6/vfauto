@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"4.4"
+#define kCurrentDaemonVersion   @"4.5"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
@@ -135,6 +135,9 @@ pid_t getRunningWatchdogPID(void);
 BOOL startFilterDaemonIfNeeded(void);
 BOOL forceRestartFilterDaemon(void);
 void stopFilterDaemon(void);
+BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable);
+BOOL writeStringUnprotectedAtomically(NSString *str, NSString *path);
+void upgradeSharedFilesProtectionNone(void);
 
 NSArray<InstalledAppInfo *> *listInstalledUserApps(void);
 InstalledAppInfo *autoDetectDriverApp(void);

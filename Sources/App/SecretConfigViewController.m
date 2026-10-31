@@ -79,12 +79,15 @@
 
     UITextView *_logTextView;
     NSTimer *_refreshTimer;
+    NSTimer *_sliderSaveTimer;
+    BOOL _hasPendingSliderSave;
+    NSTimeInterval _lastAutoHealEpoch;
     int _statsNotifyToken;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.4";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.5";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -94,9 +97,13 @@
     closeItem.tintColor = [UIColor systemTealColor];
     self.navigationItem.rightBarButtonItem = closeItem;
 
+    upgradeSharedFilesProtectionNone();
     _cfg = [FilterConfig loadFromDisk];
     if (_cfg.masterEnabled) {
-        startFilterDaemonIfNeeded();
+        _lastAutoHealEpoch = [[NSDate date] timeIntervalSince1970];
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            startFilterDaemonIfNeeded();
+        });
     }
 
     [self buildScrollLayout];
@@ -117,6 +124,12 @@
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    if (_hasPendingSliderSave) {
+        [_sliderSaveTimer invalidate];
+        _sliderSaveTimer = nil;
+        _hasPendingSliderSave = NO;
+        [_cfg saveToDiskAndNotify:YES];
+    }
     if (self.isBeingDismissed || self.navigationController.isBeingDismissed) {
         [_refreshTimer invalidate];
         _refreshTimer = nil;
@@ -669,20 +682,32 @@
 #pragma mark - Actions
 
 - (void)masterSwitchChanged:(UISwitch *)sender {
-    _cfg.masterEnabled = sender.isOn;
+    BOOL wantOn = sender.isOn;
+    _cfg.masterEnabled = wantOn;
     [_cfg saveToDiskAndNotify:YES];
+    sender.enabled = NO;
+    _lastAutoHealEpoch = [[NSDate date] timeIntervalSince1970];
 
-    if (_cfg.masterEnabled) {
-        BOOL ok = startFilterDaemonIfNeeded();
-        if (!ok) {
-            sender.on = NO;
-            _cfg.masterEnabled = NO;
-            [_cfg saveToDiskAndNotify:NO];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        if (wantOn) {
+            BOOL ok = startFilterDaemonIfNeeded();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                sender.enabled = YES;
+                if (!ok) {
+                    sender.on = NO;
+                    self->_cfg.masterEnabled = NO;
+                    [self->_cfg saveToDiskAndNotify:NO];
+                }
+                [self refreshStatusAndLogs];
+            });
+        } else {
+            stopFilterDaemon();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                sender.enabled = YES;
+                [self refreshStatusAndLogs];
+            });
         }
-    } else {
-        stopFilterDaemon();
-    }
-    [self refreshStatusAndLogs];
+    });
 }
 
 - (void)generalControlChanged {
@@ -746,7 +771,21 @@
     _slHoldMax.value  = (float)_cfg.holdMaxMs;
 
     [self updateValueLabels];
-    [_cfg saveToDiskAndNotify:YES];
+    _hasPendingSliderSave = YES;
+    [_sliderSaveTimer invalidate];
+    _sliderSaveTimer = [NSTimer scheduledTimerWithTimeInterval:0.18
+                                                        target:self
+                                                      selector:@selector(flushPendingSliderSave)
+                                                      userInfo:nil
+                                                       repeats:NO];
+}
+
+- (void)flushPendingSliderSave {
+    _sliderSaveTimer = nil;
+    if (_hasPendingSliderSave) {
+        _hasPendingSliderSave = NO;
+        [_cfg saveToDiskAndNotify:YES];
+    }
 }
 
 - (void)stepFoodPrice:(UIButton *)sender {
@@ -860,21 +899,30 @@
 }
 
 - (void)diagCaptureTapped {
-    if (getRunningDaemonPID() <= 0) {
-        startFilterDaemonIfNeeded();
-    }
-    notify_post(kNotifyDiagCapture);
-    [self refreshStatusAndLogs];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        if (getRunningDaemonPID() <= 0) {
+            startFilterDaemonIfNeeded();
+        }
+        notify_post(kNotifyDiagCapture);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self refreshStatusAndLogs];
+        });
+    });
 }
 
 - (void)forceRestartDaemonTapped {
     _cfg.masterEnabled = YES;
     _swMaster.on = YES;
     [_cfg saveToDiskAndNotify:NO];
-    forceRestartFilterDaemon();
+    _lastAutoHealEpoch = [[NSDate date] timeIntervalSince1970];
     triggerHapticFeedback(NO);
-    appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.4!");
-    [self refreshStatusAndLogs];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        forceRestartFilterDaemon();
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.5!");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self refreshStatusAndLogs];
+        });
+    });
 }
 
 - (void)resetNavLocksTapped {
@@ -904,19 +952,32 @@
     pid_t wkPid = getRunningDaemonPID();
     pid_t wdPid = getRunningWatchdogPID();
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
+    double now = [[NSDate date] timeIntervalSince1970];
+
+    if (_cfg.masterEnabled && wkPid <= 0 && wdPid <= 0 && (now - _lastAutoHealEpoch) > 5.0) {
+        _lastAutoHealEpoch = now;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            startFilterDaemonIfNeeded();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self refreshStatusAndLogs];
+            });
+        });
+    }
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.4 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.5 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
+    } else if (_cfg.masterEnabled) {
+        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.5...";
+        _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";
         _daemonStatusLabel.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
     }
 
-    double now = [[NSDate date] timeIntervalSince1970];
     if (st.pauseEndEpoch > now && (wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
         int rem = (int)ceil(st.pauseEndEpoch - now);
         _phaseLabel.text = [NSString stringWithFormat:@"⏳ ĐANG NGHỈ XẢ ĐƠN FOOD — Tự bật lại sau: %02d:%02d", rem / 60, rem % 60];

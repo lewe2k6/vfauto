@@ -38,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.4-ts
-          name: "Pin & Nhiệt Độ v4.4 Xử Lý Nổ Đơn Liên Thanh & Chống Tắt App Khi Nối Chuyến (TrollStore)"
-          body: "Bản cập nhật v4.4: (1) Nếu vừa bấm [X] hủy đơn Food mà tổng đài bắn liền 1 đơn Bike/Express/Food ngon khi chưa kịp tắt app -> Tự động ngắt quy trình tắt app ngay trong 0ms để vồ gọn đơn mới (hoặc nếu nổ tiếp Food bèo thứ 2 thì chém tiếp [X] rồi mới tắt app); (2) Khóa 3 lớp nhận diện đang trong chuyến xe (Bike, Express, Food, nối chuyến, hoặc đang xem Google Maps) -> Khi nổ đơn Food nối chuyến chỉ bấm [X] từ chối, tuyệt đối giữ nguyên cuốc xe đang chạy không bao giờ tắt app."
+          tag_name: v4.5-ts
+          name: "Pin & Nhiệt Độ v4.5 Khóa Lõi Ngầm Bất Tử Tuyệt Đối 24/7 (TrollStore)"
+          body: "Bản cập nhật v4.5: Rà soát 100% mã nguồn & diệt tận gốc 6 nguyên nhân khiến Lõi Ngầm thỉnh thoảng tự tắt trên iOS 16: (1) Ghi file chuẩn PROTECTION_CLASS_D (NSFileProtectionNone) + đọc có retry chống lỗi khóa màn hình Passcode/TouchID làm Watchdog tưởng tắt công tắc tổng; (2) Gỡ trần tử thần Jetsam 64MB của Watchdog nâng lên 1024MB + cấm gọi LSApplicationWorkspace trong tiến trình root; (3) Double-spawn (--daemonize) tách hẳn Watchdog sang cha PID 1 (launchd) + nối /dev/null + CLOEXEC miễn nhiễm khi vuốt tắt app ngụy trang khỏi đa nhiệm; (4) Khóa flock liên tiến trình + kiểm tra PID chủ sở hữu trước khi unlink chống 2 luồng giẫm chân xóa nhầm PID; (5) Bọc @try/@catch toàn vòng lặp Worker + chặn SIGPIPE/SIGXCPU/SIGXFSZ; (6) Chống dội ghi file khi kéo thanh trượt."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

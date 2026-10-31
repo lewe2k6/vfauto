@@ -6,8 +6,11 @@
 #import <spawn.h>
 #import <signal.h>
 #import <notify.h>
+#import <fcntl.h>
+#import <sys/file.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <sys/wait.h>
 #import <unistd.h>
 #import <errno.h>
 #import <string.h>
@@ -15,6 +18,20 @@
 #ifndef SZOMB
 #define SZOMB 5
 #endif
+
+#ifndef POSIX_SPAWN_CLOEXEC_DEFAULT
+#define POSIX_SPAWN_CLOEXEC_DEFAULT 0x4000
+#endif
+
+#ifndef F_SETPROTECTIONCLASS
+#define F_SETPROTECTIONCLASS 64
+#endif
+
+#ifndef PROTECTION_CLASS_D
+#define PROTECTION_CLASS_D 4
+#endif
+
+#define kDaemonControlLockPath "/var/mobile/Library/Preferences/com.vn.utility.batterycheck.ctl.lock"
 
 #define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 1
 typedef int (*persona_np_f)(const posix_spawnattr_t * __restrict, uid_t, uint32_t);
@@ -26,6 +43,123 @@ extern char **environ;
 
 @implementation InstalledAppInfo
 @end
+
+#pragma mark - Lock-Screen Safe (PROTECTION_CLASS_D) Atomic File I/O
+
+static void markFileProtectionNone(const char *cPath) {
+    if (!cPath || cPath[0] == '\0') return;
+    int fd = open(cPath, O_RDWR);
+    if (fd < 0) {
+        fd = open(cPath, O_RDONLY);
+    }
+    if (fd >= 0) {
+        fcntl(fd, F_SETPROTECTIONCLASS, PROTECTION_CLASS_D);
+        close(fd);
+    }
+    if (geteuid() == 0) {
+        chown(cPath, 501, 501);
+    }
+    chmod(cPath, 0666);
+}
+
+static BOOL writeDictUnprotectedAtomically(NSDictionary *dict, NSString *path) {
+    if (!dict || !path || path.length == 0) return NO;
+    NSError *err = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:dict
+                                                              format:NSPropertyListBinaryFormat_v1_0
+                                                             options:0
+                                                               error:&err];
+    if (!data || err) return NO;
+
+    BOOL ok = [data writeToFile:path
+                        options:(NSDataWritingAtomic | NSDataWritingFileProtectionNone)
+                          error:nil];
+    if (!ok) {
+        ok = [data writeToFile:path options:NSDataWritingAtomic error:nil];
+    }
+    markFileProtectionNone([path fileSystemRepresentation]);
+    return ok;
+}
+
+BOOL writeStringUnprotectedAtomically(NSString *str, NSString *path) {
+    if (!path || path.length == 0) return NO;
+    NSData *data = [(str ?: @"") dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return NO;
+
+    BOOL ok = [data writeToFile:path
+                        options:(NSDataWritingAtomic | NSDataWritingFileProtectionNone)
+                          error:nil];
+    if (!ok) {
+        ok = [data writeToFile:path options:NSDataWritingAtomic error:nil];
+    }
+    markFileProtectionNone([path fileSystemRepresentation]);
+    return ok;
+}
+
+void upgradeSharedFilesProtectionNone(void) {
+    NSArray<NSString *> *paths = @[
+        kConfigPlistPath,
+        kRuntimeStatePath,
+        kDaemonLogPath,
+        kDaemonPidPath,
+        kWatchdogPidPath
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *p in paths) {
+        const char *cPath = [p fileSystemRepresentation];
+        if (cPath && access(cPath, F_OK) == 0) {
+            [fm setAttributes:@{ NSFileProtectionKey: NSFileProtectionNone } ofItemAtPath:p error:nil];
+            markFileProtectionNone(cPath);
+        }
+    }
+}
+
+static NSDictionary *readDictSafelyWithRetry(NSString *path) {
+    if (!path || path.length == 0) return nil;
+    const char *cPath = [path fileSystemRepresentation];
+    if (!cPath || (access(cPath, F_OK) != 0 && errno == ENOENT)) {
+        return nil;
+    }
+
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0) {
+            usleep(18000);
+        }
+        NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingUncached error:nil];
+        if (data.length > 0) {
+            id obj = [NSPropertyListSerialization propertyListWithData:data
+                                                               options:NSPropertyListImmutable
+                                                                format:NULL
+                                                                 error:nil];
+            if ([obj isKindOfClass:[NSDictionary class]]) {
+                return (NSDictionary *)obj;
+            }
+        }
+        NSDictionary *fallback = [NSDictionary dictionaryWithContentsOfFile:path];
+        if ([fallback isKindOfClass:[NSDictionary class]]) {
+            return fallback;
+        }
+    }
+    return nil;
+}
+
+BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
+    const char *cPath = [kConfigPlistPath fileSystemRepresentation];
+    if (!cPath) return NO;
+    if (access(cPath, F_OK) != 0) {
+        if (errno == ENOENT) {
+            return NO;
+        }
+        return defaultIfUnreadable;
+    }
+    NSDictionary *dict = readDictSafelyWithRetry(kConfigPlistPath);
+    if (!dict) {
+        // File exists on disk, so a nil dictionary means transient lock/I/O contention — NEVER kill Watchdog!
+        return defaultIfUnreadable;
+    }
+    id val = dict[@"masterEnabled"];
+    return val ? [val boolValue] : NO;
+}
 
 @implementation RuntimeDaemonState
 
@@ -46,7 +180,7 @@ extern char **environ;
 
 + (instancetype)loadState {
     RuntimeDaemonState *st = [[RuntimeDaemonState alloc] init];
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:kRuntimeStatePath];
+    NSDictionary *d = readDictSafelyWithRetry(kRuntimeStatePath);
     if (!d) return st;
     if (d[@"statAcceptedCount"])    st.statAcceptedCount    = [d[@"statAcceptedCount"] integerValue];
     if (d[@"statRejectedCount"])    st.statRejectedCount    = [d[@"statRejectedCount"] integerValue];
@@ -70,8 +204,7 @@ extern char **environ;
         @"phaseDescription":     self.phaseDescription ?: @"",
         @"daemonVersion":        self.daemonVersion ?: @""
     };
-    [d writeToFile:kRuntimeStatePath atomically:YES];
-    chmod([kRuntimeStatePath fileSystemRepresentation], 0666);
+    writeDictUnprotectedAtomically(d, kRuntimeStatePath);
     if (sendNotify) {
         notify_post(kNotifyStatsUpdated);
     }
@@ -145,13 +278,20 @@ extern char **environ;
 
 + (instancetype)loadFromDisk {
     FilterConfig *cfg = [[FilterConfig alloc] init];
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:kConfigPlistPath];
+    NSDictionary *dict = readDictSafelyWithRetry(kConfigPlistPath);
     if (!dict) {
-        InstalledAppInfo *detected = autoDetectDriverApp();
-        if (detected) {
-            cfg.driverAppBundleID    = detected.bundleID;
-            cfg.driverAppExecName    = detected.executableName;
-            cfg.driverAppDisplayName = detected.displayName;
+        const char *cPath = [kConfigPlistPath fileSystemRepresentation];
+        if (cPath && access(cPath, F_OK) == 0) {
+            // Existing config file had a momentary lock/I/O contention -> keep Master ON safely!
+            cfg.masterEnabled = YES;
+        }
+        if (geteuid() != 0) {
+            InstalledAppInfo *detected = autoDetectDriverApp();
+            if (detected) {
+                cfg.driverAppBundleID    = detected.bundleID;
+                cfg.driverAppExecName    = detected.executableName;
+                cfg.driverAppDisplayName = detected.displayName;
+            }
         }
         return cfg;
     }
@@ -211,7 +351,7 @@ extern char **environ;
     if (dict[@"holdMaxMs"])              cfg.holdMaxMs              = [dict[@"holdMaxMs"] integerValue];
     if (dict[@"cooldownMs"])             cfg.cooldownMs             = [dict[@"cooldownMs"] integerValue];
 
-    if (cfg.driverAppBundleID.length == 0 || cfg.driverAppExecName.length == 0) {
+    if (geteuid() != 0 && (cfg.driverAppBundleID.length == 0 || cfg.driverAppExecName.length == 0)) {
         InstalledAppInfo *matched = nil;
         if (cfg.driverAppBundleID.length > 0) {
             for (InstalledAppInfo *app in listInstalledUserApps()) {
@@ -304,8 +444,7 @@ extern char **environ;
         @"cooldownMs":             @(self.cooldownMs)
     };
 
-    [dict writeToFile:kConfigPlistPath atomically:YES];
-    chmod([kConfigPlistPath fileSystemRepresentation], 0666);
+    writeDictUnprotectedAtomically(dict, kConfigPlistPath);
 
     if (sendNotify) {
         notify_post(kNotifyReloadConfig);
@@ -964,15 +1103,24 @@ BOOL launchAppByBundleID(NSString *bundleID) {
 #pragma mark - TrollStore Root Spawner & Dual-Process Daemon Control
 
 int spawnRoot(NSString *path, NSArray<NSString *> *args) {
+    if (!path || path.length == 0) return -1;
+
     NSMutableArray *fullArgs = [NSMutableArray arrayWithObject:path];
     if (args) [fullArgs addObjectsFromArray:args];
 
     int argc = (int)fullArgs.count;
     char **argv = calloc(argc + 1, sizeof(char *));
+    if (!argv) return -1;
     for (int i = 0; i < argc; i++) {
         argv[i] = strdup([fullArgs[i] UTF8String]);
     }
     argv[argc] = NULL;
+
+    posix_spawn_file_actions_t fileActions;
+    posix_spawn_file_actions_init(&fileActions);
+    posix_spawn_file_actions_addopen(&fileActions, STDIN_FILENO,  "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fileActions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fileActions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
 
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
@@ -986,14 +1134,35 @@ int spawnRoot(NSString *path, NSArray<NSString *> *args) {
     if (fnSetGid)     fnSetGid(&attr, 0);
 
     posix_spawnattr_setpgroup(&attr, 0);
-    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    short flags = (short)(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT);
+    posix_spawnattr_setflags(&attr, flags);
 
     pid_t pid = 0;
-    int ret = posix_spawn(&pid, [path fileSystemRepresentation], NULL, &attr, argv, environ);
+    int ret = posix_spawn(&pid, [path fileSystemRepresentation], &fileActions, &attr, argv, environ);
+    if (ret != 0) {
+        // Fallback without CLOEXEC_DEFAULT in case an older kernel rejects the flag
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+        ret = posix_spawn(&pid, [path fileSystemRepresentation], &fileActions, &attr, argv, environ);
+    }
 
+    posix_spawn_file_actions_destroy(&fileActions);
     posix_spawnattr_destroy(&attr);
     for (int i = 0; i < argc; i++) free(argv[i]);
     free(argv);
+
+    if (ret == 0 && pid > 0 && args.count > 0) {
+        NSString *firstArg = args.firstObject;
+        if ([firstArg isEqualToString:@"--daemonize"] ||
+            [firstArg isEqualToString:@"--stop"] ||
+            [firstArg isEqualToString:@"--kill-pid"]) {
+            int wstatus = 0;
+            for (int w = 0; w < 25; w++) {
+                pid_t r = waitpid(pid, &wstatus, WNOHANG);
+                if (r == pid || r == -1) break;
+                usleep(20000);
+            }
+        }
+    }
 
     return (ret == 0) ? (int)pid : -ret;
 }
@@ -1010,11 +1179,13 @@ static BOOL isPidAlivePind(pid_t pid) {
         }
         return (strncmp(info.kp_proc.p_comm, "pind", 4) == 0);
     }
-    return (kill(pid, 0) == 0);
+    return (kill(pid, 0) == 0 || errno == EPERM);
 }
 
 static pid_t readAlivePidFromFile(NSString *filePath) {
-    NSString *pidStr = [NSString stringWithContentsOfFile:filePath encoding:NSUTF8StringEncoding error:nil];
+    NSData *data = [NSData dataWithContentsOfFile:filePath options:NSDataReadingUncached error:nil];
+    if (!data || data.length == 0) return 0;
+    NSString *pidStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     if (!pidStr) return 0;
     pid_t pid = (pid_t)[pidStr intValue];
     if (pid <= 1) return 0;
@@ -1032,66 +1203,42 @@ pid_t getRunningWatchdogPID(void) {
     return readAlivePidFromFile(kWatchdogPidPath);
 }
 
-BOOL startFilterDaemonIfNeeded(void) {
-    pid_t existingWorker   = getRunningDaemonPID();
-    pid_t existingWatchdog = getRunningWatchdogPID();
-
-    if (existingWorker > 0 && existingWatchdog > 0) {
-        RuntimeDaemonState *st = [RuntimeDaemonState loadState];
-        if ([st.daemonVersion isEqualToString:kCurrentDaemonVersion]) {
-            double now = [[NSDate date] timeIntervalSince1970];
-            if (st.workerHeartbeatEpoch > 0.0 && fabs(now - st.workerHeartbeatEpoch) < 22.0) {
-                notify_post(kNotifyReloadConfig);
-                return YES;
-            }
-            // Give a 0.55s grace check in case the device just woke from deep sleep
-            usleep(550000);
-            st  = [RuntimeDaemonState loadState];
-            now = [[NSDate date] timeIntervalSince1970];
-            if (getRunningDaemonPID() > 0 &&
-                getRunningWatchdogPID() > 0 &&
-                st.workerHeartbeatEpoch > 0.0 &&
-                fabs(now - st.workerHeartbeatEpoch) < 22.0) {
-                notify_post(kNotifyReloadConfig);
-                return YES;
-            }
-        }
-    }
-
-    stopFilterDaemon();
-
-    NSString *daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
-    chmod([daemonPath fileSystemRepresentation], 0755);
-    int res = spawnRoot(daemonPath, @[@"--watchdog"]);
-    if (res > 0) {
-        for (int i = 0; i < 12; i++) {
-            usleep(60000);
-            if (getRunningDaemonPID() > 0 || getRunningWatchdogPID() > 0) {
-                return YES;
-            }
-        }
-        return YES;
-    }
-    appendDaemonLog(@"[LỖI] Không kích được pind v4.4 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
-    return NO;
+static NSRecursiveLock *daemonControlMutex(void) {
+    static NSRecursiveLock *sCtlLock = nil;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        sCtlLock = [[NSRecursiveLock alloc] init];
+    });
+    return sCtlLock;
 }
 
-BOOL forceRestartFilterDaemon(void) {
-    stopFilterDaemon();
-    usleep(120000);
-    return startFilterDaemonIfNeeded();
+static int acquireCrossProcessCtlLock(void) {
+    int fd = open(kDaemonControlLockPath, O_CREAT | O_RDWR, 0666);
+    if (fd >= 0) {
+        fcntl(fd, F_SETPROTECTIONCLASS, PROTECTION_CLASS_D);
+        chmod(kDaemonControlLockPath, 0666);
+        flock(fd, LOCK_EX);
+    }
+    return fd;
 }
 
-void stopFilterDaemon(void) {
+static void releaseCrossProcessCtlLock(int fd) {
+    if (fd >= 0) {
+        flock(fd, LOCK_UN);
+        close(fd);
+    }
+}
+
+static void stopFilterDaemonUnlocked(void) {
     notify_post(kNotifyStopDaemon);
     usleep(120000);
 
     // Execute --stop as uid=0 via spawnRoot so root Watchdog & Worker are guaranteed terminated cleanly
-    NSString *daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:daemonPath]) {
+    NSString *daemonPath = resolvePindBinaryPath();
+    if (daemonPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:daemonPath]) {
         chmod([daemonPath fileSystemRepresentation], 0755);
         spawnRoot(daemonPath, @[@"--stop"]);
-        usleep(180000);
+        usleep(100000);
     } else {
         pid_t wkPid = getRunningDaemonPID();
         if (wkPid > 1) kill(wkPid, SIGKILL);
@@ -1099,6 +1246,126 @@ void stopFilterDaemon(void) {
 
     unlink([kWatchdogPidPath fileSystemRepresentation]);
     unlink([kDaemonPidPath fileSystemRepresentation]);
+}
+
+BOOL startFilterDaemonIfNeeded(void) {
+    NSRecursiveLock *mtx = daemonControlMutex();
+    [mtx lock];
+    int lockFd = acquireCrossProcessCtlLock();
+    BOOL finalResult = NO;
+
+    @try {
+        upgradeSharedFilesProtectionNone();
+
+        pid_t existingWatchdog = getRunningWatchdogPID();
+        if (existingWatchdog > 0) {
+            // Wait up to 1.6s if Watchdog is in the middle of spawning/recycling Worker
+            for (int w = 0; w < 8 && getRunningDaemonPID() <= 0; w++) {
+                usleep(200000);
+                if (getRunningWatchdogPID() <= 0) break;
+            }
+
+            existingWatchdog = getRunningWatchdogPID();
+            pid_t existingWorker = getRunningDaemonPID();
+            RuntimeDaemonState *st = [RuntimeDaemonState loadState];
+
+            if (existingWatchdog > 0 && existingWorker > 0 &&
+                [st.daemonVersion isEqualToString:kCurrentDaemonVersion]) {
+                double now = [[NSDate date] timeIntervalSince1970];
+                if (st.workerHeartbeatEpoch <= 0.0 || fabs(now - st.workerHeartbeatEpoch) < 60.0) {
+                    notify_post(kNotifyReloadConfig);
+                    finalResult = YES;
+                    return finalResult;
+                }
+
+                // Device may have just woken from deep pocket sleep -> poke Worker and wait up to 1.5s
+                notify_post(kNotifyReloadConfig);
+                for (int k = 0; k < 6; k++) {
+                    usleep(250000);
+                    st  = [RuntimeDaemonState loadState];
+                    now = [[NSDate date] timeIntervalSince1970];
+                    if (getRunningWatchdogPID() > 0 &&
+                        getRunningDaemonPID() > 0 &&
+                        st.workerHeartbeatEpoch > 0.0 &&
+                        fabs(now - st.workerHeartbeatEpoch) < 60.0) {
+                        finalResult = YES;
+                        return finalResult;
+                    }
+                }
+            }
+        }
+
+        stopFilterDaemonUnlocked();
+
+        NSString *daemonPath = resolvePindBinaryPath();
+        if (!daemonPath || daemonPath.length == 0) {
+            daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
+        }
+        chmod([daemonPath fileSystemRepresentation], 0755);
+
+        // Double-spawn via --daemonize so launchd (PID 1) adopts Watchdog cleanly (immune to UI App Switcher swipe-kill!)
+        int res = spawnRoot(daemonPath, @[@"--daemonize"]);
+        if (res > 0) {
+            for (int i = 0; i < 20; i++) {
+                usleep(60000);
+                if (getRunningWatchdogPID() > 0 || getRunningDaemonPID() > 0) {
+                    finalResult = YES;
+                    return finalResult;
+                }
+            }
+            if (getRunningWatchdogPID() > 0 || getRunningDaemonPID() > 0) {
+                finalResult = YES;
+                return finalResult;
+            }
+        }
+
+        // Direct fallback to --watchdog if --daemonize didn't materialize PID files yet
+        res = spawnRoot(daemonPath, @[@"--watchdog"]);
+        if (res > 0) {
+            for (int i = 0; i < 16; i++) {
+                usleep(60000);
+                if (getRunningWatchdogPID() > 0 || getRunningDaemonPID() > 0) {
+                    finalResult = YES;
+                    return finalResult;
+                }
+            }
+            finalResult = YES;
+            return finalResult;
+        }
+
+        appendDaemonLog(@"[LỖI] Không kích được pind v4.5 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+        finalResult = NO;
+    } @finally {
+        releaseCrossProcessCtlLock(lockFd);
+        [mtx unlock];
+    }
+    return finalResult;
+}
+
+BOOL forceRestartFilterDaemon(void) {
+    NSRecursiveLock *mtx = daemonControlMutex();
+    [mtx lock];
+    int lockFd = acquireCrossProcessCtlLock();
+    @try {
+        stopFilterDaemonUnlocked();
+        usleep(120000);
+    } @finally {
+        releaseCrossProcessCtlLock(lockFd);
+        [mtx unlock];
+    }
+    return startFilterDaemonIfNeeded();
+}
+
+void stopFilterDaemon(void) {
+    NSRecursiveLock *mtx = daemonControlMutex();
+    [mtx lock];
+    int lockFd = acquireCrossProcessCtlLock();
+    @try {
+        stopFilterDaemonUnlocked();
+    } @finally {
+        releaseCrossProcessCtlLock(lockFd);
+        [mtx unlock];
+    }
 }
 
 #pragma mark - Logging & Haptics
@@ -1133,8 +1400,7 @@ void appendDaemonLog(NSString *format, ...) {
         }
 
         NSString *joined = [lines componentsJoinedByString:@"\n"];
-        [joined writeToFile:kDaemonLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        chmod([kDaemonLogPath fileSystemRepresentation], 0666);
+        writeStringUnprotectedAtomically(joined, kDaemonLogPath);
     });
 }
 
@@ -1147,8 +1413,7 @@ NSString *readDaemonLogs(void) {
 }
 
 void clearDaemonLogs(void) {
-    [@"" writeToFile:kDaemonLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    chmod([kDaemonLogPath fileSystemRepresentation], 0666);
+    writeStringUnprotectedAtomically(@"", kDaemonLogPath);
 }
 
 void triggerHapticFeedback(BOOL isAccept) {

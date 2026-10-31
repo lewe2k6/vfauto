@@ -12,21 +12,12 @@
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     self.window.rootViewController = [[StealthBatteryViewController alloc] init];
     [self.window makeKeyAndVisible];
-
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        FilterConfig *cfg = [FilterConfig loadFromDisk];
-        if (cfg.masterEnabled) {
-            startFilterDaemonIfNeeded();
-        }
-    });
-
     return YES;
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        FilterConfig *cfg = [FilterConfig loadFromDisk];
-        if (cfg.masterEnabled) {
+        if (readMasterEnabledSafely(NO)) {
             startFilterDaemonIfNeeded();
         }
     });
