@@ -489,6 +489,8 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
                    ana.navBluePoint.x, ana.navBluePoint.y];
     } else if (ana.isPaymentConfirmScreen) {
         matched = @"MÀN THANH TOÁN ('Xác nhận hoàn thành') -> Xóa sạch 2 chốt Map!";
+    } else if (ana.hasBlockingBottomSheet) {
+        matched = @"BẢNG PHỤ CHE SẢNH ('0.0/8 lái xe liên tục') -> Tự vuốt/chạm đóng ngay!";
     } else if (ana.isLobbyOnline) {
         matched = @"SẢNH ĐANG TRỰC TUYẾN -> Nút tắt [Power] tại (40, 455)";
     } else if (ana.isLobbyOffline) {
@@ -505,6 +507,26 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
                     ana.ocrSampleSummary ?: @"");
     appendDaemonLog(@"[KẾT QUẢ NHẬN DIỆN] %@", matched);
     notify_post(kNotifyStatsUpdated);
+}
+
+static void dismissBlockingLobbySheet(ScreenTouchEngine *engine, FilterConfig *config) {
+    CGFloat midX   = engine.logicalScreenSize.width * 0.5;
+    CGFloat startY = engine.logicalScreenSize.height * 0.742; // ~495pt on iPhone 8 (handle bar of 0.0/8 sheet)
+    CGFloat endY   = engine.logicalScreenSize.height * 0.985; // ~657pt on iPhone 8
+    [engine performQuickSwipeFromPoint:CGPointMake(midX, startY)
+                               toPoint:CGPointMake(midX, endY)
+                            durationMs:95];
+    usleep(220000);
+    // Also tap the dimmed grey modal scrim at (187, 205) where zero Lobby buttons exist
+    CGPoint scrimPt = CGPointMake(midX, engine.logicalScreenSize.height * 0.307);
+    CGPoint outPt   = CGPointZero;
+    [engine performHumanTapAtPoint:scrimPt
+                      jitterRadius:MIN(3.0, config.jitterRadiusPt)
+                         holdMinMs:40
+                         holdMaxMs:65
+                    outActualPoint:&outPt];
+    usleep(420000);
+    [engine invalidateAnalyzedBaseline];
 }
 
 static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
@@ -524,11 +546,11 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
         [state saveStateAndNotify:YES];
 
-        // Short 450ms settle after [X] closes so [Power] is tapped fast while catching any back-to-back order
-        usleep(450000);
+        // Short 480ms settle after [X] closes so [Power] is tapped fast while catching any back-to-back order
+        usleep(480000);
 
         BOOL confirmedOffline = NO;
-        for (int attempt = 0; attempt < 14 && !gShouldExit && !gSkipPauseRequested; attempt++) {
+        for (int attempt = 0; attempt < 18 && !gShouldExit && !gSkipPauseRequested; attempt++) {
             @autoreleasepool {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
@@ -599,8 +621,28 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                     }
                 }
 
-                // Strictly tap circular [Power] button ONLY when Lobby Online ('Đang trực tuyến') is confirmed visible
-                if (ana.isLobbyOnline) {
+                // Dismiss accidental '0.0/8 — Bạn đã lái xe liên tục' or warning bottom sheet immediately so 'Đang trực tuyến' & [Power] uncover!
+                if (ana.hasBlockingBottomSheet) {
+                    if (config.dryRunMode) {
+                        appendDaemonLog(@"[THỬ] Sẽ đóng bảng phụ '0.0/8 lái xe liên tục' đang che nút Tắt trực tuyến");
+                    } else {
+                        appendDaemonLog(@"Phát hiện bảng phụ '0.0/8' che sảnh -> Tự hất đóng ngay để bấm Tắt trực tuyến!");
+                        dismissBlockingLobbySheet(engine, config);
+                        continue;
+                    }
+                }
+
+                // Tap circular [Power] button when Lobby Online ('Đang trực tuyến') OR uncovered bright-teal [Power] ring at (40, 455) is confirmed
+                BOOL canTapOfflinePower = ana.isLobbyOnline ||
+                                          (attempt >= 2 &&
+                                           engine.lastFrameLikelyHasLobbyPowerButton &&
+                                           !ana.hasOrderPopup &&
+                                           !ana.isAnyActiveTripScreen &&
+                                           !ana.isPaymentConfirmScreen &&
+                                           !ana.isLobbyOffline &&
+                                           !ana.hasBlockingBottomSheet);
+
+                if (canTapOfflinePower) {
                     if (ioInActiveTrip) *ioInActiveTrip = NO;
                     if (config.dryRunMode) {
                         appendDaemonLog(@"[THỬ] Sẽ bấm nút [Power] Tắt nhận chuyến tại (%.0f, %.0f)",
@@ -783,6 +825,11 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                 break;
             }
 
+            if (ana.hasBlockingBottomSheet && !config.dryRunMode) {
+                dismissBlockingLobbySheet(engine, config);
+                continue;
+            }
+
             if (ana.isLobbyOffline && onlineTapsSent < 4) {
                 uint32_t dMs = 260 + arc4random_uniform(280);
                 usleep(dMs * 1000);
@@ -880,7 +927,7 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.5 Bất Tử Tuyệt Đối (launchd) chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+            appendDaemonLog(@"pind v4.6 Bất Tử + Nhạy Map & Chống Bấm Nhầm 0.0/8 chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
                             getRunningWatchdogPID(), myPid,
                             screenOk ? @"OK" : @"LỖI",
                             (long)config.minFoodPriceVND);
@@ -899,6 +946,7 @@ static int runWorkerMain(void) {
         BOOL didSwipeBannerForCurrentPopup  = NO;
         NSString *lastSkippedPopupSignature = nil;
         BOOL wasInCoolSleep                 = NO;
+        BOOL prevFrameHadBlueNav            = NO;
         double lockedSinceEpoch             = 0.0;
         int coolSleepTickCounter            = 0;
         double turboUntilEpoch              = bootEpoch + 6.0;
@@ -967,6 +1015,7 @@ static int runWorkerMain(void) {
                     }
                     if (!wasInCoolSleep) {
                         wasInCoolSleep = YES;
+                        prevFrameHadBlueNav = NO;
                         retryCount = 0;
                         didSwipeBannerForCurrentPopup = NO;
                         [engine invalidateAnalyzedBaseline];
@@ -1019,6 +1068,7 @@ static int runWorkerMain(void) {
                     if (!canScan) {
                         if (!wasInCoolSleep) {
                             wasInCoolSleep = YES;
+                            prevFrameHadBlueNav = NO;
                             retryCount = 0;
                             didSwipeBannerForCurrentPopup = NO;
                             [engine invalidateAnalyzedBaseline];
@@ -1072,8 +1122,17 @@ static int runWorkerMain(void) {
                     continue;
                 }
 
+                BOOL hasUnlockedNavPhase = ((config.autoNavPickup && !state.navPickupLocked) ||
+                                            (config.autoNavDropoff && !state.navDropoffLocked));
+                BOOL blueNavJustAppeared = (engine.lastFrameLikelyHasBlueNavButton && !prevFrameHadBlueNav);
+                prevFrameHadBlueNav = engine.lastFrameLikelyHasBlueNavButton;
+                BOOL blueNavDueForOCR = (engine.lastFrameLikelyHasBlueNavButton &&
+                                         hasUnlockedNavPhase &&
+                                         (blueNavJustAppeared || (now - lastFullOCREpoch) >= 0.70));
+
                 BOOL inTurbo = (now < turboUntilEpoch) ||
                                engine.lastFrameLikelyHasOrderPopup ||
+                               blueNavDueForOCR ||
                                (retryCount > 0);
 
                 if (config.smartCoolMode &&
@@ -1210,8 +1269,22 @@ static int runWorkerMain(void) {
                             if (config.hapticEnabled) triggerHapticFeedback(isAccept);
                             notify_post(kNotifyStatsUpdated);
                         } else {
+                            // KHÓA AN TOÀN 0.5ms TRƯỚC KHI BẤM [X]: Nếu bảng đơn vừa tự trôi mất trong lúc chờ delay -> HỦY CHẠM NGAY!
+                            if (!isAccept) {
+                                CIImage *preTapImg = [engine captureScreenCIImage];
+                                if (!preTapImg || !engine.lastFrameLikelyHasOrderPopup) {
+                                    appendDaemonLog(@"[AN TOÀN] Bảng đơn Green Food vừa tự trôi mất trước khi hạ ngón tay -> Hủy cú chạm [X] (tránh bấm nhầm 0.0/8)!");
+                                    [engine invalidateAnalyzedBaseline];
+                                    notify_post(kNotifyStatsUpdated);
+                                    turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 4.5;
+                                    continue;
+                                }
+                            }
+
                             // BẤM VÒNG KÍN CÓ KIỂM CHỨNG & BỒI CHỐNG TRƯỢT CẢM ỨNG (CLOSED-LOOP TAP RETRY)
-                            NSInteger maxRetries = config.tapVerifyRetries;
+                            // Riêng nút [X] góc trên phải trùng khít vị trí nút ⚠️ / 0.0/8 ở sảnh -> Tối đa bồi 1 nhịp + chờ 620ms đủ đóng hẳn!
+                            NSInteger maxRetries = isAccept ? config.tapVerifyRetries : MIN(1, config.tapVerifyRetries);
+                            CGFloat tapJitter    = isAccept ? config.jitterRadiusPt   : MIN(3.0, config.jitterRadiusPt);
                             CGPoint targetPt     = ana.orderTargetPoint;
                             CGPoint actualPt     = targetPt;
                             NSInteger tapsSent   = 0;
@@ -1222,16 +1295,21 @@ static int runWorkerMain(void) {
                                     [engine refreshHIDClient];
                                 }
                                 if (attempt > 0 && !isAccept) {
-                                    // Nếu phát đầu bấm [X] Food chưa tắt (có thể vướng banner góc trên), hất banner lên trước khi bồi
+                                    // Nếu phát đầu bấm [X] Food chưa tắt (vướng banner góc trên), hất banner lên rồi kiểm tra lại pixel 1 lần nữa trước khi bồi!
                                     CGFloat midX = engine.logicalScreenSize.width * 0.5;
                                     [engine performQuickSwipeFromPoint:CGPointMake(midX, 62.0)
                                                                toPoint:CGPointMake(midX, 6.0)
                                                             durationMs:50];
-                                    usleep(120000);
+                                    usleep(140000);
+                                    CIImage *recheckImg = [engine captureScreenCIImage];
+                                    if (!recheckImg || !engine.lastFrameLikelyHasOrderPopup || !engine.lastFrameHasOrderHeaderAtTop) {
+                                        confirmedGone = YES;
+                                        break;
+                                    }
                                 }
 
                                 BOOL tapOk = [engine performHumanTapAtPoint:targetPt
-                                                               jitterRadius:config.jitterRadiusPt
+                                                               jitterRadius:tapJitter
                                                                   holdMinMs:config.holdMinMs
                                                                   holdMaxMs:config.holdMaxMs
                                                              outActualPoint:&actualPt];
@@ -1244,8 +1322,9 @@ static int runWorkerMain(void) {
                                     break;
                                 }
 
-                                // Chờ 380ms rồi chụp kiểm tra xem bảng đơn đã biến mất thật chưa
-                                usleep(380000);
+                                // Với [X] hủy Food: chờ đủ 620ms cho hiệu ứng trượt bảng đóng dứt điểm (không bồi xuyên xuống nút ⚠️ / 0.0/8)!
+                                uint32_t postTapWaitUs = isAccept ? 380000 : 620000;
+                                usleep(postTapWaitUs);
                                 if (gShouldExit) break;
 
                                 CIImage *chkImg = [engine captureScreenCIImage];
@@ -1253,6 +1332,13 @@ static int runWorkerMain(void) {
                                     confirmedGone = YES;
                                     break;
                                 }
+
+                                // Kiểm tra nhanh 0.01ms bằng cảm biến Pixel: nếu thanh xanh 'Nhận chuyến' đáy màn đã biến mất -> Bảng đơn đã tắt 100%!
+                                if (!isAccept && !engine.lastFrameLikelyHasOrderPopup) {
+                                    confirmedGone = YES;
+                                    break;
+                                }
+
                                 [engine markCurrentFrameAnalyzed];
                                 ScreenAnalysis *chkAna = [scanner analyzeScreenImage:chkImg
                                                                           screenSize:engine.logicalScreenSize
@@ -1260,8 +1346,15 @@ static int runWorkerMain(void) {
                                                                      priceRetryCount:2];
                                 if (chkAna.isAnyActiveTripScreen) {
                                     inActiveTripSession = YES;
-                                } else if (chkAna.isLobbyOnline || chkAna.isLobbyOffline || chkAna.isPaymentConfirmScreen) {
+                                } else if (chkAna.isLobbyOnline || chkAna.isLobbyOffline || chkAna.isPaymentConfirmScreen || chkAna.hasAnyLobbyMarker) {
                                     inActiveTripSession = NO;
+                                }
+
+                                if (chkAna.hasBlockingBottomSheet && !config.dryRunMode) {
+                                    appendDaemonLog(@"[GỠ KẸT] Đóng bảng '0.0/8 Lái xe liên tục' ngay sau khi hủy đơn!");
+                                    dismissBlockingLobbySheet(engine, config);
+                                    confirmedGone = YES;
+                                    break;
                                 }
 
                                 if (!isAccept && chkAna.hasRejectConfirmPopup) {
@@ -1277,12 +1370,12 @@ static int runWorkerMain(void) {
                                     break;
                                 }
 
-                                if (!chkAna.hasOrderPopup) {
+                                if (!chkAna.hasOrderPopup || (!isAccept && chkAna.hasAnyLobbyMarker)) {
                                     confirmedGone = YES;
                                     break;
                                 }
 
-                                // Nếu vừa bấm [X] hủy Food xong mà nổ liền 1 đơn Bike/Express/Food ngon (hoặc đơn Food thứ 2 khác giá) ngay trong 380ms:
+                                // Nếu vừa bấm [X] hủy Food xong mà nổ liền 1 đơn Bike/Express/Food ngon (hoặc đơn Food thứ 2 khác giá):
                                 // DỪNG BỒI [X] NGAY LẬP TỨC để sang nhịp sau vồ đơn Bike/Express hoặc xử lý chuẩn đơn mới!
                                 if (!isAccept) {
                                     BOOL switchedToAcceptOrder = (chkAna.orderAction == OrderActionTapAccept || !chkAna.isGreenFood);
@@ -1295,6 +1388,11 @@ static int runWorkerMain(void) {
                                         newOrderArrivedImmediately = YES;
                                         break;
                                     }
+                                    if (!engine.lastFrameHasOrderHeaderAtTop && chkAna.orderAction != OrderActionHeaderCovered) {
+                                        // Tiêu đề đơn đã tụt khỏi đỉnh màn hình -> Đang đóng dở, tuyệt đối không bồi!
+                                        confirmedGone = YES;
+                                        break;
+                                    }
                                 }
 
                                 // Bảng đơn cũ vẫn còn trên màn hình -> cập nhật tọa độ nút mới nhất để bồi ngay!
@@ -1305,15 +1403,18 @@ static int runWorkerMain(void) {
                             }
 
                             if (tapsSent > 0) {
+                                double doneNow = [[NSDate date] timeIntervalSince1970];
                                 if (isAccept) {
                                     inActiveTripSession = YES;
                                     consecutiveOfflineInterrupts = 0;
                                     state.statAcceptedCount += 1;
-                                    state.phaseDescription = @"Vừa nhận chuyến mới";
+                                    state.phaseDescription = @"Vừa nhận chuyến -> Đang canh nút Điều hướng";
+                                    // Kích hoạt Turbo 15 giây liên tục để vồ nút xanh 'Điều hướng' ngay khi Xanh SM dựng xong thẻ khách!
+                                    turboUntilEpoch = doneNow + 15.0;
                                 } else {
                                     state.statRejectedCount += 1;
                                 }
-                                state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
+                                state.workerHeartbeatEpoch = doneNow;
                                 [state saveStateAndNotify:YES];
 
                                 NSString *tapNote = (tapsSent == 1)
@@ -1328,7 +1429,7 @@ static int runWorkerMain(void) {
 
                         [engine invalidateAnalyzedBaseline];
 
-                        // CASE 1: Nổ liền đơn thứ 2 ngay tức khắc (380ms) sau khi vừa hủy Food -> Xử lý đơn mới luôn với độ trễ 0ms!
+                        // CASE 1: Nổ liền đơn thứ 2 ngay tức khắc sau khi vừa hủy Food -> Xử lý đơn mới luôn với độ trễ 0ms!
                         if (!isAccept && newOrderArrivedImmediately) {
                             appendDaemonLog(@"Nổ chèn đơn mới ngay lập tức -> Dừng Tắt app để vồ/xử lý đơn mới ngay!");
                             turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 6.5;
@@ -1359,7 +1460,8 @@ static int runWorkerMain(void) {
                             continue;
                         }
 
-                        NSInteger cdMs = MAX(600, config.cooldownMs - 380);
+                        // Khi vừa bấm [Nhận chuyến]: chỉ nghỉ 350ms rồi quét ngay thẻ khách để tap nút xanh 'Điều hướng' tức thì (không ngủ 2.1s)!
+                        NSInteger cdMs = isAccept ? 350 : MAX(600, config.cooldownMs - 380);
                         usleep((useconds_t)(cdMs * 1000));
                         continue;
                     }
@@ -1367,30 +1469,43 @@ static int runWorkerMain(void) {
                     retryCount = 0;
                     didSwipeBannerForCurrentPopup = NO;
                     lastSkippedPopupSignature = nil;
+
+                    if (ana.hasBlockingBottomSheet) {
+                        inActiveTripSession = NO;
+                        if (!config.dryRunMode) {
+                            appendDaemonLog(@"[GỠ KẸT] Thấy bảng '0.0/8 Lái xe liên tục' che sảnh -> Tự đóng ngay!");
+                            dismissBlockingLobbySheet(engine, config);
+                            [engine invalidateAnalyzedBaseline];
+                            notify_post(kNotifyStatsUpdated);
+                            continue;
+                        }
+                    }
                 }
 
-                // 3. XỬ LÝ AUTO TAP NÚT TRÒN XANH 'ĐIỀU HƯỚNG' (CHỐNG LẶP 100%)
+                // 3. XỬ LÝ AUTO TAP NÚT TRÒN XANH 'ĐIỀU HƯỚNG' (NHẠY TỨC THÌ KỂ CẢ KHI MÀN ĐỨNG YÊN + CHỐNG LẶP 100%)
                 if (ana.hasPassengerAndNav) {
                     BOOL needPickupTap  = (ana.isPickupStage  && config.autoNavPickup  && !state.navPickupLocked);
                     BOOL needDropoffTap = (ana.isDropoffStage && config.autoNavDropoff && !state.navDropoffLocked);
 
                     if (needPickupTap || needDropoffTap) {
-                        NSInteger settleMs = MAX(200, config.navSettleDelayMs);
+                        NSInteger settleMs = (config.navSettleDelayMs == 650) ? 320 : MAX(180, config.navSettleDelayMs);
                         usleep((useconds_t)(settleMs * 1000));
                         if (gShouldExit) break;
 
                         CIImage *settledImg = [engine captureScreenCIImage];
-                        [engine markCurrentFrameAnalyzed];
-                        ScreenAnalysis *settledAna = [scanner analyzeScreenImage:settledImg
-                                                                      screenSize:engine.logicalScreenSize
-                                                                          config:config
-                                                                 priceRetryCount:0];
+                        ScreenAnalysis *settledAna = settledImg
+                            ? [scanner analyzeScreenImage:settledImg
+                                               screenSize:engine.logicalScreenSize
+                                                   config:config
+                                          priceRetryCount:0]
+                            : nil;
 
-                        BOOL stillValid = settledAna.hasPassengerAndNav &&
+                        BOOL stillValid = settledAna && settledAna.hasPassengerAndNav &&
                                           ((needPickupTap && settledAna.isPickupStage) ||
                                            (needDropoffTap && settledAna.isDropoffStage));
 
                         if (stillValid) {
+                            [engine markCurrentFrameAnalyzed];
                             if (needPickupTap) {
                                 state.navPickupLocked  = YES;
                                 state.phaseDescription = @"Đã mở Map Đón khách (Khóa Pha 1)";
@@ -1425,6 +1540,10 @@ static int runWorkerMain(void) {
                             notify_post(kNotifyStatsUpdated);
                             usleep(2000000);
                             continue;
+                        } else {
+                            // Màn hình đang chuyển cảnh chưa ổn định -> Xóa baseline & giữ Turbo để 150ms sau quét bấm lại ngay (không cần người dùng vuốt màn)!
+                            [engine invalidateAnalyzedBaseline];
+                            turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 5.0;
                         }
                     }
                 }

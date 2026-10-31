@@ -122,14 +122,17 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _logicalScreenSize               = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
-        _screenScale                     = 2.0;
-        _lastCaptureHadPixels            = NO;
-        _lastFrameLikelyHasOrderPopup    = NO;
-        _lastFrameLooksLikeGoogleMapsNav = NO;
-        _lastFrameChangedSamples         = kGridCount;
-        _hasAnalyzedBaseline             = NO;
-        _consecutiveEmptyCaptures        = 0;
+        _logicalScreenSize                  = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
+        _screenScale                        = 2.0;
+        _lastCaptureHadPixels               = NO;
+        _lastFrameLikelyHasOrderPopup       = NO;
+        _lastFrameHasOrderHeaderAtTop       = NO;
+        _lastFrameLikelyHasBlueNavButton    = NO;
+        _lastFrameLikelyHasLobbyPowerButton = NO;
+        _lastFrameLooksLikeGoogleMapsNav    = NO;
+        _lastFrameChangedSamples            = kGridCount;
+        _hasAnalyzedBaseline                = NO;
+        _consecutiveEmptyCaptures           = 0;
 
         CGSize pxSize = CGSizeZero;
         SEL unjailedSel = NSSelectorFromString(@"_unjailedReferenceBoundsInPixels");
@@ -384,6 +387,59 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         }
         _lastFrameLikelyHasOrderPopup    = (tealHits >= 5 && whiteHits >= 6);
         _lastFrameLooksLikeGoogleMapsNav = (!_lastFrameLikelyHasOrderPopup && gmapsGreenHit >= 8);
+
+        // 3. Top Header Flush Sensor (0.01ms): Ensures Order Popup header bar is still flush at y ~ 52pt
+        //    (On Lobby, the '454.970đ' pill + map sits at y=52pt, so pureWhiteHeader drops to <= 4/10 immediately!)
+        int yHdr52 = (int)((52.0 / 667.0) * (double)(_pixelH - 1));
+        const uint8_t *rowHdr52 = base + (size_t)yHdr52 * _bytesPerRow;
+        int pureWhiteHdrHits = 0;
+        for (int s = 0; s < 10; s++) {
+            int px = (int)((0.35 + (0.43 * (double)s / 9.0)) * (double)(_pixelW - 1));
+            uint32_t pH = *((const uint32_t *)(rowHdr52 + (size_t)px * 4));
+            uint8_t bH = pH & 0xFF, gH = (pH >> 8) & 0xFF, rH = (pH >> 16) & 0xFF;
+            if (rH >= 248 && gH >= 248 && bH >= 248 &&
+                abs((int)rH - (int)gH) <= 4 && abs((int)gH - (int)bH) <= 4) {
+                pureWhiteHdrHits++;
+            }
+        }
+        _lastFrameHasOrderHeaderAtTop = (_lastFrameLikelyHasOrderPopup && pureWhiteHdrHits >= 7);
+
+        // 4. Blue Navigation Circle Sensor (0.01ms): Detects blue [Map] circle around x ~ 323pt (y = 185..475pt)
+        //    Wakes OCR immediately even when the map & sheet are 100% motionless after accepting an order!
+        int blueNavHits = 0;
+        int xNavCols[3] = {
+            (int)((315.0 / 375.0) * (double)(_pixelW - 1)),
+            (int)((323.0 / 375.0) * (double)(_pixelW - 1)),
+            (int)((331.0 / 375.0) * (double)(_pixelW - 1))
+        };
+        for (int ly = 188; ly <= 472; ly += 6) {
+            int py = (int)(((double)ly / 667.0) * (double)(_pixelH - 1));
+            const uint8_t *rowNav = base + (size_t)py * _bytesPerRow;
+            for (int c = 0; c < 3; c++) {
+                uint32_t pN = *((const uint32_t *)(rowNav + (size_t)xNavCols[c] * 4));
+                uint8_t bN = pN & 0xFF, gN = (pN >> 8) & 0xFF, rN = (pN >> 16) & 0xFF;
+                if (bN >= 165 && rN <= 48 && gN >= 85 && gN <= 170 && ((int)bN - (int)rN >= 125)) {
+                    blueNavHits++;
+                }
+            }
+        }
+        _lastFrameLikelyHasBlueNavButton = (!_lastFrameLikelyHasOrderPopup && blueNavHits >= 6);
+
+        // 5. Uncovered Lobby Teal [Power] Circle Sensor around (40, 455) (0.01ms):
+        //    Hits ONLY when Online [Power] button is bright uncovered teal (not dimmed by 0.0/8 modal backdrop!)
+        static const double kPwrRingX[6] = { 28.0/375.0, 52.0/375.0, 40.0/375.0, 40.0/375.0, 31.0/375.0, 49.0/375.0 };
+        static const double kPwrRingY[6] = { 455.0/667.0, 455.0/667.0, 441.0/667.0, 469.0/667.0, 445.0/667.0, 465.0/667.0 };
+        int pwrRingHits = 0;
+        for (int k = 0; k < 6; k++) {
+            int px = (int)(kPwrRingX[k] * (double)(_pixelW - 1));
+            int py = (int)(kPwrRingY[k] * (double)(_pixelH - 1));
+            uint32_t pP = *((const uint32_t *)(base + (size_t)py * _bytesPerRow + (size_t)px * 4));
+            uint8_t bP = pP & 0xFF, gP = (pP >> 8) & 0xFF, rP = (pP >> 16) & 0xFF;
+            if (gP >= 175 && bP >= 180 && rP <= 85 && ((int)gP - (int)rP >= 100)) {
+                pwrRingHits++;
+            }
+        }
+        _lastFrameLikelyHasLobbyPowerButton = (!_lastFrameLikelyHasOrderPopup && pwrRingHits >= 4);
     }
 
     _fnSurfaceUnlock(surface, kIOSurfaceLockReadOnlyFlag, NULL);
@@ -404,8 +460,11 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 
 - (CIImage *)captureScreenCIImage {
     if (!_fnRenderDisplay || !_srcSurface) {
-        _lastCaptureHadPixels = NO;
-        _lastFrameLikelyHasOrderPopup = NO;
+        _lastCaptureHadPixels               = NO;
+        _lastFrameLikelyHasOrderPopup       = NO;
+        _lastFrameHasOrderHeaderAtTop       = NO;
+        _lastFrameLikelyHasBlueNavButton    = NO;
+        _lastFrameLikelyHasLobbyPowerButton = NO;
         return nil;
     }
 
@@ -437,8 +496,11 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 
     _lastCaptureHadPixels = hasPixels;
     if (!hasPixels) {
-        _lastFrameLikelyHasOrderPopup    = NO;
-        _lastFrameLooksLikeGoogleMapsNav = NO;
+        _lastFrameLikelyHasOrderPopup       = NO;
+        _lastFrameHasOrderHeaderAtTop       = NO;
+        _lastFrameLikelyHasBlueNavButton    = NO;
+        _lastFrameLikelyHasLobbyPowerButton = NO;
+        _lastFrameLooksLikeGoogleMapsNav    = NO;
         _consecutiveEmptyCaptures++;
         if (_consecutiveEmptyCaptures >= 3) {
             _consecutiveEmptyCaptures = 0;

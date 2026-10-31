@@ -207,8 +207,11 @@
     BOOL hasDeliveryRoute  = NO; // 'điểm nhận' hoặc 'điểm giao' (chung cho cả Express & Food)
     BOOL hasPaymentTag     = NO; // 'Tiền mặt' hoặc 'Thẻ/Ví'
     BOOL hasAnyTripBottomBtn = NO; // 'Đã đến điểm...', 'Đã lấy hàng', 'Hoàn thành...' (Bike + Express + Food)
+    BOOL hasTripActorLabel = NO; // 'Hành khách', 'Người gửi', 'Người nhận', 'Khách hàng'
     BOOL hasNhanTinBtn     = NO;
     BOOL hasGoiDienBtn     = NO;
+    BOOL hasBottomSheetTxt = NO; // 'Bạn đã lái xe liên tục', '0.0/8', '/8 tiếng', 'Trung tâm an toàn'...
+    BOOL hasLobbyCardTxt   = NO; // 'Số dư ví', 'Green Now', 'Chuyến của tôi', 'Mua xe VinFast'
 
     CGFloat kmLineY = screenSize.height * 0.42;
 
@@ -229,6 +232,27 @@
         if (!xacNhanHTBlk && b.uiCenter.y > screenSize.height * 0.70) {
             if ([t containsString:@"xac nhan hoan thanh"]) {
                 xacNhanHTBlk = b;
+            }
+        }
+        if (b.uiCenter.y > screenSize.height * 0.45) {
+            if ([t containsString:@"so du vi"] ||
+                [t containsString:@"green now"] ||
+                [t containsString:@"chuyen cua toi"] ||
+                [t containsString:@"mua xe vinfast"] ||
+                [t containsString:@"diem den yeu thich"]) {
+                hasLobbyCardTxt = YES;
+            }
+        }
+        if (b.uiCenter.y > screenSize.height * 0.48) {
+            if ([t containsString:@"lai xe lien tuc"] ||
+                [t containsString:@"/8 tieng"] ||
+                [t containsString:@"/ 8 tieng"] ||
+                ([t containsString:@"tieng"] && [t containsString:@"phut"]) ||
+                (b.uiCenter.y > screenSize.height * 0.55 && [b.rawText containsString:@"/8"] && b.rawText.length <= 12) ||
+                [t containsString:@"trung tam an toan"] ||
+                [t containsString:@"ho tro khan cap"] ||
+                [t containsString:@"chia se hanh trinh"]) {
+                hasBottomSheetTxt = YES;
             }
         }
 
@@ -269,35 +293,54 @@
             }
         }
 
-        // Active Trip markers ('Hành khách' + 'Điều hướng' + bottom stage button)
-        if (!hanhKhachBlk && b.uiCenter.x < screenSize.width * 0.58 &&
-            b.uiCenter.y > screenSize.height * 0.25 && b.uiCenter.y < screenSize.height * 0.70) {
+        // Active Trip markers ('Điều hướng' + bottom stage button across BOTH Bike & Express/Food; no longer blocked if 'Hành khách' is absent!)
+        if (b.uiCenter.x < screenSize.width * 0.62 &&
+            b.uiCenter.y > screenSize.height * 0.16 && b.uiCenter.y < screenSize.height * 0.78) {
             if ([t containsString:@"hanh khach"]) {
-                hanhKhachBlk = b;
+                if (!hanhKhachBlk) hanhKhachBlk = b;
+                hasTripActorLabel = YES;
+            } else if ([t containsString:@"nguoi gui"] ||
+                       [t containsString:@"nguoi nhan"] ||
+                       [t containsString:@"khach hang"]) {
+                hasTripActorLabel = YES;
             }
         }
-        if (!dieuHuongBlk && b.uiCenter.x > screenSize.width * 0.60 &&
-            b.uiCenter.y > screenSize.height * 0.25 && b.uiCenter.y < screenSize.height * 0.70) {
-            if ([t containsString:@"dieu huong"]) {
+        if (!dieuHuongBlk && b.uiCenter.x > screenSize.width * 0.52 &&
+            b.uiCenter.y > screenSize.height * 0.16 && b.uiCenter.y < screenSize.height * 0.80) {
+            if ([t containsString:@"dieu huong"] || [t containsString:@"dieuhuong"]) {
                 dieuHuongBlk = b;
             }
         }
-        if (!daDenDiemDonBlk && b.uiCenter.y > screenSize.height * 0.78) {
-            if ([t containsString:@"da den diem don"] || [t containsString:@"den diem don"]) {
+        if (!daDenDiemDonBlk && b.uiCenter.y > screenSize.height * 0.72) {
+            if ([t containsString:@"da den diem don"] ||
+                [t containsString:@"den diem don"] ||
+                [t containsString:@"da den diem nhan"] ||
+                [t containsString:@"den diem nhan"] ||
+                [t containsString:@"da den diem lay"] ||
+                [t containsString:@"da den quan"] ||
+                [t containsString:@"da den nha hang"]) {
                 daDenDiemDonBlk = b;
             }
         }
-        if (!hoanThanhChuyenBlk && b.uiCenter.y > screenSize.height * 0.78) {
-            if ([t containsString:@"hoan thanh chuyen"]) {
+        if (!hoanThanhChuyenBlk && b.uiCenter.y > screenSize.height * 0.72) {
+            if ([t containsString:@"hoan thanh chuyen"] ||
+                [t containsString:@"hoan thanh don"] ||
+                [t containsString:@"da den diem giao"] ||
+                [t containsString:@"den diem giao"] ||
+                [t containsString:@"giao hang thanh cong"] ||
+                [t containsString:@"xac nhan giao"]) {
                 hoanThanhChuyenBlk = b;
             }
         }
-        if (b.uiCenter.y > screenSize.height * 0.74) {
+        if (b.uiCenter.y > screenSize.height * 0.72) {
             if ([t containsString:@"da den diem"] ||
+                [t containsString:@"don khach"] ||
+                [t containsString:@"bat dau chuyen"] ||
                 [t containsString:@"da lay hang"] ||
                 [t containsString:@"bat dau giao"] ||
                 [t containsString:@"hoan thanh chuyen"] ||
                 [t containsString:@"hoan thanh don"] ||
+                [t containsString:@"giao hang thanh cong"] ||
                 [t containsString:@"xac nhan giao"]) {
                 hasAnyTripBottomBtn = YES;
             }
@@ -338,7 +381,8 @@
     }
 
     // 2. Populate Active Trip states first so Lobby check never conflicts with an Active Trip
-    if (hanhKhachBlk && dieuHuongBlk) {
+    if (dieuHuongBlk && !acceptBlock &&
+        (daDenDiemDonBlk || hoanThanhChuyenBlk || hanhKhachBlk || hasTripActorLabel || hasAnyTripBottomBtn || (hasNhanTinBtn && hasGoiDienBtn))) {
         res.hasPassengerAndNav = YES;
         res.isPickupStage      = (daDenDiemDonBlk != nil);
         res.isDropoffStage     = (hoanThanhChuyenBlk != nil);
@@ -376,6 +420,16 @@
         res.hasRejectConfirmPopup = YES;
         res.rejectConfirmPoint = rejectConfirmBlk.uiCenter;
     }
+    res.hasBlockingBottomSheet = (hasBottomSheetTxt &&
+                                  !acceptBlock &&
+                                  !res.isAnyActiveTripScreen &&
+                                  !res.isPaymentConfirmScreen &&
+                                  !res.hasOfflineConfirmPopup &&
+                                  !res.hasRejectConfirmPopup);
+    res.hasAnyLobbyMarker = (res.isLobbyOnline ||
+                             res.isLobbyOffline ||
+                             res.hasBlockingBottomSheet ||
+                             (!acceptBlock && hasLobbyCardTxt));
 
     // 4. Inspect Service Header Bar ROI (strictly above 'Cước phí' / y = 20..92pt on iPhone 8)
     CGFloat headerMaxY = cuocPhiBlock

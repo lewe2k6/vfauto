@@ -1333,7 +1333,7 @@ BOOL startFilterDaemonIfNeeded(void) {
             return finalResult;
         }
 
-        appendDaemonLog(@"[LỖI] Không kích được pind v4.5 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+        appendDaemonLog(@"[LỖI] Không kích được pind v4.6 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
         finalResult = NO;
     } @finally {
         releaseCrossProcessCtlLock(lockFd);

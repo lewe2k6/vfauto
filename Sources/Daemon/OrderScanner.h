@@ -32,6 +32,8 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) BOOL isPaymentConfirmScreen; // 'Xác nhận hoàn thành'
 @property (nonatomic, assign) BOOL hasOfflineConfirmPopup; // Hộp thoại hỏi xác nhận tắt trực tuyến
 @property (nonatomic, assign) BOOL hasRejectConfirmPopup;  // Hộp thoại hỏi xác nhận từ chối chuyến (nếu có)
+@property (nonatomic, assign) BOOL hasBlockingBottomSheet; // Bảng phụ che sảnh ('0.0/8 — Bạn đã lái xe liên tục', v.v.)
+@property (nonatomic, assign) BOOL hasAnyLobbyMarker;      // Bất kỳ dấu hiệu sảnh chính nào (chống chạm nhầm nút 0.0/8)
 
 @property (nonatomic, assign) CGPoint offlinePowerPoint;   // (40, 455)
 @property (nonatomic, assign) CGPoint onlineStartPoint;    // (187, 307) hoặc tâm chữ 'Mở nhận chuyến'

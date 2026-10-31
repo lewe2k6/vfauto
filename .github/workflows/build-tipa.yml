@@ -38,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.5-ts
-          name: "Pin & Nhiệt Độ v4.5 Khóa Lõi Ngầm Bất Tử Tuyệt Đối 24/7 (TrollStore)"
-          body: "Bản cập nhật v4.5: Rà soát 100% mã nguồn & diệt tận gốc 6 nguyên nhân khiến Lõi Ngầm thỉnh thoảng tự tắt trên iOS 16: (1) Ghi file chuẩn PROTECTION_CLASS_D (NSFileProtectionNone) + đọc có retry chống lỗi khóa màn hình Passcode/TouchID làm Watchdog tưởng tắt công tắc tổng; (2) Gỡ trần tử thần Jetsam 64MB của Watchdog nâng lên 1024MB + cấm gọi LSApplicationWorkspace trong tiến trình root; (3) Double-spawn (--daemonize) tách hẳn Watchdog sang cha PID 1 (launchd) + nối /dev/null + CLOEXEC miễn nhiễm khi vuốt tắt app ngụy trang khỏi đa nhiệm; (4) Khóa flock liên tiến trình + kiểm tra PID chủ sở hữu trước khi unlink chống 2 luồng giẫm chân xóa nhầm PID; (5) Bọc @try/@catch toàn vòng lặp Worker + chặn SIGPIPE/SIGXCPU/SIGXFSZ; (6) Chống dội ghi file khi kéo thanh trượt."
+          tag_name: v4.6-ts
+          name: "Pin & Nhiệt Độ v4.6 Nhạy Tức Thì Nút Điều Hướng & Chống Bấm Xuyên 0.0/8 (TrollStore)"
+          body: "Bản cập nhật v4.6: (1) Sửa triệt để lỗi đợi đứng im không ấn nút tròn xanh 'Điều hướng': thêm cảm biến Pixel 0.01ms dò vòng tròn xanh dương (323, 278) tự đánh thức OCR ngay cả khi bản đồ đứng yên 0 chuyển động, bật Turbo 15s + giảm nghỉ sau Nhận chuyến từ 2.1s xuống 350ms, bỏ ràng buộc chữ 'Hành khách' để ăn cả Bike lẫn Express; (2) Diệt tận gốc lỗi bấm [X] hủy Green Food đâm xuyên xuống nút ⚠️ / 0.0/8 (335, 52) ở sảnh: thêm khóa Pixel sống 0.5ms sát trước khi hạ ngón tay, nâng chờ kiểm chứng sau [X] từ 380ms lên 620ms + giới hạn tối đa 1 nhịp bồi, và tự động hất đóng bảng '0.0/8 Bạn đã lái xe liên tục' để tắt nhận chuyến 100% không bao giờ bị kẹt."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

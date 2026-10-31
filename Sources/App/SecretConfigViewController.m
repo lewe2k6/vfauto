@@ -87,7 +87,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.5";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.6";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -918,7 +918,7 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.5!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.6!");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
@@ -965,13 +965,13 @@
     }
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.5 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.6 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.5...";
+        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.6...";
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";
