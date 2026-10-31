@@ -211,12 +211,25 @@ extern char **environ;
     if (dict[@"holdMaxMs"])              cfg.holdMaxMs              = [dict[@"holdMaxMs"] integerValue];
     if (dict[@"cooldownMs"])             cfg.cooldownMs             = [dict[@"cooldownMs"] integerValue];
 
-    if (cfg.driverAppBundleID.length == 0) {
-        InstalledAppInfo *detected = autoDetectDriverApp();
-        if (detected) {
-            cfg.driverAppBundleID    = detected.bundleID;
-            cfg.driverAppExecName    = detected.executableName;
-            cfg.driverAppDisplayName = detected.displayName;
+    if (cfg.driverAppBundleID.length == 0 || cfg.driverAppExecName.length == 0) {
+        InstalledAppInfo *matched = nil;
+        if (cfg.driverAppBundleID.length > 0) {
+            for (InstalledAppInfo *app in listInstalledUserApps()) {
+                if ([app.bundleID isEqualToString:cfg.driverAppBundleID]) {
+                    matched = app;
+                    break;
+                }
+            }
+        }
+        if (!matched) {
+            matched = autoDetectDriverApp();
+        }
+        if (matched) {
+            if (cfg.driverAppBundleID.length == 0)    cfg.driverAppBundleID    = matched.bundleID;
+            if (cfg.driverAppExecName.length == 0)    cfg.driverAppExecName    = matched.executableName;
+            if (cfg.driverAppDisplayName.length == 0 || [cfg.driverAppDisplayName isEqualToString:@"Tự động dò Xanh SM"]) {
+                cfg.driverAppDisplayName = matched.displayName;
+            }
         }
     }
 
@@ -673,22 +686,210 @@ InstalledAppInfo *autoDetectDriverApp(void) {
     return nil;
 }
 
-BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName) {
-    if (!bundleID || bundleID.length == 0) {
-        InstalledAppInfo *det = autoDetectDriverApp();
-        if (!det) return NO;
-        bundleID = det.bundleID;
+static BOOL isUserAppPidAlive(pid_t pid) {
+    if (pid <= 1) return NO;
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
+    struct kinfo_proc info;
+    size_t len = sizeof(info);
+    memset(&info, 0, sizeof(info));
+    if (sysctl(mib, 4, &info, &len, NULL, 0) == 0 && len > 0 && info.kp_proc.p_pid == pid) {
+        return (info.kp_proc.p_stat != SZOMB);
+    }
+    return (kill(pid, 0) == 0 || errno == EPERM);
+}
+
+static NSArray<NSNumber *> *findRunningAppPIDs(NSString *bundleID, NSString *execName) {
+    NSMutableSet<NSNumber *> *pidSet = [NSMutableSet set];
+    pid_t selfPid = getpid();
+
+    // Source 1: Exact PID from BackBoardServices applicationInfoForApplication:
+    if (bundleID.length > 0) {
+        void *bks = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
+        Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
+        if (bksMonCls) {
+            @try {
+                id mon = [[bksMonCls alloc] init];
+                SEL infoSel = NSSelectorFromString(@"applicationInfoForApplication:");
+                if (mon && [mon respondsToSelector:infoSel]) {
+                    NSDictionary *info = ((NSDictionary * (*)(id, SEL, NSString *))objc_msgSend)(mon, infoSel, bundleID);
+                    if ([info isKindOfClass:[NSDictionary class]]) {
+                        NSNumber *pidNum = info[@"SBApplicationStateProcessIDKey"] ?: info[@"BKSApplicationStateProcessIDKey"];
+                        if (!pidNum && bks) {
+                            NSString * const *symKey = (NSString * const *)dlsym(bks, "BKSApplicationStateProcessIDKey");
+                            if (symKey && *symKey) {
+                                pidNum = info[*symKey];
+                            }
+                        }
+                        if ([pidNum respondsToSelector:@selector(intValue)]) {
+                            pid_t p = (pid_t)[pidNum intValue];
+                            if (p > 1 && p != selfPid && isUserAppPidAlive(p)) {
+                                [pidSet addObject:@(p)];
+                            }
+                        }
+                    }
+                }
+                invalidateMonitorSafely(mon);
+            } @catch (NSException *ex) {}
+        }
     }
 
+    // Source 2: Kernel process table match against executableName (p_comm holds up to MAXCOMLEN=16 chars)
+    if (execName.length > 0) {
+        const char *execCStr = [execName UTF8String];
+        size_t cmpLen = strlen(execCStr);
+        if (cmpLen > 16) cmpLen = 16;
+
+        if (cmpLen > 0 &&
+            strncmp(execCStr, "pind", 4) != 0 &&
+            strncmp(execCStr, "PinNhietDo", 10) != 0 &&
+            strncmp(execCStr, "SpringBoard", 11) != 0) {
+            int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+            size_t size = 0;
+            if (sysctl(mib, 4, NULL, &size, NULL, 0) == 0 && size > 0) {
+                size_t allocSize = size + (size / 4);
+                struct kinfo_proc *procs = (struct kinfo_proc *)malloc(allocSize);
+                if (procs) {
+                    if (sysctl(mib, 4, procs, &allocSize, NULL, 0) == 0) {
+                        size_t count = allocSize / sizeof(struct kinfo_proc);
+                        for (size_t i = 0; i < count; i++) {
+                            pid_t p = procs[i].kp_proc.p_pid;
+                            if (p <= 1 || p == selfPid || procs[i].kp_proc.p_stat == SZOMB) continue;
+                            if (strncmp(procs[i].kp_proc.p_comm, execCStr, cmpLen) == 0) {
+                                [pidSet addObject:@(p)];
+                            }
+                        }
+                    }
+                    free(procs);
+                }
+            }
+        }
+    }
+
+    return [pidSet allObjects];
+}
+
+static NSString *resolvePindBinaryPath(void) {
+    NSString *cand1 = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:cand1]) {
+        return cand1;
+    }
+    NSString *arg0 = [NSProcessInfo processInfo].arguments.firstObject;
+    if (arg0.length > 0 && [arg0.lastPathComponent isEqualToString:@"pind"] &&
+        [[NSFileManager defaultManager] fileExistsAtPath:arg0]) {
+        return arg0;
+    }
+    return nil;
+}
+
+BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName) {
+    if (!bundleID || bundleID.length == 0 || !execName || execName.length == 0) {
+        InstalledAppInfo *det = nil;
+        if (bundleID.length > 0) {
+            for (InstalledAppInfo *app in listInstalledUserApps()) {
+                if ([app.bundleID isEqualToString:bundleID]) {
+                    det = app;
+                    break;
+                }
+            }
+        }
+        if (!det) det = autoDetectDriverApp();
+        if (det) {
+            if (!bundleID || bundleID.length == 0) bundleID = det.bundleID;
+            if (!execName || execName.length == 0) execName = det.executableName;
+        }
+    }
+    if (!bundleID || bundleID.length == 0) return NO;
+
+    NSArray<NSNumber *> *initialPIDs = findRunningAppPIDs(bundleID, execName);
+
+    // Layer 1: Modern FrontBoardServices FBSSystemService termination (cleans scene & app switcher state)
+    dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
+    Class fbsSysCls = NSClassFromString(@"FBSSystemService");
+    if (fbsSysCls) {
+        @try {
+            SEL sharedSel = NSSelectorFromString(@"sharedService");
+            SEL termSel   = NSSelectorFromString(@"terminateApplication:forReason:andReport:withDescription:");
+            if ([fbsSysCls respondsToSelector:sharedSel]) {
+                id sysSvc = ((id (*)(id, SEL))objc_msgSend)(fbsSysCls, sharedSel);
+                if (sysSvc && [sysSvc respondsToSelector:termSel]) {
+                    ((void (*)(id, SEL, NSString *, NSInteger, BOOL, NSString *))objc_msgSend)(
+                        sysSvc, termSel, bundleID, 5, NO, @"Session refresh");
+                }
+            }
+        } @catch (NSException *ex) {}
+    }
+
+    // Layer 2: BackBoardServices BKSTerminateApplicationForReasonAndReportWithDescription
     void *bks = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
     if (bks) {
         BKSTerminateApp_f fnTerm = (BKSTerminateApp_f)dlsym(bks, "BKSTerminateApplicationForReasonAndReportWithDescription");
         if (fnTerm) {
             fnTerm((__bridge CFStringRef)bundleID, 5, false, CFSTR("Session refresh"));
-            return YES;
         }
     }
-    return NO;
+
+    // Wait up to 350ms to verify whether FrontBoard/BackBoard actually terminated the process
+    for (int i = 0; i < 7; i++) {
+        usleep(50000);
+        NSArray<NSNumber *> *aliveNow = findRunningAppPIDs(bundleID, execName);
+        if (aliveNow.count == 0) {
+            BOOL anyInitialAlive = NO;
+            for (NSNumber *n in initialPIDs) {
+                if (isUserAppPidAlive((pid_t)[n intValue])) {
+                    anyInitialAlive = YES;
+                    break;
+                }
+            }
+            if (!anyInitialAlive) {
+                resetFrontmostAppMonitors();
+                return YES;
+            }
+        }
+    }
+
+    // Layer 3: Ironclad Kernel SIGTERM -> SIGKILL (+ root fallback) on any surviving PID
+    NSMutableSet<NSNumber *> *remaining = [NSMutableSet setWithArray:findRunningAppPIDs(bundleID, execName)];
+    for (NSNumber *n in initialPIDs) {
+        if (isUserAppPidAlive((pid_t)[n intValue])) {
+            [remaining addObject:n];
+        }
+    }
+
+    NSString *pindBin = resolvePindBinaryPath();
+    for (NSNumber *n in remaining) {
+        pid_t targetPid = (pid_t)[n intValue];
+        if (targetPid <= 1) continue;
+
+        kill(targetPid, SIGTERM);
+        usleep(80000);
+        if (isUserAppPidAlive(targetPid)) {
+            if (kill(targetPid, SIGKILL) != 0 && errno == EPERM && pindBin) {
+                spawnRoot(pindBin, @[@"--kill-pid", [NSString stringWithFormat:@"%d", targetPid]]);
+            }
+            usleep(80000);
+        }
+    }
+
+    resetFrontmostAppMonitors();
+    NSArray<NSNumber *> *afterKill = findRunningAppPIDs(bundleID, execName);
+    return (afterKill.count == 0);
+}
+
+static BOOL isAppCurrentlyForeground(NSString *bundleID) {
+    if (!bundleID || bundleID.length == 0) return NO;
+    Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
+    if (!bksMonCls) return NO;
+    BOOL fg = NO;
+    @try {
+        id mon = [[bksMonCls alloc] init];
+        SEL stSel = NSSelectorFromString(@"applicationStateForApplication:");
+        if (mon && [mon respondsToSelector:stSel]) {
+            unsigned int st = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(mon, stSel, bundleID);
+            fg = ((st & 8U) != 0);
+        }
+        invalidateMonitorSafely(mon);
+    } @catch (NSException *ex) {}
+    return fg;
 }
 
 BOOL launchAppByBundleID(NSString *bundleID) {
@@ -698,25 +899,66 @@ BOOL launchAppByBundleID(NSString *bundleID) {
         bundleID = det.bundleID;
     }
 
+    resetFrontmostAppMonitors();
+    BOOL invokedAny = NO;
+
+    // Layer 1: LSApplicationWorkspace openApplicationWithBundleID:
     Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
     if (wsCls) {
-        SEL defSel = NSSelectorFromString(@"defaultWorkspace");
-        id workspace = ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel);
-        SEL openSel = NSSelectorFromString(@"openApplicationWithBundleID:");
-        if (workspace && [workspace respondsToSelector:openSel]) {
-            BOOL ok = ((BOOL (*)(id, SEL, NSString *))objc_msgSend)(workspace, openSel, bundleID);
-            if (ok) return YES;
-        }
+        @try {
+            SEL defSel = NSSelectorFromString(@"defaultWorkspace");
+            id workspace = ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel);
+            SEL openSel = NSSelectorFromString(@"openApplicationWithBundleID:");
+            if (workspace && [workspace respondsToSelector:openSel]) {
+                if (((BOOL (*)(id, SEL, NSString *))objc_msgSend)(workspace, openSel, bundleID)) {
+                    invokedAny = YES;
+                }
+            }
+        } @catch (NSException *ex) {}
     }
 
+    usleep(220000);
+    if (isAppCurrentlyForeground(bundleID)) {
+        resetFrontmostAppMonitors();
+        return YES;
+    }
+
+    // Layer 2: FrontBoardServices FBSOpenApplicationService (works reliably from headless background daemons on iOS 16)
+    dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
+    Class fbsOpenCls = NSClassFromString(@"FBSOpenApplicationService");
+    if (fbsOpenCls) {
+        @try {
+            SEL epSel   = NSSelectorFromString(@"serviceWithDefaultShellEndpoint");
+            SEL openSel = NSSelectorFromString(@"openApplication:withOptions:completion:");
+            if ([fbsOpenCls respondsToSelector:epSel]) {
+                id openSvc = ((id (*)(id, SEL))objc_msgSend)(fbsOpenCls, epSel);
+                if (openSvc && [openSvc respondsToSelector:openSel]) {
+                    ((void (*)(id, SEL, NSString *, id, id))objc_msgSend)(openSvc, openSel, bundleID, nil, nil);
+                    invokedAny = YES;
+                }
+            }
+        } @catch (NSException *ex) {}
+    }
+
+    usleep(180000);
+    if (isAppCurrentlyForeground(bundleID)) {
+        resetFrontmostAppMonitors();
+        return YES;
+    }
+
+    // Layer 3: SpringBoardServices fallback
     void *sbs = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
     if (sbs) {
         SBSLaunchApp_f fnLaunch = (SBSLaunchApp_f)dlsym(sbs, "SBSLaunchApplicationWithIdentifier");
         if (fnLaunch) {
-            return (fnLaunch((__bridge CFStringRef)bundleID, false) == 0);
+            if (fnLaunch((__bridge CFStringRef)bundleID, false) == 0) {
+                invokedAny = YES;
+            }
         }
     }
-    return NO;
+
+    resetFrontmostAppMonitors();
+    return invokedAny || isAppCurrentlyForeground(bundleID);
 }
 
 #pragma mark - TrollStore Root Spawner & Dual-Process Daemon Control
@@ -830,7 +1072,7 @@ BOOL startFilterDaemonIfNeeded(void) {
         }
         return YES;
     }
-    appendDaemonLog(@"[LỖI] Không kích được pind v4.2 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+    appendDaemonLog(@"[LỖI] Không kích được pind v4.3 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
     return NO;
 }
 

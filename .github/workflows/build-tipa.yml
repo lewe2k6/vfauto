@@ -3,6 +3,8 @@ name: Build PinNhietDo TrollStore TIPA
 on:
   push:
     branches: [ "**" ]
+    paths-ignore:
+      - "dist/**"
   workflow_dispatch:
 
 permissions:
@@ -36,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.2-ts
-          name: "Pin & Nhiệt Độ v4.2 Vá Đứt Điểm Treo Ngủ Mát Sáng-Chiều & Tự Hồi Phục Lõi (TrollStore)"
-          body: "Bản vá lỗi khẩn cấp v4.2: (1) Sửa lỗi Chế độ Siêu Mát bị kẹt trạng thái 'App ngoài' do bitmask BackBoard (8|32=40), lớp phủ nút Home ảo AssistiveTouch/InputUI và kết nối XPC ngủ đông từ sáng tới chiều; (2) Tự động thay Worker mới sạch 100% trong 0.08s mỗi khi mở khóa máy sau >=3 phút + Cảm biến Pixel 0.2ms tự cưỡng chế đánh thức khi có bảng nổ đơn; (3) Lệnh --stop quyền root + kiểm tra tên tiến trình KERN_PROC_PID để không bao giờ phải cài lại app."
+          tag_name: v4.3-ts
+          name: "Pin & Nhiệt Độ v4.3 Vá Lỗi Kill App 3 Tầng, Chống Trôi Đơn & Mở Lại Vòng Kín (TrollStore)"
+          body: "Bản vá v4.3: (1) Bổ sung đủ quyền frontboard/backboard terminateapplications + nâng cấp Kill App 3 tầng (FBSSystemService + BackBoard + kiểm chứng PID kernel SIGKILL / root --kill-pid) trị dứt điểm lỗi báo Kill giả trên iOS 16; (2) Chốt an toàn kép: cấm Tắt app/Kill app khi đang chạy cuốc nối chuyến và chỉ Kill sau khi đã xác nhận màn Offline ('Mở nhận chuyến') tránh trôi đơn ngầm; (3) Mở lại App Tài xế 3 tầng nhận biết khóa màn hình + bấm [Mở nhận chuyến] vòng kín kiểm chứng lên 'Đang trực tuyến' thật sự."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

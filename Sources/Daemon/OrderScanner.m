@@ -229,19 +229,40 @@
             }
         }
 
-        if (!confirmOfflineBlk && b.uiCenter.y > screenSize.height * 0.35 && b.uiCenter.y < screenSize.height * 0.82) {
-            if (([t isEqualToString:@"xac nhan"] || [t isEqualToString:@"dong y"] ||
-                 [t containsString:@"tat truc tuyen"] || [t containsString:@"ngung nhan"]) &&
-                ![t containsString:@"hoan thanh"]) {
-                confirmOfflineBlk = b;
+        if (b.uiCenter.y > screenSize.height * 0.35 && b.uiCenter.y < screenSize.height * 0.85 &&
+            t.length <= 22 &&
+            ![b.rawText containsString:@"?"] &&
+            ![t containsString:@"ban co"] &&
+            ![t containsString:@"muon"] &&
+            ![t containsString:@"hoan thanh"] &&
+            ![t containsString:@"mo nhan"]) {
+            if ([t isEqualToString:@"xac nhan"] ||
+                [t isEqualToString:@"dong y"] ||
+                [t isEqualToString:@"tat nhan chuyen"] ||
+                [t isEqualToString:@"tat truc tuyen"] ||
+                [t isEqualToString:@"ngung nhan chuyen"] ||
+                [t isEqualToString:@"ngung truc tuyen"] ||
+                [t isEqualToString:@"tam nghi"] ||
+                [t hasPrefix:@"dong y "] ||
+                [t hasPrefix:@"xac nhan "]) {
+                if (!confirmOfflineBlk || b.uiCenter.y >= confirmOfflineBlk.uiCenter.y) {
+                    confirmOfflineBlk = b;
+                }
             }
         }
 
-        if (!rejectConfirmBlk && b.uiCenter.y > screenSize.height * 0.38 && b.uiCenter.y < screenSize.height * 0.82) {
+        if (b.uiCenter.y > screenSize.height * 0.38 && b.uiCenter.y < screenSize.height * 0.85 &&
+            t.length <= 22 &&
+            ![b.rawText containsString:@"?"] &&
+            ![t containsString:@"ban co"] &&
+            ![t containsString:@"muon"]) {
             if ([t isEqualToString:@"tu choi"] ||
                 [t isEqualToString:@"xac nhan tu choi"] ||
+                [t isEqualToString:@"xac nhan"] ||
                 [t isEqualToString:@"dong y"]) {
-                rejectConfirmBlk = b;
+                if (!rejectConfirmBlk || b.uiCenter.y >= rejectConfirmBlk.uiCenter.y) {
+                    rejectConfirmBlk = b;
+                }
             }
         }
 

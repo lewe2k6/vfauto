@@ -114,6 +114,26 @@ static int runStopMain(void) {
     return 0;
 }
 
+static int runKillPidMain(pid_t targetPid) {
+    if (targetPid <= 50 || targetPid == getpid()) return 1;
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)targetPid };
+    struct kinfo_proc info;
+    size_t len = sizeof(info);
+    memset(&info, 0, sizeof(info));
+    if (sysctl(mib, 4, &info, &len, NULL, 0) == 0 && len > 0) {
+        const char *comm = info.kp_proc.p_comm;
+        if (strncmp(comm, "SpringBoard", 11) == 0 ||
+            strncmp(comm, "backboardd", 10) == 0 ||
+            strncmp(comm, "launchd", 7) == 0) {
+            return 1;
+        }
+    }
+    kill(targetPid, SIGTERM);
+    usleep(60000);
+    kill(targetPid, SIGKILL);
+    return 0;
+}
+
 static int runWatchdogMain(const char *execPath) {
     pid_t me = getpid();
 
@@ -381,22 +401,60 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
         [state saveStateAndNotify:YES];
 
-        usleep(1400000);
+        usleep(1200000);
 
         BOOL confirmedOffline = NO;
-        for (int attempt = 0; attempt < 12 && !gShouldExit && !gSkipPauseRequested; attempt++) {
+        for (int attempt = 0; attempt < 14 && !gShouldExit && !gSkipPauseRequested; attempt++) {
             @autoreleasepool {
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
                 [state saveStateAndNotify:NO];
 
                 CIImage *img = [engine captureScreenCIImage];
                 ScreenAnalysis *ana = [scanner analyzeScreenImage:img screenSize:engine.logicalScreenSize config:config priceRetryCount:0];
 
+                // SAFETY GUARD 1: If driver is currently in an active trip (chained Food order rejected mid-trip),
+                // NEVER tap Offline [Power] or Kill App while carrying a passenger!
+                if (ana.hasPassengerAndNav || ana.isPaymentConfirmScreen) {
+                    appendDaemonLog(@"Đang chạy cuốc dở (nối chuyến) -> Giữ nguyên cuốc hiện tại, bỏ qua Tắt app!");
+                    state.phaseDescription = @"Đang trong chuyến xe / Canh nối chuyến";
+                    state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
+                    [state saveStateAndNotify:YES];
+                    return;
+                }
+
+                // Already confirmed Offline ('Mở nhận chuyến' visible)
                 if (ana.isLobbyOffline) {
                     confirmedOffline = YES;
                     break;
                 }
 
+                // Clear lingering Food card if [X] animation hadn't closed yet
+                if (ana.hasOrderPopup && ana.isGreenFood && ana.orderAction == OrderActionTapRejectX && !config.dryRunMode) {
+                    CGPoint xPt = CGPointZero;
+                    [engine performHumanTapAtPoint:ana.orderTargetPoint
+                                      jitterRadius:config.jitterRadiusPt
+                                         holdMinMs:config.holdMinMs
+                                         holdMaxMs:config.holdMaxMs
+                                    outActualPoint:&xPt];
+                    usleep(900000);
+                    continue;
+                }
+
+                // Clear lingering reject-reason confirmation dialog
+                if (ana.hasRejectConfirmPopup && !config.dryRunMode) {
+                    CGPoint rPt = CGPointZero;
+                    [engine performHumanTapAtPoint:ana.rejectConfirmPoint
+                                      jitterRadius:config.jitterRadiusPt
+                                         holdMinMs:config.holdMinMs
+                                         holdMaxMs:config.holdMaxMs
+                                    outActualPoint:&rPt];
+                    appendDaemonLog(@"Đã bấm đóng hộp thoại từ chối Food tại (%.0f, %.0f)", rPt.x, rPt.y);
+                    usleep(1100000);
+                    continue;
+                }
+
+                // Confirm Offline modal ('Xác nhận' / 'Đồng ý' / 'Tắt nhận chuyến')
                 if (ana.hasOfflineConfirmPopup) {
                     if (config.dryRunMode) {
                         appendDaemonLog(@"[THỬ] Sẽ bấm xác nhận tắt trực tuyến tại (%.0f, %.0f)",
@@ -411,12 +469,13 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                              holdMaxMs:config.holdMaxMs
                                         outActualPoint:&pt];
                         appendDaemonLog(@"Đã bấm nút xác nhận ngừng nhận chuyến (%.0f, %.0f)", pt.x, pt.y);
-                        usleep(1500000);
+                        usleep(1400000);
                         continue;
                     }
                 }
 
-                if (ana.isLobbyOnline || attempt >= 2) {
+                // Tap circular [Power] button when Lobby Online is visible (or cautious fallback if screen is clean)
+                if (ana.isLobbyOnline || (attempt >= 3 && (attempt % 2 == 1))) {
                     if (config.dryRunMode) {
                         appendDaemonLog(@"[THỬ] Sẽ bấm nút [Power] Tắt nhận chuyến tại (%.0f, %.0f)",
                                         ana.offlinePowerPoint.x, ana.offlinePowerPoint.y);
@@ -430,7 +489,7 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                              holdMaxMs:config.holdMaxMs
                                         outActualPoint:&pt];
                         appendDaemonLog(@"Bấm nút tròn [Power] Tắt nhận chuyến tại (%.0f, %.0f)", pt.x, pt.y);
-                        usleep(1700000);
+                        usleep(1600000);
                         continue;
                     }
                 }
@@ -449,14 +508,22 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         [state saveStateAndNotify:YES];
 
         appendDaemonLog(@"%@ Bắt đầu nghỉ %ld giây trước khi bật lại nhận chuyến.",
-                        confirmedOffline ? @"Đã Offline thành công!" : @"Chuyển pha nghỉ:", (long)pauseSec);
+                        confirmedOffline ? @"Đã Offline thành công!" : @"Chuyển pha nghỉ (chưa rõ chữ Mở nhận chuyến):",
+                        (long)pauseSec);
 
+        // SAFETY GUARD 2: Only kill Xanh SM AFTER Offline is confirmed on screen so GSM server never ghost-dispatches orders!
         if (config.autoKillAndRelaunchApp && !config.dryRunMode) {
-            usleep(1500000);
-            BOOL killed = killAppByBundleIDAndExec(config.driverAppBundleID, config.driverAppExecName);
-            didKillApp = YES;
-            appendDaemonLog(@"%@ tiến trình App Tài xế để xả RAM & làm mới phiên.",
-                            killed ? @"Đã tự động Kill" : @"Đã gửi lệnh đóng");
+            if (confirmedOffline) {
+                // Allow 1.2s for Xanh SM's Offline network packet to flush cleanly before terminating process
+                usleep(1200000);
+                BOOL killed = killAppByBundleIDAndExec(config.driverAppBundleID, config.driverAppExecName);
+                didKillApp = killed;
+                appendDaemonLog(@"%@ tiến trình Xanh SM để xả sạch RAM & làm mới phiên.",
+                                killed ? @"Đã tự động Kill sạch" : @"[CHÚ Ý] Lệnh Kill chưa dứt điểm");
+            } else {
+                didKillApp = NO;
+                appendDaemonLog(@"[AN TOÀN] Chưa xác nhận màn Offline nên giữ nguyên App (tránh bị trôi đơn ngầm)!");
+            }
         }
     } else {
         didKillApp = config.autoKillAndRelaunchApp;
@@ -466,10 +533,12 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
     double lastHbSave = 0.0;
     while (!gShouldExit && !gSkipPauseRequested) {
         @autoreleasepool {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
             if (gNeedsReload) {
                 *ioConfig = [FilterConfig loadFromDisk];
                 config = *ioConfig;
                 gNeedsReload = NO;
+                resetFrontmostAppMonitors();
             }
             if (gResetNavRequested) {
                 gResetNavRequested = NO;
@@ -497,16 +566,17 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
             double rem = state.pauseEndEpoch - cur;
             if (rem <= 0.0) break;
 
+            // Pre-relaunch Xanh SM ahead of timer ONLY when screen is unlocked (if locked in pocket, wait until unlock!)
             if (config.autoKillAndRelaunchApp && didKillApp && !didRelaunchApp && !config.dryRunMode) {
-                if (rem <= (double)MAX(8, config.relaunchLeadSec)) {
+                if (rem <= (double)MAX(10, config.relaunchLeadSec) && !isDeviceScreenLocked()) {
                     if (config.hapticEnabled) triggerHapticFeedback(NO);
                     BOOL launched = launchAppByBundleID(config.driverAppBundleID);
-                    didRelaunchApp = YES;
+                    didRelaunchApp = launched;
                     state.phaseDescription = @"Đang mở lại App Tài xế chờ khóa GPS...";
                     state.workerHeartbeatEpoch = cur;
                     [state saveStateAndNotify:YES];
-                    appendDaemonLog(@"Còn %.0fs -> %@ App Tài xế chờ load bản đồ!",
-                                    rem, launched ? @"Đã tự mở lại" : @"Đã gọi mở lại");
+                    appendDaemonLog(@"Còn %.0fs -> %@ App Tài xế chờ load bản đồ & GPS!",
+                                    rem, launched ? @"Đã tự mở lại" : @"Đang gọi mở lại");
                 }
             }
 
@@ -526,35 +596,72 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         gSkipPauseRequested = NO;
     }
 
-    if (config.autoKillAndRelaunchApp && didKillApp && !didRelaunchApp && !config.dryRunMode) {
+    // If phone screen is currently locked when pause ends, wait cleanly until unlocked so iOS allows foreground launch & UI tap
+    if (isDeviceScreenLocked() && !config.dryRunMode) {
+        state.phaseDescription = @"Hết giờ nghỉ — Chờ mở khóa màn hình để bật lại App...";
+        state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
+        [state saveStateAndNotify:YES];
+        appendDaemonLog(@"Hết giờ nghỉ nhưng máy đang khóa -> Sẽ tự mở lại Xanh SM ngay khi mở khóa màn hình!");
+
+        while (!gShouldExit && isDeviceScreenLocked()) {
+            double cur = [[NSDate date] timeIntervalSince1970];
+            if (cur - lastHbSave >= 3.0) {
+                state.workerHeartbeatEpoch = cur;
+                [state saveStateAndNotify:NO];
+                lastHbSave = cur;
+            }
+            usleep(450000);
+        }
+        if (gShouldExit) return;
+        usleep(400000);
+    }
+
+    if (config.autoKillAndRelaunchApp && !didRelaunchApp && !config.dryRunMode) {
         launchAppByBundleID(config.driverAppBundleID);
+        didRelaunchApp = YES;
         usleep(2500000);
     }
 
     state.phaseDescription = @"Đang bấm [Mở nhận chuyến]...";
+    state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
     [state saveStateAndNotify:YES];
 
     BOOL backOnline = NO;
-    for (int waitIdx = 0; waitIdx < 28 && !gShouldExit; waitIdx++) {
+    int onlineTapsSent = 0;
+
+    // Closed-loop re-online check (up to ~36s so iPhone 8 cold-launch + GSM Maps + GPS lock completes smoothly)
+    for (int waitIdx = 0; waitIdx < 36 && !gShouldExit; waitIdx++) {
         @autoreleasepool {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
             state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
             [state saveStateAndNotify:NO];
+
+            // Auto re-bring Xanh SM to foreground if cold-launch stalled or stayed on SpringBoard
+            if (config.autoKillAndRelaunchApp && !config.dryRunMode && (waitIdx % 6 == 2)) {
+                NSString *fgBid = currentFrontmostAppBundleIDForConfig(config);
+                if (fgBid.length > 0 && !isFrontmostAppAllowedForScan(fgBid, config)) {
+                    launchAppByBundleID(config.driverAppBundleID);
+                    usleep(1800000);
+                }
+            }
 
             CIImage *img = [engine captureScreenCIImage];
             ScreenAnalysis *ana = [scanner analyzeScreenImage:img screenSize:engine.logicalScreenSize config:config priceRetryCount:0];
 
-            if (ana.isLobbyOnline) {
+            if (ana.isLobbyOnline || ana.hasPassengerAndNav) {
                 backOnline = YES;
                 break;
             }
 
-            if (ana.isLobbyOffline) {
-                uint32_t dMs = 260 + arc4random_uniform(300);
+            if (ana.isLobbyOffline && onlineTapsSent < 4) {
+                uint32_t dMs = 260 + arc4random_uniform(280);
                 usleep(dMs * 1000);
 
                 if (config.dryRunMode) {
                     appendDaemonLog(@"[THỬ] Hết nghỉ -> Sẽ bấm [Mở nhận chuyến] tại (%.0f, %.0f)",
                                     ana.onlineStartPoint.x, ana.onlineStartPoint.y);
+                    backOnline = YES;
+                    break;
                 } else {
                     CGPoint pt = CGPointZero;
                     [engine performHumanTapAtPoint:ana.onlineStartPoint
@@ -562,23 +669,34 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                          holdMinMs:config.holdMinMs
                                          holdMaxMs:config.holdMaxMs
                                     outActualPoint:&pt];
-                    appendDaemonLog(@"Hết giờ nghỉ -> Đã bấm [Mở nhận chuyến] tại (%.0f, %.0f)!", pt.x, pt.y);
-                }
+                    onlineTapsSent++;
+                    appendDaemonLog(@"Hết giờ nghỉ -> Đã bấm [Mở nhận chuyến] phát %d tại (%.0f, %.0f)!",
+                                    onlineTapsSent, pt.x, pt.y);
+                    if (onlineTapsSent == 1 && config.hapticEnabled) {
+                        triggerHapticFeedback(YES);
+                    }
 
-                if (config.hapticEnabled) triggerHapticFeedback(YES);
-                usleep(2000000);
-                backOnline = YES;
-                break;
+                    // Wait 1.9s then verify on next iteration that 'Đang trực tuyến' actually appeared!
+                    usleep(1900000);
+                    CIImage *vImg = [engine captureScreenCIImage];
+                    ScreenAnalysis *vAna = [scanner analyzeScreenImage:vImg screenSize:engine.logicalScreenSize config:config priceRetryCount:0];
+                    if (vAna.isLobbyOnline || (!vAna.isLobbyOffline && vAna.hasOrderPopup)) {
+                        backOnline = YES;
+                        break;
+                    }
+                    continue;
+                }
             }
 
-            usleep(900000);
+            usleep(950000);
         }
     }
 
     if (!backOnline && !gShouldExit) {
-        appendDaemonLog(@"[CHÚ Ý] Quá 25s chưa thấy chữ 'Mở nhận chuyến' trên màn hình.");
+        appendDaemonLog(@"[CHÚ Ý] Quá 35s chưa xác nhận lên 'Đang trực tuyến' — hãy kiểm tra màn hình GPS/mạng.");
     }
 
+    resetFrontmostAppMonitors();
     [engine invalidateAnalyzedBaseline];
     state.phaseDescription = @"Đang trực tuyến / Canh đơn";
     state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
@@ -627,7 +745,7 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.2 Bất Tử + Tự Hồi Phục chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+            appendDaemonLog(@"pind v4.3 Bất Tử + Kill Sạch 3 Tầng chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
                             getRunningWatchdogPID(), getpid(),
                             screenOk ? @"OK" : @"LỖI",
                             (long)config.minFoodPriceVND);
@@ -1125,6 +1243,9 @@ static int runWorkerMain(void) {
 int main(int argc, char *argv[]) {
     if (argc >= 2 && strcmp(argv[1], "--stop") == 0) {
         return runStopMain();
+    }
+    if (argc >= 3 && strcmp(argv[1], "--kill-pid") == 0) {
+        return runKillPidMain((pid_t)atoi(argv[2]));
     }
     if (argc >= 2 && strcmp(argv[1], "--worker") == 0) {
         return runWorkerMain();

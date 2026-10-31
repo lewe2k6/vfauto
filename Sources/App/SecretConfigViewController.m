@@ -84,7 +84,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.2";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.3";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -800,11 +800,22 @@
 }
 
 - (void)testKillAndRelaunchTapped {
-    killAppByBundleIDAndExec(_cfg.driverAppBundleID, _cfg.driverAppExecName);
-    appendDaemonLog(@"[TEST] Đã đóng App Tài xế (%@), sẽ tự mở lại sau 3 giây...", _cfg.driverAppDisplayName);
-    [self refreshStatusAndLogs];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        launchAppByBundleID(self->_cfg.driverAppBundleID);
+    NSString *bid  = _cfg.driverAppBundleID;
+    NSString *exec = _cfg.driverAppExecName;
+    NSString *name = _cfg.driverAppDisplayName ?: @"Xanh SM";
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        BOOL killed = killAppByBundleIDAndExec(bid, exec);
+        appendDaemonLog(@"[TEST] %@ App Tài xế (%@), sẽ tự mở lại sau 3 giây...",
+                        killed ? @"Đã Kill sạch" : @"Đã gửi lệnh đóng", name);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self refreshStatusAndLogs];
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            BOOL launched = launchAppByBundleID(bid);
+            appendDaemonLog(@"[TEST] %@ lại App Tài xế (%@).",
+                            launched ? @"Đã tự mở" : @"Không mở được", name);
+        });
     });
 }
 
@@ -862,7 +873,7 @@
     [_cfg saveToDiskAndNotify:NO];
     forceRestartFilterDaemon();
     triggerHapticFeedback(NO);
-    appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.2!");
+    appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.3!");
     [self refreshStatusAndLogs];
 }
 
@@ -895,7 +906,7 @@
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.2 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.3 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
