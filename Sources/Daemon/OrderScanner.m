@@ -206,6 +206,9 @@
     BOOL hasPassengerRoute = NO; // 'điểm đến' hoặc 'Insurance' (đặc quyền của Bike chở người)
     BOOL hasDeliveryRoute  = NO; // 'điểm nhận' hoặc 'điểm giao' (chung cho cả Express & Food)
     BOOL hasPaymentTag     = NO; // 'Tiền mặt' hoặc 'Thẻ/Ví'
+    BOOL hasAnyTripBottomBtn = NO; // 'Đã đến điểm...', 'Đã lấy hàng', 'Hoàn thành...' (Bike + Express + Food)
+    BOOL hasNhanTinBtn     = NO;
+    BOOL hasGoiDienBtn     = NO;
 
     CGFloat kmLineY = screenSize.height * 0.42;
 
@@ -289,6 +292,20 @@
                 hoanThanhChuyenBlk = b;
             }
         }
+        if (b.uiCenter.y > screenSize.height * 0.74) {
+            if ([t containsString:@"da den diem"] ||
+                [t containsString:@"da lay hang"] ||
+                [t containsString:@"bat dau giao"] ||
+                [t containsString:@"hoan thanh chuyen"] ||
+                [t containsString:@"hoan thanh don"] ||
+                [t containsString:@"xac nhan giao"]) {
+                hasAnyTripBottomBtn = YES;
+            }
+        }
+        if (b.uiCenter.y > screenSize.height * 0.60) {
+            if ([t containsString:@"nhan tin"]) hasNhanTinBtn = YES;
+            if ([t containsString:@"goi dien"]) hasGoiDienBtn = YES;
+        }
 
         // Order Popup core markers
         if (!cuocPhiBlock && b.uiCenter.y < screenSize.height * 0.45) {
@@ -334,9 +351,17 @@
         }
     }
 
+    res.isAnyActiveTripScreen = (!acceptBlock &&
+                                 (res.hasPassengerAndNav ||
+                                  dieuHuongBlk != nil ||
+                                  daDenDiemDonBlk != nil ||
+                                  hoanThanhChuyenBlk != nil ||
+                                  hasAnyTripBottomBtn ||
+                                  (hasNhanTinBtn && hasGoiDienBtn)));
+
     // 3. Populate Lobby & Payment states (strictly guarded against active trip / order popup)
-    res.isLobbyOnline          = (dangTrucTuyenBlk != nil && !res.hasPassengerAndNav && !acceptBlock);
-    res.isLobbyOffline         = (moNhanChuyenBlock != nil && !res.hasPassengerAndNav && !acceptBlock);
+    res.isLobbyOnline          = (dangTrucTuyenBlk != nil && !res.isAnyActiveTripScreen && !acceptBlock);
+    res.isLobbyOffline         = (moNhanChuyenBlock != nil && !res.isAnyActiveTripScreen && !acceptBlock);
     res.isPaymentConfirmScreen = (xacNhanHTBlk != nil);
 
     if (moNhanChuyenBlock && config.coordMode == CoordModeAutoOCRWithOffset) {

@@ -38,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.3-ts
-          name: "Pin & Nhiệt Độ v4.3 Vá Lỗi Kill App 3 Tầng, Chống Trôi Đơn & Mở Lại Vòng Kín (TrollStore)"
-          body: "Bản vá v4.3: (1) Bổ sung đủ quyền frontboard/backboard terminateapplications + nâng cấp Kill App 3 tầng (FBSSystemService + BackBoard + kiểm chứng PID kernel SIGKILL / root --kill-pid) trị dứt điểm lỗi báo Kill giả trên iOS 16; (2) Chốt an toàn kép: cấm Tắt app/Kill app khi đang chạy cuốc nối chuyến và chỉ Kill sau khi đã xác nhận màn Offline ('Mở nhận chuyến') tránh trôi đơn ngầm; (3) Mở lại App Tài xế 3 tầng nhận biết khóa màn hình + bấm [Mở nhận chuyến] vòng kín kiểm chứng lên 'Đang trực tuyến' thật sự."
+          tag_name: v4.4-ts
+          name: "Pin & Nhiệt Độ v4.4 Xử Lý Nổ Đơn Liên Thanh & Chống Tắt App Khi Nối Chuyến (TrollStore)"
+          body: "Bản cập nhật v4.4: (1) Nếu vừa bấm [X] hủy đơn Food mà tổng đài bắn liền 1 đơn Bike/Express/Food ngon khi chưa kịp tắt app -> Tự động ngắt quy trình tắt app ngay trong 0ms để vồ gọn đơn mới (hoặc nếu nổ tiếp Food bèo thứ 2 thì chém tiếp [X] rồi mới tắt app); (2) Khóa 3 lớp nhận diện đang trong chuyến xe (Bike, Express, Food, nối chuyến, hoặc đang xem Google Maps) -> Khi nổ đơn Food nối chuyến chỉ bấm [X] từ chối, tuyệt đối giữ nguyên cuốc xe đang chạy không bao giờ tắt app."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

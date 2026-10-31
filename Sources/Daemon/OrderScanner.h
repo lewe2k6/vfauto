@@ -40,6 +40,7 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 
 // 3. Active Trip Navigation States
 @property (nonatomic, assign) BOOL hasPassengerAndNav;     // Thấy cả 'Hành khách' + 'Điều hướng'
+@property (nonatomic, assign) BOOL isAnyActiveTripScreen;  // Đang trong bất kỳ cuốc Bike / Express / Food nào
 @property (nonatomic, assign) BOOL isPickupStage;          // Nút đáy 'Đã đến điểm đón'
 @property (nonatomic, assign) BOOL isDropoffStage;         // Nút đáy 'Hoàn thành chuyến'
 @property (nonatomic, assign) CGPoint navBluePoint;        // Nút tròn xanh dương [Map] (323, 278)

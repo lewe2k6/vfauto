@@ -385,11 +385,12 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
     notify_post(kNotifyStatsUpdated);
 }
 
-static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
+static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                            RuntimeDaemonState *state,
                                            ScreenTouchEngine *engine,
                                            OrderScanner *scanner,
-                                           BOOL resumingExistingPause) {
+                                           BOOL resumingExistingPause,
+                                           BOOL *ioInActiveTrip) {
     FilterConfig *config = *ioConfig;
     gSkipPauseRequested = NO;
 
@@ -401,7 +402,8 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
         [state saveStateAndNotify:YES];
 
-        usleep(1200000);
+        // Short 450ms settle after [X] closes so [Power] is tapped fast while catching any back-to-back order
+        usleep(450000);
 
         BOOL confirmedOffline = NO;
         for (int attempt = 0; attempt < 14 && !gShouldExit && !gSkipPauseRequested; attempt++) {
@@ -413,32 +415,33 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                 CIImage *img = [engine captureScreenCIImage];
                 ScreenAnalysis *ana = [scanner analyzeScreenImage:img screenSize:engine.logicalScreenSize config:config priceRetryCount:0];
 
-                // SAFETY GUARD 1: If driver is currently in an active trip (chained Food order rejected mid-trip),
-                // NEVER tap Offline [Power] or Kill App while carrying a passenger!
-                if (ana.hasPassengerAndNav || ana.isPaymentConfirmScreen) {
-                    appendDaemonLog(@"Đang chạy cuốc dở (nối chuyến) -> Giữ nguyên cuốc hiện tại, bỏ qua Tắt app!");
+                // SAFETY GUARD 1: Active trip (Bike / Express / Food chained-ride) -> NEVER tap [Power] or Kill App!
+                if (ana.isAnyActiveTripScreen || ana.isPaymentConfirmScreen) {
+                    if (ioInActiveTrip) {
+                        *ioInActiveTrip = ana.isAnyActiveTripScreen;
+                    }
+                    appendDaemonLog(@"Đang chạy cuốc xe dở (nối chuyến) -> Chỉ từ chối Food, giữ nguyên App!");
                     state.phaseDescription = @"Đang trong chuyến xe / Canh nối chuyến";
                     state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
                     [state saveStateAndNotify:YES];
-                    return;
+                    return NO;
                 }
 
                 // Already confirmed Offline ('Mở nhận chuyến' visible)
                 if (ana.isLobbyOffline) {
+                    if (ioInActiveTrip) *ioInActiveTrip = NO;
                     confirmedOffline = YES;
                     break;
                 }
 
-                // Clear lingering Food card if [X] animation hadn't closed yet
-                if (ana.hasOrderPopup && ana.isGreenFood && ana.orderAction == OrderActionTapRejectX && !config.dryRunMode) {
-                    CGPoint xPt = CGPointZero;
-                    [engine performHumanTapAtPoint:ana.orderTargetPoint
-                                      jitterRadius:config.jitterRadiusPt
-                                         holdMinMs:config.holdMinMs
-                                         holdMaxMs:config.holdMaxMs
-                                    outActualPoint:&xPt];
-                    usleep(900000);
-                    continue;
+                // BACK-TO-BACK ORDER INTERRUPT:
+                // Another order (Bike / Express / Good Food OR 2nd Bad Food) popped up before Offline completed!
+                // Abort Offline immediately so main loop either ACCEPTS Bike/Express/Good-Food OR REJECTS Bad Food #2 first!
+                if (ana.hasOrderPopup && ana.orderAction != OrderActionSkipDisabled) {
+                    appendDaemonLog(@"Nổ liền đơn mới (%@) khi chưa kịp Tắt app -> Quay lại xử lý đơn ngay!",
+                                    ana.detectedServiceTitle.length > 0 ? ana.detectedServiceTitle : @"Mới");
+                    [engine invalidateAnalyzedBaseline];
+                    return YES;
                 }
 
                 // Clear lingering reject-reason confirmation dialog
@@ -450,7 +453,7 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                          holdMaxMs:config.holdMaxMs
                                     outActualPoint:&rPt];
                     appendDaemonLog(@"Đã bấm đóng hộp thoại từ chối Food tại (%.0f, %.0f)", rPt.x, rPt.y);
-                    usleep(1100000);
+                    usleep(950000);
                     continue;
                 }
 
@@ -469,13 +472,14 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                              holdMaxMs:config.holdMaxMs
                                         outActualPoint:&pt];
                         appendDaemonLog(@"Đã bấm nút xác nhận ngừng nhận chuyến (%.0f, %.0f)", pt.x, pt.y);
-                        usleep(1400000);
+                        usleep(1350000);
                         continue;
                     }
                 }
 
-                // Tap circular [Power] button when Lobby Online is visible (or cautious fallback if screen is clean)
-                if (ana.isLobbyOnline || (attempt >= 3 && (attempt % 2 == 1))) {
+                // Strictly tap circular [Power] button ONLY when Lobby Online ('Đang trực tuyến') is confirmed visible
+                if (ana.isLobbyOnline) {
+                    if (ioInActiveTrip) *ioInActiveTrip = NO;
                     if (config.dryRunMode) {
                         appendDaemonLog(@"[THỬ] Sẽ bấm nút [Power] Tắt nhận chuyến tại (%.0f, %.0f)",
                                         ana.offlinePowerPoint.x, ana.offlinePowerPoint.y);
@@ -489,16 +493,16 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                              holdMaxMs:config.holdMaxMs
                                         outActualPoint:&pt];
                         appendDaemonLog(@"Bấm nút tròn [Power] Tắt nhận chuyến tại (%.0f, %.0f)", pt.x, pt.y);
-                        usleep(1600000);
+                        usleep(1500000);
                         continue;
                     }
                 }
 
-                usleep(600000);
+                usleep(500000);
             }
         }
 
-        if (gShouldExit) return;
+        if (gShouldExit) return NO;
 
         NSInteger pauseSec = MAX(20, config.pauseDurationSec);
         double nowEpoch = [[NSDate date] timeIntervalSince1970];
@@ -588,7 +592,7 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
     state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
     if (gShouldExit) {
         [state saveStateAndNotify:YES];
-        return;
+        return NO;
     }
 
     if (gSkipPauseRequested) {
@@ -612,7 +616,7 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
             }
             usleep(450000);
         }
-        if (gShouldExit) return;
+        if (gShouldExit) return NO;
         usleep(400000);
     }
 
@@ -698,9 +702,11 @@ static void runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
 
     resetFrontmostAppMonitors();
     [engine invalidateAnalyzedBaseline];
+    if (ioInActiveTrip) *ioInActiveTrip = NO;
     state.phaseDescription = @"Đang trực tuyến / Canh đơn";
     state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
     [state saveStateAndNotify:YES];
+    return NO;
 }
 
 static int runWorkerMain(void) {
@@ -745,16 +751,19 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.3 Bất Tử + Kill Sạch 3 Tầng chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+            appendDaemonLog(@"pind v4.4 Bất Tử + Chống Chèn Đơn & Nối Chuyến chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
                             getRunningWatchdogPID(), getpid(),
                             screenOk ? @"OK" : @"LỖI",
                             (long)config.minFoodPriceVND);
             notify_post(kNotifyStatsUpdated);
         }
 
+        BOOL inActiveTripSession = (state.navPickupLocked || state.navDropoffLocked);
+        int consecutiveOfflineInterrupts = 0;
+
         // Seamlessly finish an in-progress Food Pause if revived mid-countdown
         if (state.pauseEndEpoch > bootEpoch + 2.0 && config.masterEnabled) {
-            runOfflinePauseAndRestartCycle(&config, state, engine, scanner, YES);
+            runOfflinePauseAndRestartCycle(&config, state, engine, scanner, YES, &inActiveTripSession);
         }
 
         NSInteger retryCount                = 0;
@@ -786,6 +795,7 @@ static int runWorkerMain(void) {
                 }
                 if (gResetNavRequested) {
                     gResetNavRequested = NO;
+                    inActiveTripSession    = NO;
                     state.navPickupLocked  = NO;
                     state.navDropoffLocked = NO;
                     [state saveStateAndNotify:YES];
@@ -948,13 +958,20 @@ static int runWorkerMain(void) {
                                                            config:config
                                                   priceRetryCount:retryCount];
 
-                // 1. KIỂM TRA 3 ĐIỀU KIỆN MỞ KHÓA CHỐT ĐIỀU HƯỚNG (GIỮ NGUYÊN CHỐT KHI NỐI CHUYẾN)
+                // 1. KIỂM TRA 3 ĐIỀU KIỆN MỞ KHÓA CHỐT ĐIỀU HƯỚNG & TRẠNG THÁI ĐANG TRONG CHUYẾN (NỐI CHUYẾN)
                 if (ana.isPaymentConfirmScreen) {
+                    inActiveTripSession = NO;
                     resetBothNavLocks(state, @"Thấy màn 'Xác nhận hoàn thành' -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.isLobbyOnline || ana.isLobbyOffline) {
+                    inActiveTripSession = NO;
+                    consecutiveOfflineInterrupts = 0;
                     resetBothNavLocks(state, @"Về màn hình sảnh chờ -> Xóa sạch 2 chốt Điều hướng!");
-                } else if (ana.hasPassengerAndNav && ana.isPickupStage && state.navDropoffLocked) {
-                    resetBothNavLocks(state, @"Phát hiện cuốc nối chuyến mới -> Xóa chốt cũ đón khách mới!");
+                } else if (ana.isAnyActiveTripScreen) {
+                    inActiveTripSession = YES;
+                    consecutiveOfflineInterrupts = 0;
+                    if (ana.hasPassengerAndNav && ana.isPickupStage && state.navDropoffLocked) {
+                        resetBothNavLocks(state, @"Phát hiện cuốc nối chuyến mới -> Xóa chốt cũ đón khách mới!");
+                    }
                 }
 
                 // 2. XỬ LÝ BẢNG NỔ ĐƠN ('Bike' / 'Express' / 'Express 2H' vs 'Green Food')
@@ -1036,6 +1053,7 @@ static int runWorkerMain(void) {
                         }
 
                         BOOL isAccept = (ana.orderAction == OrderActionTapAccept);
+                        BOOL newOrderArrivedImmediately = NO;
                         NSInteger minD = isAccept ? config.acceptDelayMinMs : config.rejectDelayMinMs;
                         NSInteger maxD = isAccept ? config.acceptDelayMaxMs : config.rejectDelayMaxMs;
                         if (maxD < minD) maxD = minD + 20;
@@ -1099,6 +1117,12 @@ static int runWorkerMain(void) {
                                                                           screenSize:engine.logicalScreenSize
                                                                               config:config
                                                                      priceRetryCount:2];
+                                if (chkAna.isAnyActiveTripScreen) {
+                                    inActiveTripSession = YES;
+                                } else if (chkAna.isLobbyOnline || chkAna.isLobbyOffline || chkAna.isPaymentConfirmScreen) {
+                                    inActiveTripSession = NO;
+                                }
+
                                 if (!isAccept && chkAna.hasRejectConfirmPopup) {
                                     CGPoint cfmPt = CGPointZero;
                                     [engine performHumanTapAtPoint:chkAna.rejectConfirmPoint
@@ -1117,7 +1141,22 @@ static int runWorkerMain(void) {
                                     break;
                                 }
 
-                                // Bảng đơn vẫn còn trên màn hình -> cập nhật tọa độ nút mới nhất để bồi ngay!
+                                // Nếu vừa bấm [X] hủy Food xong mà nổ liền 1 đơn Bike/Express/Food ngon (hoặc đơn Food thứ 2 khác giá) ngay trong 380ms:
+                                // DỪNG BỒI [X] NGAY LẬP TỨC để sang nhịp sau vồ đơn Bike/Express hoặc xử lý chuẩn đơn mới!
+                                if (!isAccept) {
+                                    BOOL switchedToAcceptOrder = (chkAna.orderAction == OrderActionTapAccept || !chkAna.isGreenFood);
+                                    BOOL switchedToDifferentFood = (chkAna.isGreenFood &&
+                                                                    chkAna.detectedPriceVND > 0 &&
+                                                                    ana.detectedPriceVND > 0 &&
+                                                                    chkAna.detectedPriceVND != ana.detectedPriceVND);
+                                    if (switchedToAcceptOrder || switchedToDifferentFood) {
+                                        confirmedGone = YES;
+                                        newOrderArrivedImmediately = YES;
+                                        break;
+                                    }
+                                }
+
+                                // Bảng đơn cũ vẫn còn trên màn hình -> cập nhật tọa độ nút mới nhất để bồi ngay!
                                 if ((isAccept && chkAna.orderAction == OrderActionTapAccept) ||
                                     (!isAccept && chkAna.orderAction == OrderActionTapRejectX)) {
                                     targetPt = chkAna.orderTargetPoint;
@@ -1126,6 +1165,8 @@ static int runWorkerMain(void) {
 
                             if (tapsSent > 0) {
                                 if (isAccept) {
+                                    inActiveTripSession = YES;
+                                    consecutiveOfflineInterrupts = 0;
                                     state.statAcceptedCount += 1;
                                     state.phaseDescription = @"Vừa nhận chuyến mới";
                                 } else {
@@ -1146,8 +1187,34 @@ static int runWorkerMain(void) {
 
                         [engine invalidateAnalyzedBaseline];
 
+                        // CASE 1: Nổ liền đơn thứ 2 ngay tức khắc (380ms) sau khi vừa hủy Food -> Xử lý đơn mới luôn với độ trễ 0ms!
+                        if (!isAccept && newOrderArrivedImmediately) {
+                            appendDaemonLog(@"Nổ chèn đơn mới ngay lập tức -> Dừng Tắt app để vồ/xử lý đơn mới ngay!");
+                            turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 6.5;
+                            continue;
+                        }
+
+                        // CASE 2: Đơn Food nổ kiểu NỐI CHUYẾN khi đang dở cuốc xe -> CHỈ TỪ CHỐI [X], TUYỆT ĐỐI KHÔNG TẮT APP!
+                        if (!isAccept && ana.isGreenFood &&
+                            (inActiveTripSession || state.navPickupLocked || state.navDropoffLocked)) {
+                            appendDaemonLog(@"Đã từ chối Food nối chuyến — Đang trong chuyến xe nên giữ nguyên cuốc, KHÔNG tắt app!");
+                            state.phaseDescription = @"Đang trong chuyến xe / Canh nối chuyến";
+                            state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
+                            [state saveStateAndNotify:YES];
+                            NSInteger cdTripMs = MAX(450, MIN(900, config.cooldownMs - 380));
+                            usleep((useconds_t)(cdTripMs * 1000));
+                            continue;
+                        }
+
+                        // CASE 3: Ở sảnh chờ rảnh rỗi vừa hủy Food -> Vào quy trình Tắt nhận chuyến + Kill App (nếu nổ chèn đơn mới thì tự ngắt quay ra ngay!)
                         if (!isAccept && ana.isGreenFood && config.pauseAfterRejectFood) {
-                            runOfflinePauseAndRestartCycle(&config, state, engine, scanner, NO);
+                            BOOL interruptedByNewOrder = runOfflinePauseAndRestartCycle(&config, state, engine, scanner, NO, &inActiveTripSession);
+                            if (interruptedByNewOrder && consecutiveOfflineInterrupts < 8) {
+                                consecutiveOfflineInterrupts++;
+                                turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 6.5;
+                                continue;
+                            }
+                            consecutiveOfflineInterrupts = 0;
                             continue;
                         }
 

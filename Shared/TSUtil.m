@@ -1072,7 +1072,7 @@ BOOL startFilterDaemonIfNeeded(void) {
         }
         return YES;
     }
-    appendDaemonLog(@"[LỖI] Không kích được pind v4.3 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+    appendDaemonLog(@"[LỖI] Không kích được pind v4.4 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
     return NO;
 }
 
