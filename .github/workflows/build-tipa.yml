@@ -38,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.6-ts
-          name: "Pin & Nhiệt Độ v4.6 Nhạy Tức Thì Nút Điều Hướng & Chống Bấm Xuyên 0.0/8 (TrollStore)"
-          body: "Bản cập nhật v4.6: (1) Sửa triệt để lỗi đợi đứng im không ấn nút tròn xanh 'Điều hướng': thêm cảm biến Pixel 0.01ms dò vòng tròn xanh dương (323, 278) tự đánh thức OCR ngay cả khi bản đồ đứng yên 0 chuyển động, bật Turbo 15s + giảm nghỉ sau Nhận chuyến từ 2.1s xuống 350ms, bỏ ràng buộc chữ 'Hành khách' để ăn cả Bike lẫn Express; (2) Diệt tận gốc lỗi bấm [X] hủy Green Food đâm xuyên xuống nút ⚠️ / 0.0/8 (335, 52) ở sảnh: thêm khóa Pixel sống 0.5ms sát trước khi hạ ngón tay, nâng chờ kiểm chứng sau [X] từ 380ms lên 620ms + giới hạn tối đa 1 nhịp bồi, và tự động hất đóng bảng '0.0/8 Bạn đã lái xe liên tục' để tắt nhận chuyến 100% không bao giờ bị kẹt."
+          tag_name: v4.6.1-ts
+          name: "Pin & Nhiệt Độ v4.6.1 Auto-Map Riêng Bike Chở Khách & Chống Bấm Xuyên 0.0/8 (TrollStore)"
+          body: "Bản cập nhật v4.6.1: (1) Khóa cứng Auto-Tap nút tròn xanh 'Điều hướng' CHỈ chạy riêng cho chuyến Bike chở khách ('Hành khách' + 'Đã đến điểm đón' / 'Hoàn thành chuyến'), tự động bỏ qua không chạm Map đối với Express / Express 2H ghép đơn / Green Food (nhưng vẫn bảo vệ nối chuyến 100% không bao giờ tắt nhầm app khi đang chạy đơn giao hàng); (2) Giữ trọn cảm biến Pixel vồ nút Điều hướng tức thì kể cả khi bản đồ đứng yên 0 chuyển động + khóa chống bấm [X] xuyên xuống nút ⚠️ / 0.0/8 & tự đóng bảng lái xe liên tục."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

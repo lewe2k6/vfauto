@@ -927,7 +927,7 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.6 Bất Tử + Nhạy Map & Chống Bấm Nhầm 0.0/8 chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+            appendDaemonLog(@"pind v4.6.1 Bất Tử + Map Riêng Bike & Chống Bấm 0.0/8 chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
                             getRunningWatchdogPID(), myPid,
                             screenOk ? @"OK" : @"LỖI",
                             (long)config.minFoodPriceVND);
@@ -947,6 +947,7 @@ static int runWorkerMain(void) {
         NSString *lastSkippedPopupSignature = nil;
         BOOL wasInCoolSleep                 = NO;
         BOOL prevFrameHadBlueNav            = NO;
+        BOOL activeTripConfirmedNonBike     = NO;
         double lockedSinceEpoch             = 0.0;
         int coolSleepTickCounter            = 0;
         double turboUntilEpoch              = bootEpoch + 6.0;
@@ -981,6 +982,7 @@ static int runWorkerMain(void) {
                 if (gResetNavRequested) {
                     gResetNavRequested = NO;
                     inActiveTripSession    = NO;
+                    activeTripConfirmedNonBike = NO;
                     state.navPickupLocked  = NO;
                     state.navDropoffLocked = NO;
                     [state saveStateAndNotify:YES];
@@ -1128,7 +1130,7 @@ static int runWorkerMain(void) {
                 prevFrameHadBlueNav = engine.lastFrameLikelyHasBlueNavButton;
                 BOOL blueNavDueForOCR = (engine.lastFrameLikelyHasBlueNavButton &&
                                          hasUnlockedNavPhase &&
-                                         (blueNavJustAppeared || (now - lastFullOCREpoch) >= 0.70));
+                                         (blueNavJustAppeared || (!activeTripConfirmedNonBike && (now - lastFullOCREpoch) >= 0.70)));
 
                 BOOL inTurbo = (now < turboUntilEpoch) ||
                                engine.lastFrameLikelyHasOrderPopup ||
@@ -1161,16 +1163,24 @@ static int runWorkerMain(void) {
                 // 1. KIỂM TRA 3 ĐIỀU KIỆN MỞ KHÓA CHỐT ĐIỀU HƯỚNG & TRẠNG THÁI ĐANG TRONG CHUYẾN (NỐI CHUYẾN)
                 if (ana.isPaymentConfirmScreen) {
                     inActiveTripSession = NO;
+                    activeTripConfirmedNonBike = NO;
                     resetBothNavLocks(state, @"Thấy màn 'Xác nhận hoàn thành' -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.isLobbyOnline || ana.isLobbyOffline) {
                     inActiveTripSession = NO;
+                    activeTripConfirmedNonBike = NO;
                     consecutiveOfflineInterrupts = 0;
                     resetBothNavLocks(state, @"Về màn hình sảnh chờ -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.isAnyActiveTripScreen) {
                     inActiveTripSession = YES;
                     consecutiveOfflineInterrupts = 0;
-                    if (ana.hasPassengerAndNav && ana.isPickupStage && state.navDropoffLocked) {
-                        resetBothNavLocks(state, @"Phát hiện cuốc nối chuyến mới -> Xóa chốt cũ đón khách mới!");
+                    if (ana.hasPassengerAndNav) {
+                        activeTripConfirmedNonBike = NO;
+                        if (ana.isPickupStage && state.navDropoffLocked) {
+                            resetBothNavLocks(state, @"Phát hiện cuốc Bike nối chuyến mới -> Xóa chốt cũ đón khách mới!");
+                        }
+                    } else if (engine.lastFrameLikelyHasBlueNavButton) {
+                        // Đang chạy đơn giao hàng Express / Express 2H / Food -> Không auto tap Điều hướng, ngắt hỏi OCR lặp!
+                        activeTripConfirmedNonBike = YES;
                     }
                 }
 
@@ -1402,15 +1412,24 @@ static int runWorkerMain(void) {
                                 }
                             }
 
+                            BOOL acceptedBikeOrder = NO;
                             if (tapsSent > 0) {
                                 double doneNow = [[NSDate date] timeIntervalSince1970];
                                 if (isAccept) {
                                     inActiveTripSession = YES;
                                     consecutiveOfflineInterrupts = 0;
                                     state.statAcceptedCount += 1;
-                                    state.phaseDescription = @"Vừa nhận chuyến -> Đang canh nút Điều hướng";
-                                    // Kích hoạt Turbo 15 giây liên tục để vồ nút xanh 'Điều hướng' ngay khi Xanh SM dựng xong thẻ khách!
-                                    turboUntilEpoch = doneNow + 15.0;
+                                    NSString *svcLow = (ana.detectedServiceTitle ?: @"").lowercaseString;
+                                    acceptedBikeOrder = (!ana.isGreenFood && ![svcLow containsString:@"express"] && ![svcLow containsString:@"food"]);
+                                    if (acceptedBikeOrder) {
+                                        activeTripConfirmedNonBike = NO;
+                                        state.phaseDescription = @"Vừa nhận Bike -> Đang canh nút Điều hướng";
+                                        // Kích hoạt Turbo 15 giây liên tục để vồ nút xanh 'Điều hướng' ngay khi Xanh SM dựng xong thẻ khách Bike!
+                                        turboUntilEpoch = doneNow + 15.0;
+                                    } else {
+                                        activeTripConfirmedNonBike = YES;
+                                        state.phaseDescription = @"Đang chạy đơn giao hàng (Không auto bấm Map)";
+                                    }
                                 } else {
                                     state.statRejectedCount += 1;
                                 }
@@ -1460,8 +1479,10 @@ static int runWorkerMain(void) {
                             continue;
                         }
 
-                        // Khi vừa bấm [Nhận chuyến]: chỉ nghỉ 350ms rồi quét ngay thẻ khách để tap nút xanh 'Điều hướng' tức thì (không ngủ 2.1s)!
-                        NSInteger cdMs = isAccept ? 350 : MAX(600, config.cooldownMs - 380);
+                        // Khi vừa bấm [Nhận chuyến] Bike chở khách: chỉ nghỉ 350ms rồi quét ngay thẻ khách để tap nút xanh 'Điều hướng' tức thì!
+                        NSString *svcLowCd = (ana.detectedServiceTitle ?: @"").lowercaseString;
+                        BOOL isBikeAcceptCd = (isAccept && !ana.isGreenFood && ![svcLowCd containsString:@"express"] && ![svcLowCd containsString:@"food"]);
+                        NSInteger cdMs = isBikeAcceptCd ? 350 : MAX(600, config.cooldownMs - 380);
                         usleep((useconds_t)(cdMs * 1000));
                         continue;
                     }

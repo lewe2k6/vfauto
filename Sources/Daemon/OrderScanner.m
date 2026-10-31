@@ -206,8 +206,9 @@
     BOOL hasPassengerRoute = NO; // 'điểm đến' hoặc 'Insurance' (đặc quyền của Bike chở người)
     BOOL hasDeliveryRoute  = NO; // 'điểm nhận' hoặc 'điểm giao' (chung cho cả Express & Food)
     BOOL hasPaymentTag     = NO; // 'Tiền mặt' hoặc 'Thẻ/Ví'
-    BOOL hasAnyTripBottomBtn = NO; // 'Đã đến điểm...', 'Đã lấy hàng', 'Hoàn thành...' (Bike + Express + Food)
-    BOOL hasTripActorLabel = NO; // 'Hành khách', 'Người gửi', 'Người nhận', 'Khách hàng'
+    BOOL hasAnyTripBottomBtn = NO; // 'Đã đến điểm...', 'Đã lấy hàng', 'Hoàn thành...' (Bike + Express + Food -> bảo vệ nối chuyến)
+    BOOL hasTripActorLabel   = NO; // 'Hành khách', 'Người gửi', 'Người nhận', 'Khách hàng'
+    BOOL hasDeliveryTripOnly = NO; // Dấu hiệu chuyến giao hàng Express / Express 2H / Food -> CHẶN bấm nút Điều hướng!
     BOOL hasNhanTinBtn     = NO;
     BOOL hasGoiDienBtn     = NO;
     BOOL hasBottomSheetTxt = NO; // 'Bạn đã lái xe liên tục', '0.0/8', '/8 tiếng', 'Trung tâm an toàn'...
@@ -293,16 +294,36 @@
             }
         }
 
-        // Active Trip markers ('Điều hướng' + bottom stage button across BOTH Bike & Express/Food; no longer blocked if 'Hành khách' is absent!)
+        // Active Trip markers:
+        // - Auto-Tap Blue 'Điều hướng' (hasPassengerAndNav) CHỈ kích hoạt cho chuyến Bike CHỞ KHÁCH ('Hành khách' + 'Đã đến điểm đón' / 'Hoàn thành chuyến', KHÔNG có nhãn giao hàng Express/Food)
+        // - Bảo vệ nối chuyến (isAnyActiveTripScreen) vẫn nhận diện đủ cả Bike + Express + Express 2H + Food để không bao giờ tắt nhầm app khi đang chạy đơn!
         if (b.uiCenter.x < screenSize.width * 0.62 &&
             b.uiCenter.y > screenSize.height * 0.16 && b.uiCenter.y < screenSize.height * 0.78) {
             if ([t containsString:@"hanh khach"]) {
                 if (!hanhKhachBlk) hanhKhachBlk = b;
                 hasTripActorLabel = YES;
             } else if ([t containsString:@"nguoi gui"] ||
-                       [t containsString:@"nguoi nhan"] ||
-                       [t containsString:@"khach hang"]) {
+                       [t containsString:@"nguoi nhan"]) {
                 hasTripActorLabel = YES;
+                hasDeliveryTripOnly = YES;
+            }
+        }
+        if (b.uiCenter.y > screenSize.height * 0.12 && b.uiCenter.y < screenSize.height * 0.96) {
+            if ([t containsString:@"nguoi gui"] ||
+                [t containsString:@"nguoi nhan"] ||
+                [t containsString:@"da den diem nhan"] ||
+                [t containsString:@"den diem nhan"] ||
+                [t containsString:@"da den diem lay"] ||
+                [t containsString:@"da lay hang"] ||
+                [t containsString:@"bat dau giao"] ||
+                [t containsString:@"da den diem giao"] ||
+                [t containsString:@"den diem giao"] ||
+                [t containsString:@"giao hang thanh cong"] ||
+                [t containsString:@"xac nhan giao"] ||
+                [t containsString:@"hoan thanh don"] ||
+                [t containsString:@"da den quan"] ||
+                [t containsString:@"da den nha hang"]) {
+                hasDeliveryTripOnly = YES;
             }
         }
         if (!dieuHuongBlk && b.uiCenter.x > screenSize.width * 0.52 &&
@@ -313,22 +334,12 @@
         }
         if (!daDenDiemDonBlk && b.uiCenter.y > screenSize.height * 0.72) {
             if ([t containsString:@"da den diem don"] ||
-                [t containsString:@"den diem don"] ||
-                [t containsString:@"da den diem nhan"] ||
-                [t containsString:@"den diem nhan"] ||
-                [t containsString:@"da den diem lay"] ||
-                [t containsString:@"da den quan"] ||
-                [t containsString:@"da den nha hang"]) {
+                [t containsString:@"den diem don"]) {
                 daDenDiemDonBlk = b;
             }
         }
         if (!hoanThanhChuyenBlk && b.uiCenter.y > screenSize.height * 0.72) {
-            if ([t containsString:@"hoan thanh chuyen"] ||
-                [t containsString:@"hoan thanh don"] ||
-                [t containsString:@"da den diem giao"] ||
-                [t containsString:@"den diem giao"] ||
-                [t containsString:@"giao hang thanh cong"] ||
-                [t containsString:@"xac nhan giao"]) {
+            if ([t containsString:@"hoan thanh chuyen"]) {
                 hoanThanhChuyenBlk = b;
             }
         }
@@ -381,8 +392,8 @@
     }
 
     // 2. Populate Active Trip states first so Lobby check never conflicts with an Active Trip
-    if (dieuHuongBlk && !acceptBlock &&
-        (daDenDiemDonBlk || hoanThanhChuyenBlk || hanhKhachBlk || hasTripActorLabel || hasAnyTripBottomBtn || (hasNhanTinBtn && hasGoiDienBtn))) {
+    // CHỈ BẬT hasPassengerAndNav CHO CHUYẾN BIKE CHỞ KHÁCH ('Hành khách' + 'Điều hướng' + không phải đơn giao hàng Express/Food)
+    if (hanhKhachBlk && dieuHuongBlk && !acceptBlock && !hasDeliveryTripOnly) {
         res.hasPassengerAndNav = YES;
         res.isPickupStage      = (daDenDiemDonBlk != nil);
         res.isDropoffStage     = (hoanThanhChuyenBlk != nil);
@@ -400,6 +411,8 @@
                                   dieuHuongBlk != nil ||
                                   daDenDiemDonBlk != nil ||
                                   hoanThanhChuyenBlk != nil ||
+                                  hasTripActorLabel ||
+                                  hasDeliveryTripOnly ||
                                   hasAnyTripBottomBtn ||
                                   (hasNhanTinBtn && hasGoiDienBtn)));
 

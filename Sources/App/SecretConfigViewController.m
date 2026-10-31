@@ -87,7 +87,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.6";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.6.1";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -458,11 +458,11 @@
 
     // --- CARD 3: AUTO-TAP BLUE NAVIGATION BUTTON (ANTI-LOOP) ---
     UIStackView *sec3 = nil;
-    [self makeCardWithTitle:@"3. Auto Tap Nút Xanh Điều Hướng (Chống Lặp)" addTo:_stackView outBody:&sec3];
+    [self makeCardWithTitle:@"3. Auto Tap Nút Xanh Điều Hướng (Chỉ Bike Chở Khách)" addTo:_stackView outBody:&sec3];
 
     _swNavPickup = [self addSwitchRowTo:sec3
                                   title:@"Auto tap Map khi tới màn 'Đã đến điểm đón'"
-                               subtitle:@"Chỉ bấm 1 lần duy nhất ở Pha Đón khách"
+                               subtitle:@"Chỉ áp dụng cho cuốc Bike chở khách (Bỏ qua Express / Express 2H / Food)"
                                  action:@selector(generalControlChanged)];
 
     _swNavDropoff = [self addSwitchRowTo:sec3
@@ -918,7 +918,7 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.6!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.6.1!");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
@@ -965,13 +965,13 @@
     }
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.6 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.6.1 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.6...";
+        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.6.1...";
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";
