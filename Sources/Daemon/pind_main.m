@@ -4,8 +4,10 @@
 #import <signal.h>
 #import <spawn.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
 #import <sys/wait.h>
 #import <unistd.h>
+#import <stdlib.h>
 #import <math.h>
 #import <string.h>
 #import "SharedConfig.h"
@@ -64,23 +66,60 @@ static void handleWatchdogSignal(int sig) {
     gWatchdogExit = YES;
 }
 
+static void killAllOtherPindProcesses(void) {
+    pid_t me = getpid();
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t len = 0;
+    if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0 || len == 0) {
+        pid_t oldWd = getRunningWatchdogPID();
+        if (oldWd > 1 && oldWd != me) { kill(oldWd, SIGTERM); usleep(80000); kill(oldWd, SIGKILL); }
+        pid_t oldWk = getRunningDaemonPID();
+        if (oldWk > 1 && oldWk != me) { kill(oldWk, SIGTERM); usleep(80000); kill(oldWk, SIGKILL); }
+        return;
+    }
+
+    size_t allocLen = len + sizeof(struct kinfo_proc) * 16;
+    struct kinfo_proc *procs = (struct kinfo_proc *)malloc(allocLen);
+    if (!procs) return;
+
+    if (sysctl(mib, 4, procs, &allocLen, NULL, 0) == 0) {
+        size_t count = allocLen / sizeof(struct kinfo_proc);
+        BOOL killedAny = NO;
+        for (size_t i = 0; i < count; i++) {
+            pid_t p = procs[i].kp_proc.p_pid;
+            if (p > 1 && p != me && strncmp(procs[i].kp_proc.p_comm, "pind", 4) == 0) {
+                kill(p, SIGTERM);
+                killedAny = YES;
+            }
+        }
+        if (killedAny) {
+            usleep(90000);
+            for (size_t i = 0; i < count; i++) {
+                pid_t p = procs[i].kp_proc.p_pid;
+                if (p > 1 && p != me && strncmp(procs[i].kp_proc.p_comm, "pind", 4) == 0) {
+                    if (kill(p, 0) == 0) {
+                        kill(p, SIGKILL);
+                    }
+                }
+            }
+        }
+    }
+    free(procs);
+}
+
+static int runStopMain(void) {
+    killAllOtherPindProcesses();
+    unlink([kWatchdogPidPath fileSystemRepresentation]);
+    unlink([kDaemonPidPath fileSystemRepresentation]);
+    return 0;
+}
+
 static int runWatchdogMain(const char *execPath) {
     pid_t me = getpid();
 
     @autoreleasepool {
         // Terminate any previous watchdog or worker instance cleanly while uid=0
-        pid_t oldWd = getRunningWatchdogPID();
-        if (oldWd > 1 && oldWd != me) {
-            kill(oldWd, SIGTERM);
-            usleep(100000);
-            if (kill(oldWd, 0) == 0) kill(oldWd, SIGKILL);
-        }
-        pid_t oldWk = getRunningDaemonPID();
-        if (oldWk > 1 && oldWk != me) {
-            kill(oldWk, SIGTERM);
-            usleep(100000);
-            if (kill(oldWk, 0) == 0) kill(oldWk, SIGKILL);
-        }
+        killAllOtherPindProcesses();
 
         applyCriticalJetsamToPid(me, 64);
         ensureSharedFilesPermissions();
@@ -125,6 +164,8 @@ static int runWatchdogMain(const char *execPath) {
                 int status = 0;
                 int tickCount = 0;
                 BOOL workerAlive = YES;
+                double lastLoopWallEpoch = [[NSDate date] timeIntervalSince1970];
+                double wakeGraceUntilEpoch = lastLoopWallEpoch + 25.0;
 
                 while (workerAlive && !gWatchdogExit) {
                     pid_t w = waitpid(workerPid, &status, WNOHANG);
@@ -132,6 +173,13 @@ static int runWatchdogMain(const char *execPath) {
                         workerAlive = NO;
                         break;
                     }
+
+                    double nowWall = [[NSDate date] timeIntervalSince1970];
+                    if (nowWall - lastLoopWallEpoch > 3.0) {
+                        // Device just woke up from iOS deep sleep -> grant Worker 25s grace to refresh heartbeat
+                        wakeGraceUntilEpoch = nowWall + 25.0;
+                    }
+                    lastLoopWallEpoch = nowWall;
 
                     tickCount++;
                     if (tickCount % 20 == 0) { // Every ~5s check heartbeat & master switch
@@ -141,11 +189,12 @@ static int runWatchdogMain(const char *execPath) {
                                 gWatchdogExit = YES;
                                 break;
                             }
-                            RuntimeDaemonState *st = [RuntimeDaemonState loadState];
-                            double now = [[NSDate date] timeIntervalSince1970];
-                            if (st.workerHeartbeatEpoch > 0.0 && (now - st.workerHeartbeatEpoch) > 50.0) {
-                                appendDaemonLog(@"[WATCHDOG] Worker phản hồi chậm >50s -> Làm mới tiến trình ngay!");
-                                kill(workerPid, SIGKILL);
+                            if (nowWall > wakeGraceUntilEpoch) {
+                                RuntimeDaemonState *st = [RuntimeDaemonState loadState];
+                                if (st.workerHeartbeatEpoch > 0.0 && (nowWall - st.workerHeartbeatEpoch) > 55.0) {
+                                    appendDaemonLog(@"[WATCHDOG] Worker phản hồi chậm >55s -> Làm mới tiến trình ngay!");
+                                    kill(workerPid, SIGKILL);
+                                }
                             }
                         }
                     }
@@ -305,8 +354,10 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
                    ana.onlineStartPoint.x, ana.onlineStartPoint.y];
     }
 
+    NSString *detFront = currentFrontmostAppBundleIDForConfig(config) ?: @"auto";
     triggerHapticFeedback(YES);
-    appendDaemonLog(@"[TEST OK] Đọc %ld cụm chữ (Tiêu đề: '%@'): [%@]",
+    appendDaemonLog(@"[TEST OK] App:%@ | Đọc %ld cụm (Tiêu đề: '%@'): [%@]",
+                    detFront,
                     (long)ana.ocrBlockCount,
                     ana.detectedServiceTitle ?: @"",
                     ana.ocrSampleSummary ?: @"");
@@ -576,7 +627,7 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.1 Bất Tử + Siêu Mát chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+            appendDaemonLog(@"pind v4.2 Bất Tử + Tự Hồi Phục chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
                             getRunningWatchdogPID(), getpid(),
                             screenOk ? @"OK" : @"LỖI",
                             (long)config.minFoodPriceVND);
@@ -592,12 +643,15 @@ static int runWorkerMain(void) {
         BOOL didSwipeBannerForCurrentPopup  = NO;
         NSString *lastSkippedPopupSignature = nil;
         BOOL wasInCoolSleep                 = NO;
-        double turboUntilEpoch              = bootEpoch + 4.0;
+        double lockedSinceEpoch             = 0.0;
+        int coolSleepTickCounter            = 0;
+        double turboUntilEpoch              = bootEpoch + 6.0;
         double lastFullOCREpoch             = 0.0;
         double lastHeartbeatSaveEpoch       = bootEpoch;
 
         while (!gShouldExit) {
             @autoreleasepool {
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 double now = [[NSDate date] timeIntervalSince1970];
 
                 if (now - lastHeartbeatSaveEpoch >= 4.0) {
@@ -609,6 +663,7 @@ static int runWorkerMain(void) {
                 if (gNeedsReload) {
                     config = [FilterConfig loadFromDisk];
                     gNeedsReload = NO;
+                    resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
                 }
                 if (gResetNavRequested) {
@@ -635,11 +690,62 @@ static int runWorkerMain(void) {
                     continue;
                 }
 
-                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI MÀN HÌNH KHÓA HOẶC ĐANG MỞ GOOGLE MAPS ---
+                // Always track lock-screen state so unlocking after >= 3 mins spawns a 100% fresh Worker
+                BOOL screenLocked = isDeviceScreenLocked();
+                if (screenLocked) {
+                    if (lockedSinceEpoch <= 0.0) {
+                        lockedSinceEpoch = now;
+                    }
+                    if (!wasInCoolSleep) {
+                        wasInCoolSleep = YES;
+                        retryCount = 0;
+                        didSwipeBannerForCurrentPopup = NO;
+                        [engine invalidateAnalyzedBaseline];
+                        state.phaseDescription = @"Ngủ mát 0% Nhiệt (Đang khóa màn hình)";
+                        state.workerHeartbeatEpoch = now;
+                        [state saveStateAndNotify:YES];
+                    }
+                    if ((now - bootEpoch) > 1200.0 || currentProcessFootprintMB() > 80) {
+                        state.workerHeartbeatEpoch = now;
+                        [state saveStateAndNotify:NO];
+                        _exit(kExitCodeProactiveRAMTrim);
+                    }
+                    usleep(550000);
+                    continue;
+                } else if (lockedSinceEpoch > 0.0) {
+                    double lockedDuration = now - lockedSinceEpoch;
+                    lockedSinceEpoch = 0.0;
+                    if (lockedDuration >= 180.0) {
+                        // Phone was locked >= 3 mins (e.g. morning -> afternoon) -> Spawn brand-new Worker in 0.08s!
+                        state.workerHeartbeatEpoch = now;
+                        state.phaseDescription = @"Đang trực tuyến / Canh đơn (Mới mở khóa)";
+                        [state saveStateAndNotify:NO];
+                        _exit(kExitCodeProactiveRAMTrim);
+                    }
+                }
+
+                CIImage *preCapturedImg = nil;
+
+                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG MỞ GOOGLE MAPS / APP NGOÀI (CÓ CẢM BIẾN PIXEL TỰ ĐÁNH THỨC) ---
                 if (config.smartCoolMode) {
-                    BOOL screenLocked = isDeviceScreenLocked();
-                    NSString *frontBid = screenLocked ? nil : currentFrontmostAppBundleIDForConfig(config);
-                    BOOL canScan = (!screenLocked && isFrontmostAppAllowedForScan(frontBid, config));
+                    NSString *frontBid = currentFrontmostAppBundleIDForConfig(config);
+                    BOOL canScan = isFrontmostAppAllowedForScan(frontBid, config);
+
+                    if (!canScan) {
+                        coolSleepTickCounter++;
+                        BOOL isGoogleMaps = [frontBid isEqualToString:@"com.google.Maps"];
+                        int probeInterval = isGoogleMaps ? 5 : 3; // ~2.5s in Google Maps, ~1.5s in other apps (0% Vision OCR!)
+
+                        if ((coolSleepTickCounter % probeInterval) == 0) {
+                            CIImage *probe = [engine captureScreenCIImage];
+                            if (probe && engine.lastFrameLikelyHasOrderPopup) {
+                                // Self-healing override: Xanh SM order popup is on screen right now!
+                                canScan = YES;
+                                preCapturedImg = probe;
+                                resetFrontmostAppMonitors();
+                            }
+                        }
+                    }
 
                     if (!canScan) {
                         if (!wasInCoolSleep) {
@@ -647,16 +753,15 @@ static int runWorkerMain(void) {
                             retryCount = 0;
                             didSwipeBannerForCurrentPopup = NO;
                             [engine invalidateAnalyzedBaseline];
-                            state.phaseDescription = screenLocked
-                                ? @"Ngủ mát 0% Nhiệt (Đang khóa màn hình)"
-                                : [NSString stringWithFormat:@"Ngủ mát 0%% Nhiệt (Đang mở %@)",
-                                   [frontBid isEqualToString:@"com.google.Maps"] ? @"Google Maps" : @"app ngoài"];
+                            state.phaseDescription = [frontBid isEqualToString:@"com.google.Maps"]
+                                ? @"Ngủ mát 0% Nhiệt (Đang mở Google Maps)"
+                                : [NSString stringWithFormat:@"Ngủ mát 0%% Nhiệt (App ngoài: %@)", frontBid ?: @"khác"];
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:YES];
                         }
 
-                        // Proactive memory recycle while safely sleeping outside Xanh SM (> 85 MB dirty footprint)
-                        if ((now - bootEpoch) > 60.0 && currentProcessFootprintMB() > 85) {
+                        if (((now - bootEpoch) > 60.0 && currentProcessFootprintMB() > 85) ||
+                            (now - bootEpoch) > 2400.0) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:NO];
                             _exit(kExitCodeProactiveRAMTrim);
@@ -665,24 +770,36 @@ static int runWorkerMain(void) {
                         usleep(500000);
                         continue;
                     } else if (wasInCoolSleep) {
-                        // Just switched from Google Maps / outside app back into Xanh SM -> Instant 6.5s Turbo!
+                        // Switched back into Xanh SM -> Instant 6.5s Turbo!
                         wasInCoolSleep = NO;
+                        coolSleepTickCounter = 0;
                         turboUntilEpoch = now + 6.5;
                         [engine invalidateAnalyzedBaseline];
                         state.phaseDescription = @"Đang trực tuyến / Canh đơn (Turbo)";
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
+                    } else {
+                        coolSleepTickCounter = 0;
                     }
                 } else if (wasInCoolSleep) {
                     wasInCoolSleep = NO;
+                    coolSleepTickCounter = 0;
                     state.phaseDescription = @"Đang trực tuyến / Canh đơn";
                     [state saveStateAndNotify:YES];
                 }
 
-                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: CẢM BIẾN PIXEL 0.02ms CHỐNG ĐỌC LẶP ---
-                CIImage *screenImg = [engine captureScreenCIImage];
+                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: KHIÊN GOOGLE MAPS + CẢM BIẾN PIXEL 0.02ms ---
+                CIImage *screenImg = preCapturedImg ?: [engine captureScreenCIImage];
                 if (!screenImg) {
                     usleep((useconds_t)(MAX(200, config.scanIntervalMs) * 1000));
+                    continue;
+                }
+
+                if (config.smartCoolMode &&
+                    engine.lastFrameLooksLikeGoogleMapsNav &&
+                    !engine.lastFrameLikelyHasOrderPopup) {
+                    // Pixel backup shield: Google Maps green turn-by-turn banner is active -> 0% Vision OCR!
+                    usleep(450000);
                     continue;
                 }
 
@@ -824,6 +941,9 @@ static int runWorkerMain(void) {
                             BOOL confirmedGone   = NO;
 
                             for (NSInteger attempt = 0; attempt <= maxRetries && !gShouldExit; attempt++) {
+                                if (attempt == 1) {
+                                    [engine refreshHIDClient];
+                                }
                                 if (attempt > 0 && !isAccept) {
                                     // Nếu phát đầu bấm [X] Food chưa tắt (có thể vướng banner góc trên), hất banner lên trước khi bồi
                                     CGFloat midX = engine.logicalScreenSize.width * 0.5;
@@ -1003,6 +1123,9 @@ static int runWorkerMain(void) {
 }
 
 int main(int argc, char *argv[]) {
+    if (argc >= 2 && strcmp(argv[1], "--stop") == 0) {
+        return runStopMain();
+    }
     if (argc >= 2 && strcmp(argv[1], "--worker") == 0) {
         return runWorkerMain();
     }

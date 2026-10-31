@@ -99,6 +99,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     int _pixelW;
     int _pixelH;
     size_t _bytesPerRow;
+    int _consecutiveEmptyCaptures;
 
     BOOL _hasAnalyzedBaseline;
     uint8_t _currentR[kGridCount];
@@ -121,12 +122,14 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _logicalScreenSize            = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
-        _screenScale                  = 2.0;
-        _lastCaptureHadPixels         = NO;
-        _lastFrameLikelyHasOrderPopup = NO;
-        _lastFrameChangedSamples      = kGridCount;
-        _hasAnalyzedBaseline          = NO;
+        _logicalScreenSize               = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
+        _screenScale                     = 2.0;
+        _lastCaptureHadPixels            = NO;
+        _lastFrameLikelyHasOrderPopup    = NO;
+        _lastFrameLooksLikeGoogleMapsNav = NO;
+        _lastFrameChangedSamples         = kGridCount;
+        _hasAnalyzedBaseline             = NO;
+        _consecutiveEmptyCaptures        = 0;
 
         CGSize pxSize = CGSizeZero;
         SEL unjailedSel = NSSelectorFromString(@"_unjailedReferenceBoundsInPixels");
@@ -213,6 +216,33 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     if (_fnClientCreate) {
         _hidClient = _fnClientCreate(kCFAllocatorDefault);
     }
+}
+
+- (void)refreshHIDClient {
+    if (!_fnClientCreate || !_hidQueue) return;
+    dispatch_sync(_hidQueue, ^{
+        if (self->_hidClient) {
+            CFRelease(self->_hidClient);
+            self->_hidClient = NULL;
+        }
+        self->_hidClient = self->_fnClientCreate(kCFAllocatorDefault);
+    });
+}
+
+- (void)rebuildCaptureSurfaces {
+    if (_srcSurface) {
+        CFRelease(_srcSurface);
+        _srcSurface = NULL;
+    }
+    if (_dstSurface) {
+        CFRelease(_dstSurface);
+        _dstSurface = NULL;
+    }
+    if (_accelerator) {
+        CFRelease((CFTypeRef)_accelerator);
+        _accelerator = NULL;
+    }
+    [self setupCaptureSurfaces];
 }
 
 - (void)setupCaptureSurfaces {
@@ -312,15 +342,20 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameChangedSamples = changed;
 
         // 2. Fast Order Popup Sensor (0.01ms): Teal 'Nhận chuyến' button at y ~ 95.8% + White card at y ~ 15.0%
-        int yAccept = (int)(0.958 * (double)(_pixelH - 1));
+        int yAccept   = (int)(0.958 * (double)(_pixelH - 1));
         int yFareCard = (int)(0.155 * (double)(_pixelH - 1));
         int yMidCard  = (int)(0.340 * (double)(_pixelH - 1));
+        int yGMapTop  = (int)(0.095 * (double)(_pixelH - 1));
+        int yGMapSub  = (int)(0.135 * (double)(_pixelH - 1));
         const uint8_t *rowAccept = base + (size_t)yAccept * _bytesPerRow;
         const uint8_t *rowFare   = base + (size_t)yFareCard * _bytesPerRow;
         const uint8_t *rowMid    = base + (size_t)yMidCard * _bytesPerRow;
+        const uint8_t *rowGMTop  = base + (size_t)yGMapTop * _bytesPerRow;
+        const uint8_t *rowGMSub  = base + (size_t)yGMapSub * _bytesPerRow;
 
-        int tealHits  = 0;
-        int whiteHits = 0;
+        int tealHits      = 0;
+        int whiteHits     = 0;
+        int gmapsGreenHit = 0;
         for (int s = 0; s < 12; s++) {
             int px = (int)((0.16 + (0.68 * (double)s / 11.0)) * (double)(_pixelW - 1));
             uint32_t pAcc = *((const uint32_t *)(rowAccept + (size_t)px * 4));
@@ -336,8 +371,19 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
             if ((rF >= 232 && gF >= 232 && bF >= 232) || (rM >= 235 && gM >= 235 && bM >= 235)) {
                 whiteHits++;
             }
+
+            uint32_t pG1 = *((const uint32_t *)(rowGMTop + (size_t)px * 4));
+            uint8_t bG1 = pG1 & 0xFF, gG1 = (pG1 >> 8) & 0xFF, rG1 = (pG1 >> 16) & 0xFF;
+            uint32_t pG2 = *((const uint32_t *)(rowGMSub + (size_t)px * 4));
+            uint8_t bG2 = pG2 & 0xFF, gG2 = (pG2 >> 8) & 0xFF, rG2 = (pG2 >> 16) & 0xFF;
+            BOOL topGreen = (gG1 >= 95 && rG1 <= 65 && (int)gG1 - (int)rG1 >= 50 && (int)gG1 - (int)bG1 >= 18);
+            BOOL subGreen = (gG2 >= 95 && rG2 <= 65 && (int)gG2 - (int)rG2 >= 50 && (int)gG2 - (int)bG2 >= 18);
+            if (topGreen || subGreen) {
+                gmapsGreenHit++;
+            }
         }
-        _lastFrameLikelyHasOrderPopup = (tealHits >= 5 && whiteHits >= 6);
+        _lastFrameLikelyHasOrderPopup    = (tealHits >= 5 && whiteHits >= 6);
+        _lastFrameLooksLikeGoogleMapsNav = (!_lastFrameLikelyHasOrderPopup && gmapsGreenHit >= 8);
     }
 
     _fnSurfaceUnlock(surface, kIOSurfaceLockReadOnlyFlag, NULL);
@@ -391,9 +437,17 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 
     _lastCaptureHadPixels = hasPixels;
     if (!hasPixels) {
-        _lastFrameLikelyHasOrderPopup = NO;
+        _lastFrameLikelyHasOrderPopup    = NO;
+        _lastFrameLooksLikeGoogleMapsNav = NO;
+        _consecutiveEmptyCaptures++;
+        if (_consecutiveEmptyCaptures >= 3) {
+            _consecutiveEmptyCaptures = 0;
+            [self rebuildCaptureSurfaces];
+            [self refreshHIDClient];
+        }
         return nil;
     }
+    _consecutiveEmptyCaptures = 0;
 
     return [CIImage imageWithIOSurface:activeSurface];
 }

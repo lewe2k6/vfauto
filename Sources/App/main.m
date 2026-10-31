@@ -13,13 +13,23 @@
     self.window.rootViewController = [[StealthBatteryViewController alloc] init];
     [self.window makeKeyAndVisible];
 
-    // Auto-revive daemon if masterEnabled was left ON before reboot
-    FilterConfig *cfg = [FilterConfig loadFromDisk];
-    if (cfg.masterEnabled) {
-        startFilterDaemonIfNeeded();
-    }
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        FilterConfig *cfg = [FilterConfig loadFromDisk];
+        if (cfg.masterEnabled) {
+            startFilterDaemonIfNeeded();
+        }
+    });
 
     return YES;
+}
+
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        FilterConfig *cfg = [FilterConfig loadFromDisk];
+        if (cfg.masterEnabled) {
+            startFilterDaemonIfNeeded();
+        }
+    });
 }
 
 @end

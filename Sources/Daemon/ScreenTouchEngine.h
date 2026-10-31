@@ -11,6 +11,7 @@
 @property (nonatomic, readonly) CGFloat screenScale;                 // 2.0 on iPhone 8
 @property (nonatomic, readonly) BOOL lastCaptureHadPixels;           // YES when IOSurface has real non-black pixels
 @property (nonatomic, readonly) BOOL lastFrameLikelyHasOrderPopup;   // 0.02ms pixel sensor: teal accept bar + white fare card
+@property (nonatomic, readonly) BOOL lastFrameLooksLikeGoogleMapsNav;// 0.01ms pixel sensor: Google Maps top green turn banner
 @property (nonatomic, readonly) NSInteger lastFrameChangedSamples;   // Out of 256 grid samples vs last OCR-analyzed frame
 
 + (instancetype)sharedEngine;
@@ -18,6 +19,7 @@
 - (CIImage *)captureScreenCIImage;
 - (void)markCurrentFrameAnalyzed;
 - (void)invalidateAnalyzedBaseline;
+- (void)refreshHIDClient;
 
 - (BOOL)performHumanTapAtPoint:(CGPoint)logicalPoint
                   jitterRadius:(double)jitterRadiusPt

@@ -36,9 +36,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.1-ts
-          name: "Pin & Nhiệt Độ v4.1 Bản Vá Chuẩn Hạ Nhiệt iOS 16 & Khóa Banner (TrollStore)"
-          body: "Bản vá lỗi tinh gọn v4.1 (không thêm tính năng thừa): (1) Vá dứt điểm dò App tiền cảnh trên iOS 15/16 bằng FBSDisplayLayoutMonitorConfiguration + BKSApplicationStateMonitor để tắt sạch 100% OCR khi đang mở Google Maps; (2) Regex ranh giới từ nghiêm ngặt chặn banner '2h' / 'car' nhận nhầm Food thành Express 2H; (3) Khóa mỏ neo tung độ Y nút [X] chuẩn vào tiêu đề Food & tự bấm xác nhận nếu có hộp thoại hỏi từ chối; (4) Chống ghi đè Reset chốt Map/bộ đếm trong lúc nghỉ 2 phút & bảo vệ luồng ghi Log."
+          tag_name: v4.2-ts
+          name: "Pin & Nhiệt Độ v4.2 Vá Đứt Điểm Treo Ngủ Mát Sáng-Chiều & Tự Hồi Phục Lõi (TrollStore)"
+          body: "Bản vá lỗi khẩn cấp v4.2: (1) Sửa lỗi Chế độ Siêu Mát bị kẹt trạng thái 'App ngoài' do bitmask BackBoard (8|32=40), lớp phủ nút Home ảo AssistiveTouch/InputUI và kết nối XPC ngủ đông từ sáng tới chiều; (2) Tự động thay Worker mới sạch 100% trong 0.08s mỗi khi mở khóa máy sau >=3 phút + Cảm biến Pixel 0.2ms tự cưỡng chế đánh thức khi có bảng nổ đơn; (3) Lệnh --stop quyền root + kiểm tra tên tiến trình KERN_PROC_PID để không bao giờ phải cài lại app."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

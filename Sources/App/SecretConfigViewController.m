@@ -84,7 +84,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.1";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.2";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -320,15 +320,32 @@
     [statRow addArrangedSubview:resetStatBtn];
     [statBody addArrangedSubview:statRow];
 
+    UIStackView *actionRow = [[UIStackView alloc] init];
+    actionRow.axis = UILayoutConstraintAxisHorizontal;
+    actionRow.distribution = UIStackViewDistributionFillEqually;
+    actionRow.spacing = 8;
+
     UIButton *diagBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [diagBtn setTitle:@"Test Quét Màn & Đọc Chữ (Sau 4 Giây)" forState:UIControlStateNormal];
+    [diagBtn setTitle:@"Test Quét Màn (4s)" forState:UIControlStateNormal];
     [diagBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    diagBtn.titleLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightBold];
+    diagBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
     diagBtn.backgroundColor = [UIColor colorWithRed:0.16 green:0.45 blue:0.82 alpha:1.0];
     diagBtn.layer.cornerRadius = 8;
     [diagBtn.heightAnchor constraintEqualToConstant:40].active = YES;
     [diagBtn addTarget:self action:@selector(diagCaptureTapped) forControlEvents:UIControlEventTouchUpInside];
-    [statBody addArrangedSubview:diagBtn];
+
+    UIButton *restartDaemonBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [restartDaemonBtn setTitle:@"Làm Mới Lõi Ngầm" forState:UIControlStateNormal];
+    [restartDaemonBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    restartDaemonBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+    restartDaemonBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.58 blue:0.50 alpha:1.0];
+    restartDaemonBtn.layer.cornerRadius = 8;
+    [restartDaemonBtn.heightAnchor constraintEqualToConstant:40].active = YES;
+    [restartDaemonBtn addTarget:self action:@selector(forceRestartDaemonTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    [actionRow addArrangedSubview:diagBtn];
+    [actionRow addArrangedSubview:restartDaemonBtn];
+    [statBody addArrangedSubview:actionRow];
 
     // --- CARD 1: FILTER & GREEN FOOD MIN PRICE ---
     UIStackView *sec1 = nil;
@@ -839,6 +856,16 @@
     [self refreshStatusAndLogs];
 }
 
+- (void)forceRestartDaemonTapped {
+    _cfg.masterEnabled = YES;
+    _swMaster.on = YES;
+    [_cfg saveToDiskAndNotify:NO];
+    forceRestartFilterDaemon();
+    triggerHapticFeedback(NO);
+    appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.2!");
+    [self refreshStatusAndLogs];
+}
+
 - (void)resetNavLocksTapped {
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
     st.navPickupLocked  = NO;
@@ -868,7 +895,7 @@
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.1 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.2 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];

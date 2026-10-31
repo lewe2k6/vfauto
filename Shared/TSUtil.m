@@ -7,8 +7,14 @@
 #import <signal.h>
 #import <notify.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
 #import <unistd.h>
 #import <errno.h>
+#import <string.h>
+
+#ifndef SZOMB
+#define SZOMB 5
+#endif
 
 #define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 1
 typedef int (*persona_np_f)(const posix_spawnattr_t * __restrict, uid_t, uint32_t);
@@ -299,42 +305,189 @@ extern char **environ;
 
 static BOOL bundleIDMatchesDriverOrAllowed(NSString *bid, FilterConfig *config) {
     if (!bid || bid.length == 0) return NO;
-    if (config && config.driverAppBundleID.length > 0 && [bid isEqualToString:config.driverAppBundleID]) {
-        return YES;
+    if (config && config.driverAppBundleID.length > 0) {
+        if ([bid isEqualToString:config.driverAppBundleID] ||
+            [bid rangeOfString:config.driverAppBundleID options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            return YES;
+        }
     }
     NSString *lower = bid.lowercaseString;
     if ([lower containsString:@"gsm"] ||
         [lower containsString:@"xanhsm"] ||
         [lower containsString:@"greensm"] ||
+        [lower containsString:@"xanh.sm"] ||
+        [lower containsString:@"green.sm"] ||
         [lower containsString:@"vinfast"]) {
         return YES;
     }
-    if (config && config.dryRunMode && [bid isEqualToString:@"com.apple.mobileslideshow"]) {
+    if (config && config.dryRunMode && [lower containsString:@"com.apple.mobileslideshow"]) {
         return YES;
     }
     return NO;
 }
 
-NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
-    static id sLayoutMonitor = nil;
-    static id sAppStateMon   = nil;
-    static id sLatestLayout  = nil;
-    static NSLock *sLayoutLock = nil;
-    static dispatch_once_t sOnce;
+static BOOL isSystemOverlayIdentifier(NSString *ident) {
+    if (!ident || ident.length == 0) return YES;
+    NSString *lower = ident.lowercaseString;
+    if ([lower isEqualToString:@"com.apple.springboard"]) {
+        return NO; // Real home screen
+    }
+    NSArray<NSString *> *overlays = @[
+        @"accessibilityuiserver",
+        @"assistivetouch",
+        @"inputui",
+        @"textinput",
+        @"bannerkit",
+        @"druid",
+        @"posterboard",
+        @"systemaperture",
+        @"passbookuiservice",
+        @"coreauthui",
+        @"siri",
+        @"status-bar",
+        @"statusbar",
+        @"control-center",
+        @"controlcenter",
+        @"cover-sheet",
+        @"coversheet",
+        @"passcodelock",
+        @"screenshotservices",
+        @"pip",
+        @"universalcontrol",
+        @"carplay",
+        @"springboard." // e.g. com.apple.springboard.status-bar
+    ];
+    for (NSString *ov in overlays) {
+        if ([lower containsString:ov]) {
+            return YES;
+        }
+    }
+    return NO;
+}
 
-    dispatch_once(&sOnce, ^{
-        sLayoutLock = [[NSLock alloc] init];
+static NSString *normalizeSceneIdentifierToBundleID(NSString *raw) {
+    if (!raw || raw.length == 0) return nil;
+    if ([raw containsString:@"com.google.Maps"]) {
+        return @"com.google.Maps";
+    }
+    NSString *s = raw;
+    if ([s hasPrefix:@"sceneID:"]) {
+        s = [s substringFromIndex:8];
+        NSRange defRange = [s rangeOfString:@"-default" options:NSBackwardsSearch];
+        if (defRange.location != NSNotFound) {
+            s = [s substringToIndex:defRange.location];
+        } else {
+            NSRange dashRange = [s rangeOfString:@"-" options:NSBackwardsSearch];
+            if (dashRange.location != NSNotFound && dashRange.location > 3) {
+                s = [s substringToIndex:dashRange.location];
+            }
+        }
+    }
+    return s;
+}
+
+static NSRecursiveLock *frontMonitorLock(void) {
+    static NSRecursiveLock *sLock = nil;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        sLock = [[NSRecursiveLock alloc] init];
         dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
         dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
+    });
+    return sLock;
+}
 
-        // 1. Modern iOS 14 - iOS 18 FrontBoardServices layout monitor
-        Class cfgCls = NSClassFromString(@"FBSDisplayLayoutMonitorConfiguration");
-        Class monCls = NSClassFromString(@"FBSDisplayLayoutMonitor");
-        SEL cfgSel = NSSelectorFromString(@"configurationForDefaultMainDisplayMonitor");
-        SEL monSel = NSSelectorFromString(@"monitorWithConfiguration:");
+static id gLayoutMonitor       = nil;
+static id gLatestLayout        = nil;
+static NSTimeInterval gLatestLayoutUp = 0.0;
+static NSTimeInterval gLastLayoutInitUp = 0.0;
+static int gNilLayoutStreak    = 0;
 
-        if (cfgCls && monCls && [cfgCls respondsToSelector:cfgSel] && [monCls respondsToSelector:monSel]) {
-            @try {
+static id gAppStateMonitor     = nil;
+static NSTimeInterval gLastBKSInitUp = 0.0;
+
+static void invalidateMonitorSafely(id mon) {
+    if (!mon) return;
+    SEL invSel = NSSelectorFromString(@"invalidate");
+    if ([mon respondsToSelector:invSel]) {
+        @try {
+            ((void (*)(id, SEL))objc_msgSend)(mon, invSel);
+        } @catch (NSException *ex) {}
+    }
+}
+
+void resetFrontmostAppMonitors(void) {
+    NSRecursiveLock *lk = frontMonitorLock();
+    [lk lock];
+    invalidateMonitorSafely(gLayoutMonitor);
+    gLayoutMonitor = nil;
+    gLatestLayout  = nil;
+    gLatestLayoutUp = 0.0;
+    gLastLayoutInitUp = 0.0;
+    gNilLayoutStreak = 0;
+
+    invalidateMonitorSafely(gAppStateMonitor);
+    gAppStateMonitor = nil;
+    gLastBKSInitUp   = 0.0;
+    [lk unlock];
+}
+
+NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
+    // Drain pending XPC / Mach notifications so FrontBoard & BackBoard never stall on a raw C loop
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.001, false);
+
+    NSRecursiveLock *lk = frontMonitorLock();
+    NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
+    BOOL mapsInForeground = NO;
+
+    [lk lock];
+    @try {
+        // 1. Refresh BKSApplicationStateMonitor every 12s so cached XPC states never go stale across hours of sleep
+        if (!gAppStateMonitor || (nowUp - gLastBKSInitUp) > 12.0) {
+            invalidateMonitorSafely(gAppStateMonitor);
+            gAppStateMonitor = nil;
+            Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
+            if (bksMonCls) {
+                gAppStateMonitor = [[bksMonCls alloc] init];
+                gLastBKSInitUp = nowUp;
+            }
+        }
+
+        // Layer B1: Check foreground bitmask (bit 3 == 8 == BKSApplicationStateForeground; can be 8|32 == 40 on iOS 16!)
+        SEL appStateSel = NSSelectorFromString(@"applicationStateForApplication:");
+        if (gAppStateMonitor && [gAppStateMonitor respondsToSelector:appStateSel]) {
+            if (config && config.dryRunMode) {
+                unsigned int photoSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    gAppStateMonitor, appStateSel, @"com.apple.mobileslideshow");
+                if ((photoSt & 8U) != 0) {
+                    return @"com.apple.mobileslideshow";
+                }
+            }
+
+            if (config && config.driverAppBundleID.length > 0) {
+                unsigned int drvSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    gAppStateMonitor, appStateSel, config.driverAppBundleID);
+                if ((drvSt & 8U) != 0) {
+                    return config.driverAppBundleID;
+                }
+            }
+
+            unsigned int mapsSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                gAppStateMonitor, appStateSel, @"com.google.Maps");
+            if ((mapsSt & 8U) != 0) {
+                mapsInForeground = YES;
+            }
+        }
+
+        // 2. Ensure FBSDisplayLayoutMonitor is active & fresh
+        if (!gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 3.0) {
+            gLastLayoutInitUp = nowUp;
+            Class cfgCls = NSClassFromString(@"FBSDisplayLayoutMonitorConfiguration");
+            Class monCls = NSClassFromString(@"FBSDisplayLayoutMonitor");
+            SEL cfgSel   = NSSelectorFromString(@"configurationForDefaultMainDisplayMonitor");
+            SEL monSel   = NSSelectorFromString(@"monitorWithConfiguration:");
+
+            if (cfgCls && monCls && [cfgCls respondsToSelector:cfgSel] && [monCls respondsToSelector:monSel]) {
                 id mCfg = ((id (*)(id, SEL))objc_msgSend)(cfgCls, cfgSel);
                 if (mCfg) {
                     SEL prioSel = NSSelectorFromString(@"setNeedsUserInteractivePriority:");
@@ -345,103 +498,84 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                     if ([mCfg respondsToSelector:handlerSel]) {
                         void (^handlerBlock)(id, id) = ^(id mon, id layout) {
                             if (layout) {
-                                [sLayoutLock lock];
-                                sLatestLayout = layout;
-                                [sLayoutLock unlock];
+                                NSRecursiveLock *hlk = frontMonitorLock();
+                                [hlk lock];
+                                gLatestLayout   = layout;
+                                gLatestLayoutUp = [NSProcessInfo processInfo].systemUptime;
+                                [hlk unlock];
                             }
                         };
                         ((void (*)(id, SEL, id))objc_msgSend)(mCfg, handlerSel, handlerBlock);
                     }
-                    sLayoutMonitor = ((id (*)(id, SEL, id))objc_msgSend)(monCls, monSel, mCfg);
+                    gLayoutMonitor = ((id (*)(id, SEL, id))objc_msgSend)(monCls, monSel, mCfg);
                 }
-            } @catch (NSException *ex) {}
-        }
-
-        // Legacy fallback if needed
-        if (!sLayoutMonitor && monCls) {
-            SEL sharedSel = NSSelectorFromString(@"sharedMonitorForDisplayType:");
-            if ([monCls respondsToSelector:sharedSel]) {
-                @try {
-                    sLayoutMonitor = ((id (*)(id, SEL, NSInteger))objc_msgSend)(monCls, sharedSel, 0);
-                } @catch (NSException *ex) {}
             }
         }
 
-        // 2. BackBoardServices state monitor backup
-        Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
-        if (bksMonCls) {
-            @try {
-                sAppStateMon = [[bksMonCls alloc] init];
-            } @catch (NSException *ex) {}
-        }
-    });
+        // Layer A: Inspect visible display scenes (both bundleIdentifier and sceneID:<bundleID>, ignoring AssistiveTouch/InputUI overlays)
+        if (gLayoutMonitor) {
+            id layout = [gLayoutMonitor valueForKey:@"currentLayout"];
+            if (!layout && gLatestLayout && (nowUp - gLatestLayoutUp) <= 2.5) {
+                layout = gLatestLayout;
+            }
 
-    // Layer A: Inspect visible windows via FBSDisplayLayoutMonitor
-    if (sLayoutMonitor) {
-        @try {
-            id layout = [sLayoutMonitor valueForKey:@"currentLayout"];
             if (!layout) {
-                [sLayoutLock lock];
-                layout = sLatestLayout;
-                [sLayoutLock unlock];
-            }
-            NSArray *elements = layout ? [layout valueForKey:@"elements"] : nil;
-            NSString *topAppBundle = nil;
-            NSInteger topLevel = NSIntegerMin;
+                gNilLayoutStreak++;
+                if (gNilLayoutStreak >= 3) {
+                    invalidateMonitorSafely(gLayoutMonitor);
+                    gLayoutMonitor = nil;
+                    gNilLayoutStreak = 0;
+                }
+            } else {
+                gNilLayoutStreak = 0;
+                NSArray *elements = [layout valueForKey:@"elements"];
+                NSString *topAppBundle = nil;
+                NSInteger topLevel = NSIntegerMin;
 
-            for (id elem in elements) {
-                NSString *bid = [elem valueForKey:@"bundleIdentifier"];
-                if (!bid || bid.length == 0) continue;
+                for (id elem in elements) {
+                    NSString *bid   = nil;
+                    NSString *ident = nil;
+                    @try { bid   = [elem valueForKey:@"bundleIdentifier"]; } @catch (NSException *e) {}
+                    @try { ident = [elem valueForKey:@"identifier"]; }       @catch (NSException *e) {}
 
-                // If Xanh SM (or Photos in Dry-Run) is visible anywhere on screen, prioritize it even under a banner!
-                if (bundleIDMatchesDriverOrAllowed(bid, config)) {
-                    return bid;
+                    // Priority 1: If Xanh SM (or Photos in Dry-Run) is visible in ANY scene, return it immediately!
+                    if (bundleIDMatchesDriverOrAllowed(bid, config)) {
+                        return bid;
+                    }
+                    if (bundleIDMatchesDriverOrAllowed(ident, config)) {
+                        return (config && config.driverAppBundleID.length > 0) ? config.driverAppBundleID : @"vn.gsm.driver";
+                    }
+
+                    NSString *cand = (bid.length > 0) ? bid : normalizeSceneIdentifierToBundleID(ident);
+                    if (!cand || cand.length == 0) continue;
+                    if (isSystemOverlayIdentifier(cand) || isSystemOverlayIdentifier(ident)) {
+                        continue;
+                    }
+
+                    NSNumber *lvlNum = nil;
+                    @try { lvlNum = [elem valueForKey:@"level"]; } @catch (NSException *e) {}
+                    NSInteger lvl = lvlNum ? [lvlNum integerValue] : 0;
+                    if (lvl >= topLevel) {
+                        topLevel = lvl;
+                        topAppBundle = cand;
+                    }
                 }
 
-                NSNumber *lvlNum = [elem valueForKey:@"level"];
-                NSInteger lvl = lvlNum ? [lvlNum integerValue] : 0;
-                if (lvl >= topLevel) {
-                    topLevel = lvl;
-                    topAppBundle = bid;
+                if (topAppBundle.length > 0) {
+                    return topAppBundle;
                 }
             }
-            if (topAppBundle.length > 0) {
-                return topAppBundle;
-            }
-        } @catch (NSException *ex) {}
+        }
+    } @catch (NSException *ex) {
+    } @finally {
+        [lk unlock];
     }
 
-    // Layer B: Direct BackBoardServices state check (8 == BKSApplicationStateForeground)
-    SEL appStateSel = NSSelectorFromString(@"applicationStateForApplication:");
-    if (sAppStateMon && [sAppStateMon respondsToSelector:appStateSel]) {
-        @try {
-            if (config && config.dryRunMode) {
-                unsigned int photoSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                    sAppStateMon, appStateSel, @"com.apple.mobileslideshow");
-                if (photoSt == 8) {
-                    return @"com.apple.mobileslideshow";
-                }
-            }
-
-            unsigned int mapsSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                sAppStateMon, appStateSel, @"com.google.Maps");
-            if (mapsSt == 8) {
-                return @"com.google.Maps";
-            }
-
-            if (config && config.driverAppBundleID.length > 0) {
-                unsigned int drvSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                    sAppStateMon, appStateSel, config.driverAppBundleID);
-                if (drvSt == 8) {
-                    return config.driverAppBundleID;
-                }
-                if (drvSt == 1 || drvSt == 2 || drvSt == 4) {
-                    return @"com.apple.springboard";
-                }
-            }
-        } @catch (NSException *ex) {}
+    if (mapsInForeground) {
+        return @"com.google.Maps";
     }
 
+    // Fail-open (nil -> canScan = YES) if neither monitor identified a foreign app
     return nil;
 }
 
@@ -622,12 +756,27 @@ int spawnRoot(NSString *path, NSArray<NSString *> *args) {
     return (ret == 0) ? (int)pid : -ret;
 }
 
+static BOOL isPidAlivePind(pid_t pid) {
+    if (pid <= 1) return NO;
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid };
+    struct kinfo_proc info;
+    size_t len = sizeof(info);
+    memset(&info, 0, sizeof(info));
+    if (sysctl(mib, 4, &info, &len, NULL, 0) == 0 && len > 0 && info.kp_proc.p_pid == pid) {
+        if (info.kp_proc.p_stat == SZOMB) {
+            return NO;
+        }
+        return (strncmp(info.kp_proc.p_comm, "pind", 4) == 0);
+    }
+    return (kill(pid, 0) == 0);
+}
+
 static pid_t readAlivePidFromFile(NSString *filePath) {
     NSString *pidStr = [NSString stringWithContentsOfFile:filePath encoding:NSUTF8StringEncoding error:nil];
     if (!pidStr) return 0;
     pid_t pid = (pid_t)[pidStr intValue];
     if (pid <= 1) return 0;
-    if (kill(pid, 0) == 0 || errno == EPERM) {
+    if (isPidAlivePind(pid)) {
         return pid;
     }
     return 0;
@@ -648,20 +797,32 @@ BOOL startFilterDaemonIfNeeded(void) {
     if (existingWorker > 0 && existingWatchdog > 0) {
         RuntimeDaemonState *st = [RuntimeDaemonState loadState];
         if ([st.daemonVersion isEqualToString:kCurrentDaemonVersion]) {
-            notify_post(kNotifyReloadConfig);
-            return YES;
+            double now = [[NSDate date] timeIntervalSince1970];
+            if (st.workerHeartbeatEpoch > 0.0 && fabs(now - st.workerHeartbeatEpoch) < 22.0) {
+                notify_post(kNotifyReloadConfig);
+                return YES;
+            }
+            // Give a 0.55s grace check in case the device just woke from deep sleep
+            usleep(550000);
+            st  = [RuntimeDaemonState loadState];
+            now = [[NSDate date] timeIntervalSince1970];
+            if (getRunningDaemonPID() > 0 &&
+                getRunningWatchdogPID() > 0 &&
+                st.workerHeartbeatEpoch > 0.0 &&
+                fabs(now - st.workerHeartbeatEpoch) < 22.0) {
+                notify_post(kNotifyReloadConfig);
+                return YES;
+            }
         }
     }
 
-    if (existingWorker > 0 || existingWatchdog > 0) {
-        stopFilterDaemon();
-    }
+    stopFilterDaemon();
 
     NSString *daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
     chmod([daemonPath fileSystemRepresentation], 0755);
     int res = spawnRoot(daemonPath, @[@"--watchdog"]);
     if (res > 0) {
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 12; i++) {
             usleep(60000);
             if (getRunningDaemonPID() > 0 || getRunningWatchdogPID() > 0) {
                 return YES;
@@ -669,23 +830,30 @@ BOOL startFilterDaemonIfNeeded(void) {
         }
         return YES;
     }
-    appendDaemonLog(@"[LỖI] Không kích được pind v4.1 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+    appendDaemonLog(@"[LỖI] Không kích được pind v4.2 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
     return NO;
+}
+
+BOOL forceRestartFilterDaemon(void) {
+    stopFilterDaemon();
+    usleep(120000);
+    return startFilterDaemonIfNeeded();
 }
 
 void stopFilterDaemon(void) {
     notify_post(kNotifyStopDaemon);
-    usleep(180000);
+    usleep(120000);
 
-    pid_t wdPid = getRunningWatchdogPID();
-    pid_t wkPid = getRunningDaemonPID();
-    if (wdPid > 1) {
-        kill(wdPid, SIGTERM);
+    // Execute --stop as uid=0 via spawnRoot so root Watchdog & Worker are guaranteed terminated cleanly
+    NSString *daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:daemonPath]) {
+        chmod([daemonPath fileSystemRepresentation], 0755);
+        spawnRoot(daemonPath, @[@"--stop"]);
+        usleep(180000);
+    } else {
+        pid_t wkPid = getRunningDaemonPID();
+        if (wkPid > 1) kill(wkPid, SIGKILL);
     }
-    if (wkPid > 1) {
-        kill(wkPid, SIGTERM);
-    }
-    usleep(80000);
 
     unlink([kWatchdogPidPath fileSystemRepresentation]);
     unlink([kDaemonPidPath fileSystemRepresentation]);
