@@ -25,7 +25,7 @@ DAEMON_SRCS := Sources/Daemon/pind_main.m \
 APP_FRAMEWORKS    := -framework Foundation -framework UIKit -framework CoreGraphics \
                      -framework QuartzCore -framework AudioToolbox
 
-DAEMON_FRAMEWORKS := -framework Foundation -framework UIKit -framework CoreGraphics \
+DAEMON_FRAMEWORKS := -framework Foundation -framework CoreGraphics \
                      -framework CoreImage -framework QuartzCore \
                      -framework Vision -framework AudioToolbox -lz
 

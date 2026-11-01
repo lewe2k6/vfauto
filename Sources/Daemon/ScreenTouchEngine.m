@@ -1,6 +1,6 @@
 #import "ScreenTouchEngine.h"
 #import "SharedConfig.h"
-#import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
 #import <objc/message.h>
@@ -91,6 +91,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 
     IOHIDEventSystemClientRef _hidClient;
     dispatch_queue_t _hidQueue;
+    NSTimeInterval _lastHIDClientInitUp;
 
     IOSurfaceRef _srcSurface;
     IOSurfaceRef _dstSurface;
@@ -125,8 +126,11 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _logicalScreenSize                  = CGSizeMake(kDefaultScreenW, kDefaultScreenH);
         _screenScale                        = 2.0;
         _lastCaptureHadPixels               = NO;
+        _lastFrameHasBottomTealButton       = NO;
         _lastFrameLikelyHasOrderPopup       = NO;
         _lastFrameHasOrderHeaderAtTop       = NO;
+        _lastFrameHeaderIconWarmFood        = NO;
+        _lastFrameHeaderIconCoolRide        = NO;
         _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
@@ -134,14 +138,12 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameChangedSamples            = kGridCount;
         _hasAnalyzedBaseline                = NO;
         _consecutiveEmptyCaptures           = 0;
+        _lastHIDClientInitUp                = 0.0;
 
+        // Pure QuartzCore CADisplay pixel lookup (100% UIKit-free so headless daemon never deadlocks BackBoard/UIScreen!)
         CGSize pxSize = CGSizeZero;
-        SEL unjailedSel = NSSelectorFromString(@"_unjailedReferenceBoundsInPixels");
-        if ([[UIScreen mainScreen] respondsToSelector:unjailedSel]) {
-            CGRect r = ((CGRect (*)(id, SEL))objc_msgSend)([UIScreen mainScreen], unjailedSel);
-            pxSize = r.size;
-        }
-        if (pxSize.width < 640 || pxSize.height < 1136) {
+        double detectedScale = 0.0;
+        @try {
             Class caDispCls = NSClassFromString(@"CADisplay");
             if (caDispCls && [caDispCls respondsToSelector:NSSelectorFromString(@"mainDisplay")]) {
                 id mainDisp = [caDispCls valueForKey:@"mainDisplay"];
@@ -151,13 +153,22 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
                     [boundsVal getValue:&r];
                     pxSize = r.size;
                 }
+                if (mainDisp && [mainDisp respondsToSelector:NSSelectorFromString(@"pointScale")]) {
+                    NSNumber *ps = [mainDisp valueForKey:@"pointScale"];
+                    if ([ps respondsToSelector:@selector(doubleValue)]) {
+                        detectedScale = [ps doubleValue];
+                    }
+                }
             }
-        }
+        } @catch (NSException *ex) {}
 
         if (pxSize.width >= 640 && pxSize.height >= 1136) {
             if ((int)round(pxSize.width) == 750 && (int)round(pxSize.height) == 1334) {
                 _logicalScreenSize = CGSizeMake(375.0, 667.0);
                 _screenScale = 2.0;
+            } else if (detectedScale >= 1.9 && detectedScale <= 3.1) {
+                _screenScale = round(detectedScale);
+                _logicalScreenSize = CGSizeMake(round(pxSize.width / _screenScale), round(pxSize.height / _screenScale));
             } else if ((int)round(pxSize.width) >= 1080) {
                 _screenScale = 3.0;
                 _logicalScreenSize = CGSizeMake(round(pxSize.width / 3.0), round(pxSize.height / 3.0));
@@ -219,6 +230,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 - (void)setupHIDClient {
     if (_fnClientCreate) {
         _hidClient = _fnClientCreate(kCFAllocatorDefault);
+        _lastHIDClientInitUp = [NSProcessInfo processInfo].systemUptime;
     }
 }
 
@@ -230,7 +242,15 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
             self->_hidClient = NULL;
         }
         self->_hidClient = self->_fnClientCreate(kCFAllocatorDefault);
+        self->_lastHIDClientInitUp = [NSProcessInfo processInfo].systemUptime;
     });
+}
+
+- (void)ensureFreshHIDClientBeforeTouch {
+    NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
+    if (!_hidClient || (nowUp - _lastHIDClientInitUp) > 45.0) {
+        [self refreshHIDClient];
+    }
 }
 
 - (void)rebuildCaptureSurfaces {
@@ -345,34 +365,50 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         }
         _lastFrameChangedSamples = changed;
 
-        // 2. Fast Order Popup Sensor (0.01ms): Teal 'Nhận chuyến' button at y ~ 95.8% + White card at y ~ 15.0%
-        int yAccept   = (int)(0.958 * (double)(_pixelH - 1));
-        int yFareCard = (int)(0.155 * (double)(_pixelH - 1));
-        int yMidCard  = (int)(0.340 * (double)(_pixelH - 1));
-        int yGMapTop  = (int)(0.095 * (double)(_pixelH - 1));
-        int yGMapSub  = (int)(0.135 * (double)(_pixelH - 1));
-        const uint8_t *rowAccept = base + (size_t)yAccept * _bytesPerRow;
-        const uint8_t *rowFare   = base + (size_t)yFareCard * _bytesPerRow;
-        const uint8_t *rowMid    = base + (size_t)yMidCard * _bytesPerRow;
-        const uint8_t *rowGMTop  = base + (size_t)yGMapTop * _bytesPerRow;
-        const uint8_t *rowGMSub  = base + (size_t)yGMapSub * _bytesPerRow;
+        // 2. Multi-Row Order Popup Sensor (0.02ms):
+        //    Scans 4 horizontal rows across the bottom pill button (y = 91.8%..97.2%) so white 'Nhận chuyến (7)' text
+        //    or AssistiveTouch on one line can NEVER mask the teal button, plus 4 card body rows for full/mid-sheet cards!
+        static const double kAcceptRows[4] = { 0.920, 0.938, 0.958, 0.972 };
+        static const double kCardRows[4]   = { 0.155, 0.255, 0.355, 0.465 };
+        int maxTealRowHits = 0;
+        for (int rIdx = 0; rIdx < 4; rIdx++) {
+            int yRow = (int)(kAcceptRows[rIdx] * (double)(_pixelH - 1));
+            const uint8_t *rowPtr = base + (size_t)yRow * _bytesPerRow;
+            int rowTeal = 0;
+            for (int s = 0; s < 16; s++) {
+                int px = (int)((0.12 + (0.76 * (double)s / 15.0)) * (double)(_pixelW - 1));
+                uint32_t pAcc = *((const uint32_t *)(rowPtr + (size_t)px * 4));
+                uint8_t bA = pAcc & 0xFF, gA = (pAcc >> 8) & 0xFF, rA = (pAcc >> 16) & 0xFF;
+                if (gA >= 102 && bA >= 102 && (int)gA - (int)rA >= 38 && (int)bA - (int)rA >= 38) {
+                    rowTeal++;
+                }
+            }
+            if (rowTeal > maxTealRowHits) {
+                maxTealRowHits = rowTeal;
+            }
+        }
 
-        int tealHits      = 0;
         int whiteHits     = 0;
         int gmapsGreenHit = 0;
+        int yGMapTop  = (int)(0.095 * (double)(_pixelH - 1));
+        int yGMapSub  = (int)(0.135 * (double)(_pixelH - 1));
+        const uint8_t *rowGMTop = base + (size_t)yGMapTop * _bytesPerRow;
+        const uint8_t *rowGMSub = base + (size_t)yGMapSub * _bytesPerRow;
+
         for (int s = 0; s < 12; s++) {
             int px = (int)((0.16 + (0.68 * (double)s / 11.0)) * (double)(_pixelW - 1));
-            uint32_t pAcc = *((const uint32_t *)(rowAccept + (size_t)px * 4));
-            uint8_t bA = pAcc & 0xFF, gA = (pAcc >> 8) & 0xFF, rA = (pAcc >> 16) & 0xFF;
-            if (gA >= 110 && bA >= 110 && (int)gA - (int)rA >= 45 && (int)bA - (int)rA >= 45) {
-                tealHits++;
+            BOOL anyCardWhite = NO;
+            for (int cIdx = 0; cIdx < 4; cIdx++) {
+                int yC = (int)(kCardRows[cIdx] * (double)(_pixelH - 1));
+                uint32_t pC = *((const uint32_t *)(base + (size_t)yC * _bytesPerRow + (size_t)px * 4));
+                uint8_t bC = pC & 0xFF, gC = (pC >> 8) & 0xFF, rC = (pC >> 16) & 0xFF;
+                if (rC >= 232 && gC >= 232 && bC >= 232 &&
+                    abs((int)rC - (int)gC) <= 10 && abs((int)gC - (int)bC) <= 10) {
+                    anyCardWhite = YES;
+                    break;
+                }
             }
-
-            uint32_t pFare = *((const uint32_t *)(rowFare + (size_t)px * 4));
-            uint8_t bF = pFare & 0xFF, gF = (pFare >> 8) & 0xFF, rF = (pFare >> 16) & 0xFF;
-            uint32_t pMid = *((const uint32_t *)(rowMid + (size_t)px * 4));
-            uint8_t bM = pMid & 0xFF, gM = (pMid >> 8) & 0xFF, rM = (pMid >> 16) & 0xFF;
-            if ((rF >= 232 && gF >= 232 && bF >= 232) || (rM >= 235 && gM >= 235 && bM >= 235)) {
+            if (anyCardWhite) {
                 whiteHits++;
             }
 
@@ -386,11 +422,12 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
                 gmapsGreenHit++;
             }
         }
-        _lastFrameLikelyHasOrderPopup    = (tealHits >= 5 && whiteHits >= 6);
+        _lastFrameHasBottomTealButton    = (maxTealRowHits >= 7);
+        _lastFrameLikelyHasOrderPopup    = (maxTealRowHits >= 6 && whiteHits >= 5);
         _lastFrameLooksLikeGoogleMapsNav = (!_lastFrameLikelyHasOrderPopup && gmapsGreenHit >= 8);
 
-        // 3. Top Header Flush Sensor (0.01ms): Ensures Order Popup header bar is still flush at y ~ 52pt
-        //    (On Lobby, the '454.970đ' pill + map sits at y=52pt, so pureWhiteHeader drops to <= 4/10 immediately!)
+        // 3. Top Header Flush Sensor + Top-Left Service Icon Color Sensor (0.01ms):
+        //    Ensures Order Popup header bar is flush at y ~ 52pt AND distinguishes Food (warm orange/yellow tray) vs Bike/Express (cool cyan scooter/box)
         int yHdr52 = (int)((52.0 / 667.0) * (double)(_pixelH - 1));
         const uint8_t *rowHdr52 = base + (size_t)yHdr52 * _bytesPerRow;
         int pureWhiteHdrHits = 0;
@@ -398,12 +435,36 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
             int px = (int)((0.35 + (0.43 * (double)s / 9.0)) * (double)(_pixelW - 1));
             uint32_t pH = *((const uint32_t *)(rowHdr52 + (size_t)px * 4));
             uint8_t bH = pH & 0xFF, gH = (pH >> 8) & 0xFF, rH = (pH >> 16) & 0xFF;
-            if (rH >= 248 && gH >= 248 && bH >= 248 &&
-                abs((int)rH - (int)gH) <= 4 && abs((int)gH - (int)bH) <= 4) {
+            if (rH >= 246 && gH >= 246 && bH >= 246 &&
+                abs((int)rH - (int)gH) <= 5 && abs((int)gH - (int)bH) <= 5) {
                 pureWhiteHdrHits++;
             }
         }
         _lastFrameHasOrderHeaderAtTop = (_lastFrameLikelyHasOrderPopup && pureWhiteHdrHits >= 7);
+
+        if (_lastFrameHasOrderHeaderAtTop && _logicalScreenSize.width > 100.0 && _logicalScreenSize.height > 100.0) {
+            int warmFoodPx = 0;
+            int coolCyanPx = 0;
+            for (int ly = 34; ly <= 70; ly += 2) {
+                int py = (int)(((double)ly / _logicalScreenSize.height) * (double)(_pixelH - 1));
+                const uint8_t *rowIc = base + (size_t)py * _bytesPerRow;
+                for (int lx = 18; lx <= 54; lx += 2) {
+                    int px = (int)(((double)lx / _logicalScreenSize.width) * (double)(_pixelW - 1));
+                    uint32_t pIc = *((const uint32_t *)(rowIc + (size_t)px * 4));
+                    uint8_t bI = pIc & 0xFF, gI = (pIc >> 8) & 0xFF, rI = (pIc >> 16) & 0xFF;
+                    if (rI >= 200 && gI >= 95 && bI <= 115 && ((int)rI - (int)bI >= 100)) {
+                        warmFoodPx++;
+                    } else if (gI >= 140 && bI >= 140 && rI <= 138 && ((int)gI - (int)rI >= 32) && ((int)bI - (int)rI >= 32)) {
+                        coolCyanPx++;
+                    }
+                }
+            }
+            _lastFrameHeaderIconWarmFood = (warmFoodPx >= 5);
+            _lastFrameHeaderIconCoolRide = (warmFoodPx == 0 && coolCyanPx >= 5);
+        } else {
+            _lastFrameHeaderIconWarmFood = NO;
+            _lastFrameHeaderIconCoolRide = NO;
+        }
 
         // 3b. Yellow Dropoff Ring ◉ Sensor (0.005ms): Finds exact Y separator between Điểm Nhận & Điểm Giao
         if (_lastFrameLikelyHasOrderPopup && _logicalScreenSize.width > 100.0 && _logicalScreenSize.height > 100.0) {
@@ -488,8 +549,11 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 - (CIImage *)captureScreenCIImage {
     if (!_fnRenderDisplay || !_srcSurface) {
         _lastCaptureHadPixels               = NO;
+        _lastFrameHasBottomTealButton       = NO;
         _lastFrameLikelyHasOrderPopup       = NO;
         _lastFrameHasOrderHeaderAtTop       = NO;
+        _lastFrameHeaderIconWarmFood        = NO;
+        _lastFrameHeaderIconCoolRide        = NO;
         _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastOrderYellowDotY                = 0.0;
@@ -524,8 +588,11 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 
     _lastCaptureHadPixels = hasPixels;
     if (!hasPixels) {
+        _lastFrameHasBottomTealButton       = NO;
         _lastFrameLikelyHasOrderPopup       = NO;
         _lastFrameHasOrderHeaderAtTop       = NO;
+        _lastFrameHeaderIconWarmFood        = NO;
+        _lastFrameHeaderIconCoolRide        = NO;
         _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
@@ -612,6 +679,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
                      holdMinMs:(NSInteger)holdMinMs
                      holdMaxMs:(NSInteger)holdMaxMs
                 outActualPoint:(CGPoint *)outActualPoint {
+    [self ensureFreshHIDClientBeforeTouch];
     if (!_hidClient || !_fnDispatchEvent) return NO;
 
     double jx = 0.0, jy = 0.0;
@@ -673,6 +741,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 - (BOOL)performQuickSwipeFromPoint:(CGPoint)startPt
                            toPoint:(CGPoint)endPt
                         durationMs:(NSInteger)durationMs {
+    [self ensureFreshHIDClientBeforeTouch];
     if (!_hidClient || !_fnDispatchEvent) return NO;
 
     int steps = 6;

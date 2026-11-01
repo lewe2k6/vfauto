@@ -21,6 +21,14 @@
     [self buildDisguiseUI];
     [self refreshHardwareMetrics];
 
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        upgradeSharedFilesProtectionNone();
+        FilterConfig *cfg = [FilterConfig loadFromDisk];
+        if (cfg.masterEnabled || readMasterEnabledSafely(NO)) {
+            startFilterDaemonIfNeeded();
+        }
+    });
+
     _hwTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
                                                 target:self
                                               selector:@selector(refreshHardwareMetrics)

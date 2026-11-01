@@ -174,6 +174,7 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
         _workerHeartbeatEpoch = 0.0;
         _phaseDescription     = @"Đang rảnh / Canh đơn";
         _daemonVersion        = @"";
+        _daemonBinaryPath     = @"";
     }
     return self;
 }
@@ -190,6 +191,7 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (d[@"workerHeartbeatEpoch"]) st.workerHeartbeatEpoch = [d[@"workerHeartbeatEpoch"] doubleValue];
     if (d[@"phaseDescription"])     st.phaseDescription     = d[@"phaseDescription"];
     if (d[@"daemonVersion"])        st.daemonVersion        = d[@"daemonVersion"];
+    if (d[@"daemonBinaryPath"])     st.daemonBinaryPath     = d[@"daemonBinaryPath"];
     return st;
 }
 
@@ -202,7 +204,8 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
         @"pauseEndEpoch":        @(self.pauseEndEpoch),
         @"workerHeartbeatEpoch": @(self.workerHeartbeatEpoch),
         @"phaseDescription":     self.phaseDescription ?: @"",
-        @"daemonVersion":        self.daemonVersion ?: @""
+        @"daemonVersion":        self.daemonVersion ?: @"",
+        @"daemonBinaryPath":     self.daemonBinaryPath ?: @""
     };
     writeDictUnprotectedAtomically(d, kRuntimeStatePath);
     if (sendNotify) {
@@ -488,7 +491,25 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
 
 #pragma mark - Frontmost App, Screen Lock & Memory Footprint Helpers
 
-static BOOL bundleIDMatchesDriverOrAllowed(NSString *bid, FilterConfig *config) {
+static NSString *cachedAutoDetectedDriverBundleID(void) {
+    static NSString *sCachedBid = nil;
+    static NSTimeInterval sLastDetectUp = 0.0;
+    NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
+    if (sCachedBid.length > 0 && (nowUp - sLastDetectUp) < 120.0) {
+        return sCachedBid;
+    }
+    if ((nowUp - sLastDetectUp) < 15.0) {
+        return sCachedBid;
+    }
+    sLastDetectUp = nowUp;
+    InstalledAppInfo *det = autoDetectDriverApp();
+    if (det && det.bundleID.length > 0) {
+        sCachedBid = [det.bundleID copy];
+    }
+    return sCachedBid;
+}
+
+BOOL bundleIDMatchesDriverApp(NSString *bid, FilterConfig *config) {
     if (!bid || bid.length == 0) return NO;
     if (config && config.driverAppBundleID.length > 0) {
         if ([bid isEqualToString:config.driverAppBundleID] ||
@@ -496,12 +517,20 @@ static BOOL bundleIDMatchesDriverOrAllowed(NSString *bid, FilterConfig *config) 
             return YES;
         }
     }
+    NSString *autoBid = cachedAutoDetectedDriverBundleID();
+    if (autoBid.length > 0 &&
+        ([bid isEqualToString:autoBid] ||
+         [bid rangeOfString:autoBid options:NSCaseInsensitiveSearch].location != NSNotFound)) {
+        return YES;
+    }
     NSString *lower = bid.lowercaseString;
     if ([lower containsString:@"gsm"] ||
         [lower containsString:@"xanhsm"] ||
         [lower containsString:@"greensm"] ||
         [lower containsString:@"xanh.sm"] ||
         [lower containsString:@"green.sm"] ||
+        [lower containsString:@"bactai"] ||
+        [lower containsString:@"sm.driver"] ||
         [lower containsString:@"vinfast"]) {
         return YES;
     }
@@ -649,11 +678,14 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                 }
             }
 
-            if (config && config.driverAppBundleID.length > 0) {
+            NSString *effectiveDriverBid = (config && config.driverAppBundleID.length > 0)
+                ? config.driverAppBundleID
+                : cachedAutoDetectedDriverBundleID();
+            if (effectiveDriverBid.length > 0) {
                 unsigned int drvSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                    gAppStateMonitor, appStateSel, config.driverAppBundleID);
+                    gAppStateMonitor, appStateSel, effectiveDriverBid);
                 if ((drvSt & 8U) != 0) {
-                    return config.driverAppBundleID;
+                    return effectiveDriverBid;
                 }
             }
 
@@ -664,8 +696,12 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
             }
         }
 
-        // 2. Ensure FBSDisplayLayoutMonitor is active & fresh
-        if (!gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 3.0) {
+        // 2. Periodically recycle FBSDisplayLayoutMonitor every 25s so FrontBoard XPC layout can NEVER stick on stale SpringBoard!
+        if (gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 25.0) {
+            invalidateMonitorSafely(gLayoutMonitor);
+            gLayoutMonitor = nil;
+        }
+        if (!gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 2.0) {
             gLastLayoutInitUp = nowUp;
             Class cfgCls = NSClassFromString(@"FBSDisplayLayoutMonitorConfiguration");
             Class monCls = NSClassFromString(@"FBSDisplayLayoutMonitor");
@@ -724,11 +760,14 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                     @try { ident = [elem valueForKey:@"identifier"]; }       @catch (NSException *e) {}
 
                     // Priority 1: If Xanh SM (or Photos in Dry-Run) is visible in ANY scene, return it immediately!
-                    if (bundleIDMatchesDriverOrAllowed(bid, config)) {
+                    if (bundleIDMatchesDriverApp(bid, config)) {
                         return bid;
                     }
-                    if (bundleIDMatchesDriverOrAllowed(ident, config)) {
-                        return (config && config.driverAppBundleID.length > 0) ? config.driverAppBundleID : @"vn.gsm.driver";
+                    if (bundleIDMatchesDriverApp(ident, config)) {
+                        NSString *eff = (config && config.driverAppBundleID.length > 0)
+                            ? config.driverAppBundleID
+                            : cachedAutoDetectedDriverBundleID();
+                        return eff.length > 0 ? eff : @"vn.gsm.driver";
                     }
 
                     NSString *cand = (bid.length > 0) ? bid : normalizeSceneIdentifierToBundleID(ident);
@@ -940,17 +979,97 @@ static NSArray<NSNumber *> *findRunningAppPIDs(NSString *bundleID, NSString *exe
     return [pidSet allObjects];
 }
 
-static NSString *resolvePindBinaryPath(void) {
-    NSString *cand1 = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:cand1]) {
-        return cand1;
+static NSString *canonicalizedPathString(NSString *rawPath) {
+    if (!rawPath || rawPath.length == 0) return nil;
+    char resolved[PATH_MAX];
+    const char *cStr = [rawPath fileSystemRepresentation];
+    if (cStr && realpath(cStr, resolved) != NULL) {
+        return [NSString stringWithUTF8String:resolved];
     }
+    return rawPath;
+}
+
+NSString *resolveLiveAppPindBinaryPath(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    // Priority 1: Live LaunchServices bundle lookup (always returns NEW TrollStore UUID even inside old Watchdog!)
+    Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+    Class proxyCls = NSClassFromString(@"LSApplicationProxy");
+    if (proxyCls) {
+        @try {
+            SEL prxSel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+            if ([proxyCls respondsToSelector:prxSel]) {
+                id proxy = ((id (*)(id, SEL, NSString *))objc_msgSend)(proxyCls, prxSel, kAppBundleID);
+                NSURL *bUrl = proxy ? [proxy valueForKey:@"bundleURL"] : nil;
+                NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
+                if (bPath.length > 0) {
+                    NSString *cand = [bPath stringByAppendingPathComponent:@"pind"];
+                    if ([fm fileExistsAtPath:cand]) {
+                        return canonicalizedPathString(cand);
+                    }
+                }
+            }
+        } @catch (NSException *ex) {}
+    }
+    if (wsCls) {
+        @try {
+            SEL defSel = NSSelectorFromString(@"defaultWorkspace");
+            id ws = [wsCls respondsToSelector:defSel] ? ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel) : nil;
+            SEL allSel = NSSelectorFromString(@"allInstalledApplications");
+            if (ws && [ws respondsToSelector:allSel]) {
+                NSArray *proxies = ((NSArray * (*)(id, SEL))objc_msgSend)(ws, allSel);
+                for (id proxy in proxies) {
+                    NSString *bid = [proxy valueForKey:@"applicationIdentifier"];
+                    if ([bid isEqualToString:kAppBundleID]) {
+                        NSURL *bUrl = [proxy valueForKey:@"bundleURL"];
+                        NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
+                        if (bPath.length > 0) {
+                            NSString *cand = [bPath stringByAppendingPathComponent:@"pind"];
+                            if ([fm fileExistsAtPath:cand]) {
+                                return canonicalizedPathString(cand);
+                            }
+                        }
+                    }
+                }
+            }
+        } @catch (NSException *ex) {}
+    }
+
+    // Priority 2: Current process mainBundle (valid inside UI App)
+    NSString *candBundle = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
+    if (candBundle.length > 0 && [fm fileExistsAtPath:candBundle]) {
+        return canonicalizedPathString(candBundle);
+    }
+
+    // Priority 3: Direct filesystem scan of /var/containers/Bundle/Application/*/PinNhietDo.app/pind (works as uid=0 even if lsd is busy!)
+    NSString *appsRoot = @"/var/containers/Bundle/Application";
+    NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:appsRoot error:nil];
+    NSString *newestPind = nil;
+    time_t newestMtime = 0;
+    for (NSString *u in uuids) {
+        NSString *cand = [[appsRoot stringByAppendingPathComponent:u] stringByAppendingPathComponent:@"PinNhietDo.app/pind"];
+        struct stat st;
+        if (stat([cand fileSystemRepresentation], &st) == 0 && S_ISREG(st.st_mode)) {
+            if (!newestPind || st.st_mtime >= newestMtime) {
+                newestMtime = st.st_mtime;
+                newestPind  = cand;
+            }
+        }
+    }
+    if (newestPind) {
+        return canonicalizedPathString(newestPind);
+    }
+
+    // Priority 4: argv[0] fallback if still present on disk
     NSString *arg0 = [NSProcessInfo processInfo].arguments.firstObject;
-    if (arg0.length > 0 && [arg0.lastPathComponent isEqualToString:@"pind"] &&
-        [[NSFileManager defaultManager] fileExistsAtPath:arg0]) {
-        return arg0;
+    if (arg0.length > 0 && [arg0.lastPathComponent isEqualToString:@"pind"] && [fm fileExistsAtPath:arg0]) {
+        return canonicalizedPathString(arg0);
     }
     return nil;
+}
+
+static NSString *resolvePindBinaryPath(void) {
+    return resolveLiveAppPindBinaryPath();
 }
 
 BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName) {
@@ -1246,11 +1365,39 @@ static NSRecursiveLock *daemonControlMutex(void) {
 }
 
 static int acquireCrossProcessCtlLock(void) {
-    int fd = open(kDaemonControlLockPath, O_CREAT | O_RDWR, 0666);
+    int openFlags = O_CREAT | O_RDWR;
+#ifdef O_CLOEXEC
+    openFlags |= O_CLOEXEC;
+#endif
+    int fd = open(kDaemonControlLockPath, openFlags, 0666);
     if (fd >= 0) {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
         fcntl(fd, F_SETPROTECTIONCLASS, PROTECTION_CLASS_D);
+        if (geteuid() == 0) {
+            chown(kDaemonControlLockPath, 501, 501);
+        }
         chmod(kDaemonControlLockPath, 0666);
-        flock(fd, LOCK_EX);
+
+        BOOL locked = NO;
+        for (int i = 0; i < 24; i++) {
+            if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+                locked = YES;
+                break;
+            }
+            usleep(50000);
+        }
+        if (!locked) {
+            // Break stale lock held by any hung/orphaned descriptor so control never deadlocks!
+            close(fd);
+            unlink(kDaemonControlLockPath);
+            fd = open(kDaemonControlLockPath, openFlags, 0666);
+            if (fd >= 0) {
+                fcntl(fd, F_SETFD, FD_CLOEXEC);
+                fcntl(fd, F_SETPROTECTIONCLASS, PROTECTION_CLASS_D);
+                chmod(kDaemonControlLockPath, 0666);
+                flock(fd, LOCK_EX | LOCK_NB);
+            }
+        }
     }
     return fd;
 }
@@ -1266,6 +1413,15 @@ static void stopFilterDaemonUnlocked(void) {
     notify_post(kNotifyStopDaemon);
     usleep(120000);
 
+    // Clear stale Food Pause & Heartbeat so next start begins scanning immediately at 0ms!
+    RuntimeDaemonState *st = [RuntimeDaemonState loadState];
+    if (st.pauseEndEpoch > 0.0 || st.workerHeartbeatEpoch > 0.0) {
+        st.pauseEndEpoch        = 0.0;
+        st.workerHeartbeatEpoch = 0.0;
+        st.phaseDescription     = @"Đang trực tuyến / Canh đơn";
+        [st saveStateAndNotify:NO];
+    }
+
     // Execute --stop as uid=0 via spawnRoot so root Watchdog & Worker are guaranteed terminated cleanly
     NSString *daemonPath = resolvePindBinaryPath();
     if (daemonPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:daemonPath]) {
@@ -1273,6 +1429,8 @@ static void stopFilterDaemonUnlocked(void) {
         spawnRoot(daemonPath, @[@"--stop"]);
         usleep(100000);
     } else {
+        pid_t wdPid = getRunningWatchdogPID();
+        if (wdPid > 1) kill(wdPid, SIGKILL);
         pid_t wkPid = getRunningDaemonPID();
         if (wkPid > 1) kill(wkPid, SIGKILL);
     }
@@ -1290,10 +1448,15 @@ BOOL startFilterDaemonIfNeeded(void) {
     @try {
         upgradeSharedFilesProtectionNone();
 
+        NSString *liveDaemonPath = resolvePindBinaryPath();
+        if (!liveDaemonPath || liveDaemonPath.length == 0) {
+            liveDaemonPath = canonicalizedPathString([[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"]);
+        }
+
         pid_t existingWatchdog = getRunningWatchdogPID();
         if (existingWatchdog > 0) {
-            // Wait up to 1.6s if Watchdog is in the middle of spawning/recycling Worker
-            for (int w = 0; w < 8 && getRunningDaemonPID() <= 0; w++) {
+            // Wait up to 1.2s if Watchdog is in the middle of spawning/recycling Worker
+            for (int w = 0; w < 6 && getRunningDaemonPID() <= 0; w++) {
                 usleep(200000);
                 if (getRunningWatchdogPID() <= 0) break;
             }
@@ -1302,16 +1465,22 @@ BOOL startFilterDaemonIfNeeded(void) {
             pid_t existingWorker = getRunningDaemonPID();
             RuntimeDaemonState *st = [RuntimeDaemonState loadState];
 
+            BOOL sameBundlePath = (liveDaemonPath.length == 0) ||
+                                  (st.daemonBinaryPath.length > 0 &&
+                                   [st.daemonBinaryPath isEqualToString:liveDaemonPath] &&
+                                   access([liveDaemonPath fileSystemRepresentation], X_OK) == 0);
+
             if (existingWatchdog > 0 && existingWorker > 0 &&
-                [st.daemonVersion isEqualToString:kCurrentDaemonVersion]) {
+                [st.daemonVersion isEqualToString:kCurrentDaemonVersion] &&
+                sameBundlePath) {
                 double now = [[NSDate date] timeIntervalSince1970];
-                if (st.workerHeartbeatEpoch <= 0.0 || fabs(now - st.workerHeartbeatEpoch) < 60.0) {
+                if (st.workerHeartbeatEpoch > 0.0 && fabs(now - st.workerHeartbeatEpoch) < 22.0) {
                     notify_post(kNotifyReloadConfig);
                     finalResult = YES;
                     return finalResult;
                 }
 
-                // Device may have just woken from deep pocket sleep -> poke Worker and wait up to 1.5s
+                // Device may have just woken from pocket sleep -> poke Worker and wait up to 1.5s
                 notify_post(kNotifyReloadConfig);
                 for (int k = 0; k < 6; k++) {
                     usleep(250000);
@@ -1320,7 +1489,7 @@ BOOL startFilterDaemonIfNeeded(void) {
                     if (getRunningWatchdogPID() > 0 &&
                         getRunningDaemonPID() > 0 &&
                         st.workerHeartbeatEpoch > 0.0 &&
-                        fabs(now - st.workerHeartbeatEpoch) < 60.0) {
+                        fabs(now - st.workerHeartbeatEpoch) < 22.0) {
                         finalResult = YES;
                         return finalResult;
                     }
@@ -1330,7 +1499,7 @@ BOOL startFilterDaemonIfNeeded(void) {
 
         stopFilterDaemonUnlocked();
 
-        NSString *daemonPath = resolvePindBinaryPath();
+        NSString *daemonPath = liveDaemonPath;
         if (!daemonPath || daemonPath.length == 0) {
             daemonPath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
         }
@@ -1366,7 +1535,7 @@ BOOL startFilterDaemonIfNeeded(void) {
             return finalResult;
         }
 
-        appendDaemonLog(@"[LỖI] Không kích được pind v4.6.1 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+        appendDaemonLog(@"[LỖI] Không kích được pind v4.9 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
         finalResult = NO;
     } @finally {
         releaseCrossProcessCtlLock(lockFd);

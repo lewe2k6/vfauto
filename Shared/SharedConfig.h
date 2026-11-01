@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"4.8"
+#define kCurrentDaemonVersion   @"4.9"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
@@ -48,6 +48,7 @@ typedef NS_ENUM(NSInteger, CoordMode) {
 @property (nonatomic, assign) double workerHeartbeatEpoch; // Updated continuously by --worker
 @property (nonatomic, copy)   NSString *phaseDescription;
 @property (nonatomic, copy)   NSString *daemonVersion;
+@property (nonatomic, copy)   NSString *daemonBinaryPath;  // Tracks active TrollStore UUID bundle path
 
 + (instancetype)loadState;
 - (void)saveStateAndNotify:(BOOL)sendNotify;
@@ -141,6 +142,7 @@ static inline NSString *NormalizeVNText(NSString *input) {
 
 // Daemon, App Lifecycle & System Helpers (implemented in TSUtil.m)
 int spawnRoot(NSString *path, NSArray<NSString *> *args);
+NSString *resolveLiveAppPindBinaryPath(void);
 pid_t getRunningDaemonPID(void);
 pid_t getRunningWatchdogPID(void);
 BOOL startFilterDaemonIfNeeded(void);
@@ -152,6 +154,7 @@ void upgradeSharedFilesProtectionNone(void);
 
 NSArray<InstalledAppInfo *> *listInstalledUserApps(void);
 InstalledAppInfo *autoDetectDriverApp(void);
+BOOL bundleIDMatchesDriverApp(NSString *bid, FilterConfig *config);
 BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName);
 BOOL launchAppByBundleID(NSString *bundleID);
 

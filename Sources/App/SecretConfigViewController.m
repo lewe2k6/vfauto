@@ -96,7 +96,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.8";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.9";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -1091,7 +1091,7 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.8!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.9!");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
@@ -1127,7 +1127,11 @@
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
     double now = [[NSDate date] timeIntervalSince1970];
 
-    if (_cfg.masterEnabled && wkPid <= 0 && wdPid <= 0 && (now - _lastAutoHealEpoch) > 5.0) {
+    BOOL heartbeatStale = (st.workerHeartbeatEpoch > 0.0 && fabs(now - st.workerHeartbeatEpoch) > 24.0);
+    BOOL versionMismatch = (st.daemonVersion.length > 0 && ![st.daemonVersion isEqualToString:kCurrentDaemonVersion]);
+    BOOL needsAutoHeal = (wkPid <= 0 || wdPid <= 0 || heartbeatStale || versionMismatch);
+
+    if (_cfg.masterEnabled && needsAutoHeal && (now - _lastAutoHealEpoch) > 5.0) {
         _lastAutoHealEpoch = now;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             startFilterDaemonIfNeeded();
@@ -1137,14 +1141,14 @@
         });
     }
 
-    if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.8 (WD:%d | WK:%d)%@%@",
+    if (wkPid > 0 && _cfg.masterEnabled && !heartbeatStale) {
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.9 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.8...";
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG TỰ CHỮA LÀNH LÕI NGẦM v4.9 (WD:%d | WK:%d)...", wdPid, wkPid];
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";

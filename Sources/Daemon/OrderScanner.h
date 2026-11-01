@@ -74,6 +74,16 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
                                 config:(FilterConfig *)config
                        priceRetryCount:(NSInteger)retryCount;
 
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                            yellowDotY:(double)yellowDotY
+                      hasBottomTealBar:(BOOL)hasBottomTealBar
+                     hasTopWhiteHeader:(BOOL)hasTopWhiteHeader
+                    headerIconWarmFood:(BOOL)headerIconWarmFood
+                    headerIconCoolRide:(BOOL)headerIconCoolRide
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount;
+
 @end
 
 #endif /* OrderScanner_h */

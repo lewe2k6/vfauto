@@ -32,6 +32,7 @@
     NSRegularExpression *_bareThousandsRegex;
     NSRegularExpression *_nonFoodHeaderRegex;
     NSRegularExpression *_foodHeaderRegex;
+    NSRegularExpression *_foodPickupHintRegex;
 }
 
 + (instancetype)sharedScanner {
@@ -55,12 +56,18 @@
         _bareThousandsRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b([1-9][0-9]{1,2}000)\\b"
                                                                         options:0
                                                                           error:nil];
-        _foodHeaderRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b(green\\s*f[o0]{1,2}d|greenf[o0]{1,2}d|f[o0]{2}d|focd|foad|sm\\s*ngon|smngon|xanh\\s*ngon|do\\s*an)\\b|green\\s*fo"
+        _foodHeaderRegex = [NSRegularExpression regularExpressionWithPattern:
+            @"\\b(green\\s*f[o0]{1,2}d|greenf[o0]{1,2}d|xanh\\s*f[o0]{1,2}d|sm\\s*f[o0]{1,2}d|f[o0]{2}d|focd|foad|sm\\s*ngon|smngon|xanh\\s*ngon|do\\s*an|giao\\s*do\\s*an)\\b|green\\s*fo"
                                                                      options:0
                                                                        error:nil];
-        _nonFoodHeaderRegex = [NSRegularExpression regularExpressionWithPattern:@"\\b(green\\s*bike|greenbike|bike\\s*plus|bike|b1ke|green\\s*express|greenexpress|express|expres|sieu\\s*toc|sieutoc|giao\\s*hang|giaohang)\\b"
+        _nonFoodHeaderRegex = [NSRegularExpression regularExpressionWithPattern:
+            @"\\b(green\\s*bike|greenbike|xanh\\s*sm\\s*bike|xanh\\s*bike|sm\\s*bike|bike\\s*plus|bike|b1ke|blke|tiet\\s*kiem|tietkiem|uu\\s*tien|uutien|cho\\s*khach|xe\\s*may|green\\s*express|greenexpress|xanh\\s*express|sm\\s*express|express|expres|expre|2h|4h|sieu\\s*toc|sieutoc|giao\\s*hang|giaohang|gui\\s*hang|guihang|dong\\s*gia|donggia|don\\s*ghep|donghep|chuyen\\s*ghep|chuyenghep|green\\s*car|greencar|taxi)\\b"
                                                                         options:0
                                                                           error:nil];
+        _foodPickupHintRegex = [NSRegularExpression regularExpressionWithPattern:
+            @"\\b(bun\\s+|pho\\s+|com\\s+|tra\\s+sua|tra\\s+chanh|tra\\s+dao|ca\\s+phe|cafe|coffee|quan\\s+|nha\\s+hang|bep\\s+|tiem\\s+|banh\\s+mi|banh\\s+cuon|banh\\s+ga|banh\\s+trang|lau\\s+|nuong\\s+|ga\\s+ran|chao\\s+|mien\\s+|mi\\s+cay|mi\\s+tron|xoi\\s+|che\\s+|pizza|burger|chicken|mixue|highlands|starbucks|kfc|lotteria|jollibee|mcdonald|phuc\\s+long|phe\\s+la|katinat|gong\\s+cha|tocotoco|dookki|haidilao|gogi|manwah|kichi|marukame)\\b"
+                                                                         options:0
+                                                                           error:nil];
     }
     return self;
 }
@@ -113,7 +120,7 @@
         return CGPointMake(config.manualCloseX, config.manualCloseY);
     }
     double anchorY = 52.0;
-    if (headerBlock && headerBlock.uiCenter.y >= 24.0 && headerBlock.uiCenter.y <= 90.0) {
+    if (headerBlock && headerBlock.uiCenter.y >= 24.0 && headerBlock.uiCenter.y <= screenSize.height * 0.42) {
         anchorY = headerBlock.uiCenter.y;
     } else if (cuocPhiBlock) {
         anchorY = MAX(28.0, cuocPhiBlock.uiCenter.y - 49.0);
@@ -222,6 +229,49 @@
     return [NSString stringWithFormat:@"%@|%ld|%@", isFood ? @"FOOD" : @"RIDE", (long)priceVND, comb];
 }
 
+- (NSArray<OCRTextBlock *> *)buildRowMergedBlocksFrom:(NSArray<OCRTextBlock *> *)rawBlocks {
+    if (rawBlocks.count < 2) return @[];
+    NSArray<OCRTextBlock *> *sorted = [rawBlocks sortedArrayUsingComparator:^NSComparisonResult(OCRTextBlock *a, OCRTextBlock *b) {
+        if (fabs(a.uiCenter.y - b.uiCenter.y) <= 8.0) {
+            if (a.uiRect.origin.x < b.uiRect.origin.x) return NSOrderedAscending;
+            if (a.uiRect.origin.x > b.uiRect.origin.x) return NSOrderedDescending;
+            return NSOrderedSame;
+        }
+        return (a.uiCenter.y < b.uiCenter.y) ? NSOrderedAscending : NSOrderedDescending;
+    }];
+
+    NSMutableArray<OCRTextBlock *> *merged = [NSMutableArray array];
+    OCRTextBlock *acc = nil;
+    BOOL accMerged = NO;
+
+    for (OCRTextBlock *b in sorted) {
+        if (acc &&
+            fabs(b.uiCenter.y - acc.uiCenter.y) <= 8.0 &&
+            (CGRectGetMinX(b.uiRect) - CGRectGetMaxX(acc.uiRect)) <= 46.0) {
+            CGRect uRect = CGRectUnion(acc.uiRect, b.uiRect);
+            acc.rawText  = [NSString stringWithFormat:@"%@ %@", acc.rawText ?: @"", b.rawText ?: @""];
+            acc.normText = [NSString stringWithFormat:@"%@ %@", acc.normText ?: @"", b.normText ?: @""];
+            acc.uiRect   = uRect;
+            acc.uiCenter = CGPointMake(CGRectGetMidX(uRect), CGRectGetMidY(uRect));
+            accMerged    = YES;
+        } else {
+            if (acc && accMerged) {
+                [merged addObject:acc];
+            }
+            acc = [[OCRTextBlock alloc] init];
+            acc.rawText  = b.rawText;
+            acc.normText = b.normText;
+            acc.uiRect   = b.uiRect;
+            acc.uiCenter = b.uiCenter;
+            accMerged    = NO;
+        }
+    }
+    if (acc && accMerged) {
+        [merged addObject:acc];
+    }
+    return merged;
+}
+
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize
                                 config:(FilterConfig *)config
@@ -229,6 +279,10 @@
     return [self analyzeScreenImage:ciImage
                          screenSize:screenSize
                          yellowDotY:0.0
+                   hasBottomTealBar:NO
+                  hasTopWhiteHeader:NO
+                 headerIconWarmFood:NO
+                 headerIconCoolRide:NO
                              config:config
                     priceRetryCount:retryCount];
 }
@@ -236,6 +290,26 @@
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize
                             yellowDotY:(double)yellowDotY
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount {
+    return [self analyzeScreenImage:ciImage
+                         screenSize:screenSize
+                         yellowDotY:yellowDotY
+                   hasBottomTealBar:NO
+                  hasTopWhiteHeader:NO
+                 headerIconWarmFood:NO
+                 headerIconCoolRide:NO
+                             config:config
+                    priceRetryCount:retryCount];
+}
+
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                            yellowDotY:(double)yellowDotY
+                      hasBottomTealBar:(BOOL)hasBottomTealBar
+                     hasTopWhiteHeader:(BOOL)hasTopWhiteHeader
+                    headerIconWarmFood:(BOOL)headerIconWarmFood
+                    headerIconCoolRide:(BOOL)headerIconCoolRide
                                 config:(FilterConfig *)config
                        priceRetryCount:(NSInteger)retryCount {
     ScreenAnalysis *res = [[ScreenAnalysis alloc] init];
@@ -317,9 +391,16 @@
     BOOL hasBottomSheetTxt = NO; // 'Bạn đã lái xe liên tục', '0.0/8', '/8 tiếng', 'Trung tâm an toàn'...
     BOOL hasLobbyCardTxt   = NO; // 'Số dư ví', 'Green Now', 'Chuyến của tôi', 'Mua xe VinFast'
 
-    CGFloat kmLineY = screenSize.height * 0.42;
+    // Build row-merged blocks so animated countdown bars splitting 'Nhận' | 'chuyến' (or '1 điểm' | 'đến') are ALWAYS joined cleanly!
+    NSArray<OCRTextBlock *> *rowMergedBlocks = [self buildRowMergedBlocksFrom:blocks];
+    NSMutableArray<OCRTextBlock *> *scanBlocks = [NSMutableArray arrayWithCapacity:(blocks.count + rowMergedBlocks.count)];
+    [scanBlocks addObjectsFromArray:rowMergedBlocks]; // Check merged full phrases first so centerX/centerY spans the whole button!
+    [scanBlocks addObjectsFromArray:blocks];
 
-    for (OCRTextBlock *b in blocks) {
+    CGFloat kmLineY = screenSize.height * 0.42;
+    OCRTextBlock *bottomPartialAcceptBlk = nil;
+
+    for (OCRTextBlock *b in scanBlocks) {
         NSString *t = b.normText;
 
         // Lobby & Payment markers
@@ -465,33 +546,91 @@
         }
 
         // Order Popup core markers
-        if (!cuocPhiBlock && b.uiCenter.y < screenSize.height * 0.45) {
+        if (!cuocPhiBlock && b.uiCenter.y < screenSize.height * 0.48) {
             if ([t containsString:@"cuoc phi"] || [t containsString:@"cuocphi"]) {
                 cuocPhiBlock = b;
             }
         }
-        if (!acceptBlock && b.uiCenter.y > screenSize.height * 0.78) {
-            if (([t containsString:@"nhan chuyen"] || [t containsString:@"nhanchuyen"]) &&
-                ![t containsString:@"mo nhan"]) {
+        if (!acceptBlock && b.uiCenter.y > screenSize.height * 0.74) {
+            BOOL isNotLobbyOrStop = (![t containsString:@"mo nhan"] &&
+                                     ![t containsString:@"tat nhan"] &&
+                                     ![t containsString:@"ngung nhan"] &&
+                                     ![t containsString:@"xac nhan hoan"] &&
+                                     ![t containsString:@"hoan thanh chuyen"] &&
+                                     ![t containsString:@"chuyen cua toi"]);
+            if (isNotLobbyOrStop &&
+                ([t containsString:@"nhan chuyen"] ||
+                 [t containsString:@"nhanchuyen"] ||
+                 [t containsString:@"nhan chuven"] ||
+                 [t containsString:@"nhan chuy"] ||
+                 [t containsString:@"nhan don"] ||
+                 [t containsString:@"nhandon"] ||
+                 [t containsString:@"nhan ngay"] ||
+                 [t containsString:@"nhanngay"] ||
+                 [t containsString:@"chap nhan"] ||
+                 [t containsString:@"chapnhan"])) {
                 acceptBlock = b;
+            } else if (!bottomPartialAcceptBlk &&
+                       isNotLobbyOrStop &&
+                       b.uiCenter.y > screenSize.height * 0.86 &&
+                       b.uiCenter.x > screenSize.width * 0.22 &&
+                       b.uiCenter.x < screenSize.width * 0.78 &&
+                       ([t isEqualToString:@"nhan"] ||
+                        [t hasPrefix:@"nhan "] ||
+                        [t containsString:@"chuyen"])) {
+                bottomPartialAcceptBlk = b;
             }
         }
 
-        // Route & payment body markers (y < 0.52 * H)
-        if (b.uiCenter.y > 60.0 && b.uiCenter.y < screenSize.height * 0.52) {
-            if ([t containsString:@"diem den"] || [t containsString:@"insurance"]) {
+        // Route & payment body markers (y < 0.68 * H so surge/bonus banners or chained sheets never push markers out of bounds!)
+        if (b.uiCenter.y > 55.0 && b.uiCenter.y < screenSize.height * 0.68) {
+            if ([t containsString:@"diem den"] ||
+                [t containsString:@"diemden"] ||
+                [t containsString:@"diem don"] ||
+                [t containsString:@"diemdon"] ||
+                [t containsString:@"insurance"] ||
+                [t containsString:@"bao hiem"]) {
                 hasPassengerRoute = YES;
             }
-            if ([t containsString:@"diem nhan"] || [t containsString:@"diem giao"]) {
+            if ([t containsString:@"diem nhan"] ||
+                [t containsString:@"diemnhan"] ||
+                [t containsString:@"diem giao"] ||
+                [t containsString:@"diemgiao"]) {
                 hasDeliveryRoute = YES;
             }
             if ([t containsString:@"tien mat"] || [t containsString:@"the/vi"] || [t containsString:@"the / vi"]) {
                 hasPaymentTag = YES;
             }
-            if ([t containsString:@"km"] && [t containsString:@"diem"]) {
-                kmLineY = b.uiCenter.y;
-                kmSummaryBlk = b;
+            if ([t containsString:@"km"] && ([t containsString:@"diem"] || [t containsString:@"1 "])) {
+                if (!kmSummaryBlk) {
+                    kmLineY = b.uiCenter.y;
+                    kmSummaryBlk = b;
+                }
             }
+        }
+    }
+
+    // If countdown sweep partially obscured half of 'Nhận chuyến' (or blurred button text for 1 frame while bottom teal bar + 'Cước phí' + route markers are 100% present):
+    if (!acceptBlock &&
+        !daDenDiemDonBlk &&
+        !hoanThanhChuyenBlk &&
+        !hasAnyTripBottomBtn &&
+        !hanhKhachBlk &&
+        !dieuHuongBlk &&
+        !moNhanChuyenBlock &&
+        !dangTrucTuyenBlk &&
+        !hasLobbyCardTxt &&
+        cuocPhiBlock != nil &&
+        (hasPassengerRoute || hasDeliveryRoute || hasPaymentTag)) {
+        if (bottomPartialAcceptBlk) {
+            acceptBlock = bottomPartialAcceptBlk;
+        } else if (hasBottomTealBar) {
+            OCRTextBlock *synth = [[OCRTextBlock alloc] init];
+            synth.rawText  = @"Nhận chuyến";
+            synth.normText = @"nhan chuyen";
+            synth.uiRect   = CGRectMake(20.0, screenSize.height * 0.915, screenSize.width - 40.0, 48.0);
+            synth.uiCenter = CGPointMake(screenSize.width * 0.5, 640.0);
+            acceptBlock    = synth;
         }
     }
 
@@ -548,15 +687,18 @@
                              res.hasBlockingBottomSheet ||
                              (!acceptBlock && hasLobbyCardTxt));
 
-    // 4. Inspect Service Header Bar ROI (strictly above 'Cước phí' / y = 20..92pt on iPhone 8)
+    // 4. Inspect Service Header Bar ROI (adaptive window strictly above 'Cước phí' so mid-sheet / bonus cards work cleanly)
+    CGFloat headerMinY = cuocPhiBlock
+        ? MAX(20.0, cuocPhiBlock.uiCenter.y - 92.0)
+        : 20.0;
     CGFloat headerMaxY = cuocPhiBlock
-        ? MAX(66.0, cuocPhiBlock.uiCenter.y - 11.0)
-        : (screenSize.height * 0.145);
+        ? MAX(68.0, cuocPhiBlock.uiCenter.y - 10.0)
+        : (screenSize.height * 0.21);
 
     NSMutableArray<OCRTextBlock *> *headerBlocks = [NSMutableArray array];
     for (OCRTextBlock *b in blocks) {
         // Exclude top iOS status bar (y < 20pt: 'Google Maps 4G 11:29') and far-right [X] button
-        if (b.uiCenter.y >= 21.0 && b.uiCenter.y <= headerMaxY && b.uiCenter.x < screenSize.width * 0.84) {
+        if (b.uiCenter.y >= headerMinY && b.uiCenter.y <= headerMaxY && b.uiCenter.x < screenSize.width * 0.84) {
             [headerBlocks addObject:b];
         }
     }
@@ -584,6 +726,15 @@
 
     BOOL isHeaderFood    = [self headerNormMatchesFood:joinedHeaderNorm];
     BOOL isHeaderNonFood = (!isHeaderFood && [self headerNormMatchesNonFoodService:joinedHeaderNorm]);
+
+    // Fuse top-left service icon color sensor when header bar is uncovered at y~52pt:
+    if (!isHeaderFood && !isHeaderNonFood && hasTopWhiteHeader) {
+        if (headerIconWarmFood && !hasPassengerRoute) {
+            isHeaderFood = YES;
+        } else if (headerIconCoolRide) {
+            isHeaderNonFood = YES;
+        }
+    }
 
     // 5. Banner-tolerant Order Popup check:
     // Bottom 'Nhận chuyến' + ANY body/header confirmation marker
@@ -711,6 +862,18 @@
         res.pickupSubtitle  = pSub;
         res.dropoffTitle    = dTit;
         res.dropoffSubtitle = dSub;
+
+        // If top header text was covered by a persistent banner even after swipe, check if Pickup Title is clearly a Food restaurant:
+        if (!isHeaderFood && !isHeaderNonFood && !hasPassengerRoute && retryCount >= 3) {
+            NSString *normPickCheck = NormalizeVNText(pTit ?: @"");
+            if (normPickCheck.length >= 4 && _foodPickupHintRegex &&
+                [_foodPickupHintRegex firstMatchInString:normPickCheck options:0 range:NSMakeRange(0, normPickCheck.length)] != nil) {
+                isHeaderFood = YES;
+            } else if (hasTopWhiteHeader && !headerIconWarmFood) {
+                // Header bar at y=52pt is 100% uncovered white (no banner!), icon is NOT warm food, and title is NOT Food -> new non-food service!
+                isHeaderNonFood = YES;
+            }
+        }
 
         // --- BRANCH A: CONFIRMED GREEN FOOD (2-Gate Hanoi Filter: TTTM/Chain Blacklist + Price OR >3km) ---
         if (isHeaderFood) {

@@ -38,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.8-ts
-          name: "Pin & Nhiệt Độ v4.8 Hợp Nhất Dữ Liệu 3 Sàn (74.496 Quán Xanh-Shopee-Grab & 49.261 Ghim HN)"
-          body: "Bản nâng cấp dữ liệu lớn v4.8: (1) Hợp nhất dữ liệu liên sàn 74.496 quán ăn Hà Nội (17.014 Xanh SM + 53.602 ShopeeFood + 3.880 GrabFood) vào lõi nhị phân HANOI_FOOD_INDEX_V2 (1.17MB, tra cứu 0.2ms) — vạch trần các quán TTTM/Tầng hầm ẩn tên trên Xanh SM và chuẩn hóa Điểm Đông Liên Sàn (max[Đơn Xanh, Vote Grab x3.2, Điểm Shopee x3.0]); (2) Chống phạt oan thông minh: tự động miễn trừ cụm chỉ hướng 'Đối diện / Cạnh / Gần TTTM' và kiot tầng trệt chung cư cũ; (3) Nâng mật độ ghim tọa độ đường/ngõ/số nhà Hà Nội Offline lên 49.261 điểm giúp đo khoảng cách >3.0km tức thì, bỏ qua gọi mạng ArcGIS khi trúng ghim nhà/ngõ chính xác."
+          tag_name: v4.9-ts
+          name: "Pin & Nhiệt Độ v4.9 Tự Chữa Lành Lõi Ngầm & Chống Sót Đơn Tuyệt Đối"
+          body: "Bản vá trọng điểm v4.9: (1) Sửa triệt để lỗi cài đè TrollStore đổi thư mục UUID làm Watchdog gọi nhầm đường dẫn cũ gây đơ quét/chạm (Watchdog nay tự phát hiện đổi UUID và chuyển giao sang binary mới tức thì, không bao giờ phải gỡ cài lại); (2) Khắc phục hiện tượng tự hủy làm mới RAM liên tục mỗi 90s sau khi nạp DB 3 Sàn 74.496 quán; (3) Sửa lỗi thanh đếm ngược 2 màu cắt đôi chữ 'Nhận | chuyến' trong Vision OCR + bổ sung nhận diện đủ dịch vụ (Bike Tiết kiệm/Ưu tiên, Express 2H/Đơn ghép/Đồng giá) + quét 4 hàng pixel đáy + chống khóa 4.2s khi chạm trượt nút Nhận; (4) Gỡ toàn bộ phụ thuộc UIKit khỏi pind chạy ngầm, tự làm mới FrontBoard monitor định kỳ 25s và hủy ngủ nghỉ 2 phút ngay khi phát hiện vẫn đang Trực tuyến."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa
