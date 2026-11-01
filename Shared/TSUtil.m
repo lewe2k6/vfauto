@@ -221,6 +221,13 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
         _autoAcceptBike         = YES;
         _rejectAllFood          = NO;
         _minFoodPriceVND        = 25000;
+        _foodBlockMallAndBasement = YES;
+        _foodBlockCrowdedChains   = YES;
+        _foodMaxMerchantOrders    = 8000;
+        _foodMallKeywords         = kDefaultFoodMallKeywords;
+        _foodChainKeywords        = kDefaultFoodChainKeywords;
+        _foodAcceptLongDistance   = YES;
+        _minFoodDistanceKm        = 3.0;
         _smartCoolMode          = YES;
         _tapVerifyRetries       = 2;
         _hapticEnabled          = YES;
@@ -300,6 +307,17 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (dict[@"autoAcceptBike"])         cfg.autoAcceptBike         = [dict[@"autoAcceptBike"] boolValue];
     if (dict[@"rejectAllFood"])          cfg.rejectAllFood          = [dict[@"rejectAllFood"] boolValue];
     if (dict[@"minFoodPriceVND"])        cfg.minFoodPriceVND        = [dict[@"minFoodPriceVND"] integerValue];
+    if (dict[@"foodBlockMallAndBasement"]) cfg.foodBlockMallAndBasement = [dict[@"foodBlockMallAndBasement"] boolValue];
+    if (dict[@"foodBlockCrowdedChains"])   cfg.foodBlockCrowdedChains   = [dict[@"foodBlockCrowdedChains"] boolValue];
+    if (dict[@"foodMaxMerchantOrders"])    cfg.foodMaxMerchantOrders    = [dict[@"foodMaxMerchantOrders"] integerValue];
+    if ([dict[@"foodMallKeywords"] isKindOfClass:[NSString class]]) {
+        cfg.foodMallKeywords = dict[@"foodMallKeywords"];
+    }
+    if ([dict[@"foodChainKeywords"] isKindOfClass:[NSString class]]) {
+        cfg.foodChainKeywords = dict[@"foodChainKeywords"];
+    }
+    if (dict[@"foodAcceptLongDistance"])   cfg.foodAcceptLongDistance   = [dict[@"foodAcceptLongDistance"] boolValue];
+    if (dict[@"minFoodDistanceKm"])        cfg.minFoodDistanceKm        = [dict[@"minFoodDistanceKm"] doubleValue];
     if (dict[@"smartCoolMode"])          cfg.smartCoolMode          = [dict[@"smartCoolMode"] boolValue];
     if (dict[@"tapVerifyRetries"])       cfg.tapVerifyRetries       = [dict[@"tapVerifyRetries"] integerValue];
     if (dict[@"hapticEnabled"])          cfg.hapticEnabled          = [dict[@"hapticEnabled"] boolValue];
@@ -382,6 +400,10 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (cfg.navTapCount > 5) cfg.navTapCount = 5;
     if (cfg.tapVerifyRetries < 0) cfg.tapVerifyRetries = 0;
     if (cfg.tapVerifyRetries > 4) cfg.tapVerifyRetries = 4;
+    if (cfg.foodMaxMerchantOrders < 0) cfg.foodMaxMerchantOrders = 0;
+    if (cfg.foodMaxMerchantOrders > 200000) cfg.foodMaxMerchantOrders = 200000;
+    if (cfg.minFoodDistanceKm < 0.5) cfg.minFoodDistanceKm = 0.5;
+    if (cfg.minFoodDistanceKm > 25.0) cfg.minFoodDistanceKm = 25.0;
 
     return cfg;
 }
@@ -392,6 +414,13 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
         @"autoAcceptBike":         @(self.autoAcceptBike),
         @"rejectAllFood":          @(self.rejectAllFood),
         @"minFoodPriceVND":        @(self.minFoodPriceVND),
+        @"foodBlockMallAndBasement": @(self.foodBlockMallAndBasement),
+        @"foodBlockCrowdedChains":   @(self.foodBlockCrowdedChains),
+        @"foodMaxMerchantOrders":    @(self.foodMaxMerchantOrders),
+        @"foodMallKeywords":         self.foodMallKeywords ?: kDefaultFoodMallKeywords,
+        @"foodChainKeywords":        self.foodChainKeywords ?: kDefaultFoodChainKeywords,
+        @"foodAcceptLongDistance":   @(self.foodAcceptLongDistance),
+        @"minFoodDistanceKm":        @(self.minFoodDistanceKm),
         @"smartCoolMode":          @(self.smartCoolMode),
         @"tapVerifyRetries":       @(self.tapVerifyRetries),
         @"hapticEnabled":          @(self.hapticEnabled),

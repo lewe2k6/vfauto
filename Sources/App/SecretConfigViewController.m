@@ -25,6 +25,15 @@
     UISwitch *_swHaptic;
     UISwitch *_swDryRun;
 
+    // Card 1B: Hanoi Food TTTM / Crowded Chain Blacklist & Distance (>3km) Filter
+    UIStackView *_foodSmartFilterCardBody;
+    UISwitch *_swBlockMall;
+    UISwitch *_swBlockChains;
+    UILabel  *_lblMaxMerchantOrders; UISlider *_slMaxMerchantOrders;
+    UISwitch *_swAcceptLongDist;
+    UILabel  *_lblMinFoodDistKm;     UISlider *_slMinFoodDistKm;
+    UIView   *_distSliderWrap;
+
     // Card 2: 2-Min Pause & Kill/Relaunch Driver App
     UISwitch *_swPauseFood;
     UILabel  *_lblPauseSec;    UISlider *_slPauseSec;
@@ -87,7 +96,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.6.1";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.7";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -420,6 +429,44 @@
                             subtitle:@"Chỉ đọc chữ + ghi Log, KHÔNG chạm thật"
                               action:@selector(generalControlChanged)];
 
+    // --- CARD 1B: HANOI GREEN FOOD TTTM/CHAIN BLACKLIST & >3KM DISTANCE ---
+    UIStackView *sec1B = nil;
+    [self makeCardWithTitle:@"1B. Chặn TTTM/Quán Đông & Đo Km Food (>3km)" addTo:_stackView outBody:&sec1B];
+    _foodSmartFilterCardBody = sec1B;
+
+    _swBlockMall = [self addSwitchRowTo:sec1B
+                                  title:@"Chặn cứng TTTM, Tầng Hầm & Gian Hàng"
+                               subtitle:@"Điểm nhận trúng TTTM / Hầm B1-B2 / Kiosk (DB 17.014 quán HN + Từ khóa) -> Bấm [X] 100% mọi giá, mọi km"
+                                 action:@selector(generalControlChanged)];
+
+    _swBlockChains = [self addSwitchRowTo:sec1B
+                                    title:@"Chặn cứng Chuỗi Quán Đông Chờ Lâu"
+                                 subtitle:@"Phê La, Chú Long, Katinat, Phúc Long, Lotteria, KFC, Cơm Thố Anh Nguyễn... -> Bấm [X] 100%"
+                                   action:@selector(generalControlChanged)];
+
+    _slMaxMerchantOrders = [self addSliderRowTo:sec1B min:0.0f max:20000.0f outLabel:&_lblMaxMerchantOrders action:@selector(sliderChanged)];
+
+    UIStackView *kwBtnRow = [[UIStackView alloc] init];
+    kwBtnRow.axis = UILayoutConstraintAxisHorizontal;
+    kwBtnRow.distribution = UIStackViewDistributionFillEqually;
+    kwBtnRow.spacing = 8;
+
+    UIButton *editMallKwBtn = [self makeStepButton:@"Sửa Từ Khóa TTTM" tag:1 action:@selector(openKeywordEditorTapped:)];
+    editMallKwBtn.backgroundColor = [UIColor colorWithRed:0.18 green:0.32 blue:0.52 alpha:1.0];
+    UIButton *editChainKwBtn = [self makeStepButton:@"Sửa Quán Đông" tag:2 action:@selector(openKeywordEditorTapped:)];
+    editChainKwBtn.backgroundColor = [UIColor colorWithRed:0.42 green:0.24 blue:0.46 alpha:1.0];
+    [kwBtnRow addArrangedSubview:editMallKwBtn];
+    [kwBtnRow addArrangedSubview:editChainKwBtn];
+    [sec1B addArrangedSubview:kwBtnRow];
+
+    _swAcceptLongDist = [self addSwitchRowTo:sec1B
+                                       title:@"Quán Sạch: Nhận Cả Khi Đường Giao > Km"
+                                    subtitle:@"Thỏa Một Trong Hai: Giá >= Mức tối thiểu HOẶC Quãng đường Điểm nhận -> Điểm giao > ngưỡng km bên dưới"
+                                      action:@selector(generalControlChanged)];
+
+    _slMinFoodDistKm = [self addSliderRowTo:sec1B min:1.0f max:10.0f outLabel:&_lblMinFoodDistKm action:@selector(sliderChanged)];
+    _distSliderWrap  = _slMinFoodDistKm.superview;
+
     // --- CARD 2: 2-MINUTE PAUSE & KILL/RELAUNCH DRIVER APP ---
     UIStackView *sec2 = nil;
     [self makeCardWithTitle:@"2. Nghỉ 2 Phút & Kill App Sau Khi [X] Food" addTo:_stackView outBody:&sec2];
@@ -575,6 +622,12 @@
     _swHaptic.on        = _cfg.hapticEnabled;
     _swDryRun.on        = _cfg.dryRunMode;
 
+    _swBlockMall.on          = _cfg.foodBlockMallAndBasement;
+    _swBlockChains.on        = _cfg.foodBlockCrowdedChains;
+    _slMaxMerchantOrders.value = (float)MIN(20000, MAX(0, _cfg.foodMaxMerchantOrders));
+    _swAcceptLongDist.on     = _cfg.foodAcceptLongDistance;
+    _slMinFoodDistKm.value   = (float)fmin(10.0, fmax(1.0, _cfg.minFoodDistanceKm));
+
     _swPauseFood.on     = _cfg.pauseAfterRejectFood;
     _slPauseSec.value   = (float)_cfg.pauseDurationSec;
     _swAutoKill.on      = _cfg.autoKillAndRelaunchApp;
@@ -626,8 +679,22 @@
 - (void)updateValueLabels {
     _priceControlRow.alpha = _cfg.rejectAllFood ? 0.35 : 1.0;
     _priceControlRow.userInteractionEnabled = !_cfg.rejectAllFood;
-    _lblMinFoodPrice.text = [NSString stringWithFormat:@"Giá tối thiểu nhận Green Food: %@\n(Từ mức này trở lên tự Nhận, thấp hơn tự bấm X)",
+    _foodSmartFilterCardBody.alpha = _cfg.rejectAllFood ? 0.35 : 1.0;
+    _foodSmartFilterCardBody.userInteractionEnabled = !_cfg.rejectAllFood;
+    _lblMinFoodPrice.text = [NSString stringWithFormat:@"Giá tối thiểu nhận Green Food: %@\n(Quán sạch: Giá >= mức này tự Nhận ngay 0ms; thấp hơn sẽ xét tiếp Km)",
                              [self formatVND:_cfg.minFoodPriceVND]];
+
+    if (_cfg.foodMaxMerchantOrders <= 0) {
+        _lblMaxMerchantOrders.text = @"Lọc theo tổng số đơn quán (DB Hà Nội): ĐANG TẮT (0)";
+    } else {
+        _lblMaxMerchantOrders.text = [NSString stringWithFormat:@"Chặn cứng quán quá đông trong DB Hà Nội: >= %ld đơn",
+                                      (long)_cfg.foodMaxMerchantOrders];
+    }
+
+    _distSliderWrap.alpha = _cfg.foodAcceptLongDistance ? 1.0 : 0.35;
+    _distSliderWrap.userInteractionEnabled = _cfg.foodAcceptLongDistance;
+    _lblMinFoodDistKm.text = [NSString stringWithFormat:@"Ngưỡng khoảng cách Điểm nhận -> Điểm giao: > %.1f km\n(Đo xe máy Valhalla + DB Hà Nội Offline chống lag 4G)",
+                              _cfg.minFoodDistanceKm];
 
     _lblPauseSec.text    = [NSString stringWithFormat:@"Thời gian tắt nhận chuyến: %ld giây (%.1f phút)",
                             (long)_cfg.pauseDurationSec, _cfg.pauseDurationSec / 60.0];
@@ -714,6 +781,9 @@
     _cfg.smartCoolMode          = _swSmartCool.isOn;
     _cfg.autoAcceptBike         = _swAutoBike.isOn;
     _cfg.rejectAllFood          = _swRejectAllFood.isOn;
+    _cfg.foodBlockMallAndBasement = _swBlockMall.isOn;
+    _cfg.foodBlockCrowdedChains   = _swBlockChains.isOn;
+    _cfg.foodAcceptLongDistance   = _swAcceptLongDist.isOn;
     _cfg.hapticEnabled          = _swHaptic.isOn;
     _cfg.dryRunMode             = _swDryRun.isOn;
     _cfg.pauseAfterRejectFood   = _swPauseFood.isOn;
@@ -727,6 +797,9 @@
 }
 
 - (void)sliderChanged {
+    _cfg.foodMaxMerchantOrders = (NSInteger)(roundf(_slMaxMerchantOrders.value / 500.0f) * 500);
+    _cfg.minFoodDistanceKm     = roundf(_slMinFoodDistKm.value * 10.0f) / 10.0f;
+
     _cfg.pauseDurationSec = (NSInteger)(roundf(_slPauseSec.value / 10.0f) * 10);
     _cfg.relaunchLeadSec  = (NSInteger)roundf(_slRelaunchSec.value);
 
@@ -815,6 +888,100 @@
         }
     }]];
     [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)openKeywordEditorTapped:(UIButton *)sender {
+    BOOL isMall = (sender.tag == 1);
+    UIViewController *editorVC = [[UIViewController alloc] init];
+    editorVC.title = isMall ? @"Từ Khóa TTTM / Tầng Hầm" : @"Từ Khóa Chuỗi Quán Đông";
+    editorVC.view.backgroundColor = [UIColor colorWithRed:0.08 green:0.09 blue:0.12 alpha:1.0];
+
+    UILabel *hint = [[UILabel alloc] init];
+    hint.translatesAutoresizingMaskIntoConstraints = NO;
+    hint.numberOfLines = 0;
+    hint.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightRegular];
+    hint.textColor = [UIColor colorWithWhite:0.75 alpha:1.0];
+    hint.text = @"Ngăn cách các từ khóa bằng dấu phẩy (,). Không phân biệt chữ hoa/thường hay có dấu/không dấu. Chỉ quét trên Điểm nhận:";
+    [editorVC.view addSubview:hint];
+
+    UITextView *tv = [[UITextView alloc] init];
+    tv.translatesAutoresizingMaskIntoConstraints = NO;
+    tv.backgroundColor = [UIColor colorWithRed:0.14 green:0.15 blue:0.19 alpha:1.0];
+    tv.textColor = [UIColor whiteColor];
+    tv.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
+    tv.layer.cornerRadius = 10;
+    tv.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    tv.autocorrectionType = UITextAutocorrectionTypeNo;
+    tv.text = isMall
+        ? (_cfg.foodMallKeywords ?: kDefaultFoodMallKeywords)
+        : (_cfg.foodChainKeywords ?: kDefaultFoodChainKeywords);
+    [editorVC.view addSubview:tv];
+
+    UIButton *resetDefaultBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    resetDefaultBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [resetDefaultBtn setTitle:@"Khôi Phục Danh Sách Gốc Mặc Định" forState:UIControlStateNormal];
+    [resetDefaultBtn setTitleColor:[UIColor systemOrangeColor] forState:UIControlStateNormal];
+    resetDefaultBtn.titleLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightBold];
+    [editorVC.view addSubview:resetDefaultBtn];
+
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editorVC];
+    nav.navigationBar.barStyle = UIBarStyleBlack;
+    nav.navigationBar.tintColor = [UIColor systemTealColor];
+
+    __weak typeof(self) weakSelf = self;
+    UIAction *cancelAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+        [nav dismissViewControllerAnimated:YES completion:nil];
+    }];
+    UIAction *saveAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf) {
+            NSString *cleaned = [tv.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (isMall) {
+                strongSelf->_cfg.foodMallKeywords = cleaned;
+            } else {
+                strongSelf->_cfg.foodChainKeywords = cleaned;
+            }
+            [strongSelf->_cfg saveToDiskAndNotify:YES];
+        }
+        [nav dismissViewControllerAnimated:YES completion:nil];
+    }];
+    UIAction *resetAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+        tv.text = isMall ? kDefaultFoodMallKeywords : kDefaultFoodChainKeywords;
+    }];
+    UIAction *hideKbAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+        [tv resignFirstResponder];
+    }];
+    [resetDefaultBtn addAction:resetAct forControlEvents:UIControlEventTouchUpInside];
+
+    UIToolbar *kbBar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 375, 42)];
+    kbBar.barStyle = UIBarStyleBlack;
+    kbBar.tintColor = [UIColor systemTealColor];
+    kbBar.items = @[
+        [[UIBarButtonItem alloc] initWithTitle:@"Mặc định gốc" primaryAction:resetAct],
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
+        [[UIBarButtonItem alloc] initWithTitle:@"Ẩn bàn phím" primaryAction:hideKbAct]
+    ];
+    tv.inputAccessoryView = kbBar;
+
+    editorVC.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Hủy" primaryAction:cancelAct];
+    editorVC.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Lưu" primaryAction:saveAct];
+
+    UILayoutGuide *g = editorVC.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [hint.topAnchor constraintEqualToAnchor:g.topAnchor constant:10],
+        [hint.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:14],
+        [hint.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-14],
+        [tv.topAnchor constraintEqualToAnchor:hint.bottomAnchor constant:8],
+        [tv.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:14],
+        [tv.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-14],
+        [tv.heightAnchor constraintEqualToConstant:168],
+        [resetDefaultBtn.topAnchor constraintEqualToAnchor:tv.bottomAnchor constant:10],
+        [resetDefaultBtn.centerXAnchor constraintEqualToAnchor:g.centerXAnchor]
+    ]];
+
+    [self presentViewController:nav animated:YES completion:^{
+        [tv becomeFirstResponder];
+    }];
 }
 
 #pragma mark - Driver App Picker & Kill/Relaunch Test
@@ -918,7 +1085,7 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.6.1!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.7!");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
@@ -965,13 +1132,13 @@
     }
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.6.1 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.7 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.6.1...";
+        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.7...";
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";

@@ -1,4 +1,5 @@
 #import "OrderScanner.h"
+#import "HanoiFoodFilterEngine.h"
 #import <Vision/Vision.h>
 
 @implementation ScreenAnalysis
@@ -12,6 +13,17 @@
 @end
 
 @implementation OCRTextBlock
+@end
+
+@interface OCRMergedRouteLine : NSObject
+@property (nonatomic, copy) NSString *rawText;
+@property (nonatomic, copy) NSString *normText;
+@property (nonatomic, assign) CGFloat minY;
+@property (nonatomic, assign) CGFloat maxY;
+@property (nonatomic, assign) CGFloat centerY;
+@end
+
+@implementation OCRMergedRouteLine
 @end
 
 @implementation OrderScanner {
@@ -132,8 +144,98 @@
     return ([_nonFoodHeaderRegex firstMatchInString:hNorm options:0 range:NSMakeRange(0, hNorm.length)] != nil);
 }
 
+- (void)splitStopLines:(NSArray<OCRMergedRouteLine *> *)lines
+              outTitle:(NSString * __strong *)outTitle
+           outSubtitle:(NSString * __strong *)outSubtitle {
+    if (!lines || lines.count == 0) {
+        if (outTitle) *outTitle = @"";
+        if (outSubtitle) *outSubtitle = @"";
+        return;
+    }
+    if (lines.count == 1) {
+        if (outTitle) *outTitle = lines[0].rawText ?: @"";
+        if (outSubtitle) *outSubtitle = lines[0].rawText ?: @"";
+        return;
+    }
+
+    NSUInteger splitIdx = NSNotFound;
+    for (NSUInteger i = 1; i < lines.count; i++) {
+        OCRMergedRouteLine *prev = lines[i - 1];
+        OCRMergedRouteLine *cur  = lines[i];
+        CGFloat vGap = cur.minY - prev.maxY;
+        BOOL prevEndsCountry = ([prev.normText hasSuffix:@"viet nam"] ||
+                                [prev.normText hasSuffix:@"vietnam"] ||
+                                [prev.normText hasSuffix:@"vnm"]);
+        if (vGap >= 9.5 || prevEndsCountry) {
+            splitIdx = i;
+            break;
+        }
+    }
+
+    if (splitIdx == NSNotFound) {
+        NSMutableArray<NSString *> *allRaw = [NSMutableArray arrayWithCapacity:lines.count];
+        for (OCRMergedRouteLine *ln in lines) {
+            [allRaw addObject:ln.rawText];
+        }
+        NSString *joined = [allRaw componentsJoinedByString:@" "];
+        if (outTitle) *outTitle = joined;
+        if (outSubtitle) *outSubtitle = joined;
+        return;
+    }
+
+    NSMutableArray<NSString *> *titleParts = [NSMutableArray arrayWithCapacity:splitIdx];
+    NSMutableArray<NSString *> *subParts   = [NSMutableArray arrayWithCapacity:lines.count - splitIdx];
+    for (NSUInteger i = 0; i < lines.count; i++) {
+        if (i < splitIdx) {
+            [titleParts addObject:lines[i].rawText];
+        } else {
+            [subParts addObject:lines[i].rawText];
+        }
+    }
+    if (outTitle) *outTitle = [titleParts componentsJoinedByString:@" "];
+    if (outSubtitle) *outSubtitle = [subParts componentsJoinedByString:@" "];
+}
+
+- (NSString *)buildOrderFingerprintForFood:(BOOL)isFood
+                                  priceVND:(NSInteger)priceVND
+                               pickupTitle:(NSString *)pickupTitle
+                              dropoffTitle:(NSString *)dropoffTitle {
+    NSString *normP = NormalizeVNText(pickupTitle ?: @"");
+    NSString *normD = NormalizeVNText(dropoffTitle ?: @"");
+    NSMutableString *alnumP = [NSMutableString stringWithCapacity:38];
+    for (NSUInteger i = 0; i < normP.length && alnumP.length < 34; i++) {
+        unichar c = [normP characterAtIndex:i];
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            [alnumP appendFormat:@"%C", c];
+        }
+    }
+    NSMutableString *alnumD = [NSMutableString stringWithCapacity:16];
+    for (NSUInteger i = 0; i < normD.length && alnumD.length < 14; i++) {
+        unichar c = [normD characterAtIndex:i];
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            [alnumD appendFormat:@"%C", c];
+        }
+    }
+    NSString *comb = (alnumD.length > 0)
+        ? [NSString stringWithFormat:@"%@_%@", alnumP, alnumD]
+        : alnumP;
+    return [NSString stringWithFormat:@"%@|%ld|%@", isFood ? @"FOOD" : @"RIDE", (long)priceVND, comb];
+}
+
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount {
+    return [self analyzeScreenImage:ciImage
+                         screenSize:screenSize
+                         yellowDotY:0.0
+                             config:config
+                    priceRetryCount:retryCount];
+}
+
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                            yellowDotY:(double)yellowDotY
                                 config:(FilterConfig *)config
                        priceRetryCount:(NSInteger)retryCount {
     ScreenAnalysis *res = [[ScreenAnalysis alloc] init];
@@ -202,6 +304,7 @@
     OCRTextBlock *hoanThanhChuyenBlk = nil;
     OCRTextBlock *confirmOfflineBlk  = nil;
     OCRTextBlock *rejectConfirmBlk   = nil;
+    OCRTextBlock *kmSummaryBlk       = nil;
 
     BOOL hasPassengerRoute = NO; // 'điểm đến' hoặc 'Insurance' (đặc quyền của Bike chở người)
     BOOL hasDeliveryRoute  = NO; // 'điểm nhận' hoặc 'điểm giao' (chung cho cả Express & Food)
@@ -387,6 +490,7 @@
             }
             if ([t containsString:@"km"] && [t containsString:@"diem"]) {
                 kmLineY = b.uiCenter.y;
+                kmSummaryBlk = b;
             }
         }
     }
@@ -510,9 +614,111 @@
         }
         res.detectedPriceVND = detectedFare;
 
-        // --- BRANCH A: CONFIRMED GREEN FOOD (Strictly Filter Price / Reject [X]) ---
+        // Extract Pickup (Black ◉) & Dropoff (Yellow ◉) text lines cleanly
+        CGFloat routeTopY = kmSummaryBlk
+            ? (CGRectGetMaxY(kmSummaryBlk.uiRect) + 8.0)
+            : MAX(195.0, maxFareY + 18.0);
+        CGFloat routeBotY = CGRectGetMinY(acceptBlock.uiRect) - 18.0;
+
+        NSMutableArray<OCRTextBlock *> *rawRouteBlocks = [NSMutableArray array];
+        for (OCRTextBlock *b in blocks) {
+            if (b.uiCenter.y < routeTopY || b.uiCenter.y > routeBotY) continue;
+            if (CGRectGetMaxX(b.uiRect) < 52.0) continue; // Ignore standalone ◉ ring OCR noise at x~26pt
+            NSString *nt = b.normText;
+            if ([nt isEqualToString:@"insurance"] ||
+                [nt isEqualToString:@"tien mat"] ||
+                [nt isEqualToString:@"the/vi"] ||
+                [nt isEqualToString:@"the / vi"]) {
+                continue;
+            }
+            if ([nt containsString:@"km"] && [nt containsString:@"diem"]) continue;
+            [rawRouteBlocks addObject:b];
+        }
+
+        [rawRouteBlocks sortUsingComparator:^NSComparisonResult(OCRTextBlock *a, OCRTextBlock *b) {
+            if (fabs(a.uiCenter.y - b.uiCenter.y) <= 6.5) {
+                if (a.uiRect.origin.x < b.uiRect.origin.x) return NSOrderedAscending;
+                if (a.uiRect.origin.x > b.uiRect.origin.x) return NSOrderedDescending;
+                return NSOrderedSame;
+            }
+            return (a.uiCenter.y < b.uiCenter.y) ? NSOrderedAscending : NSOrderedDescending;
+        }];
+
+        // Merge horizontal segments on the same visual text row (|ΔcenterY| <= 6.5pt)
+        NSMutableArray<OCRMergedRouteLine *> *mergedLines = [NSMutableArray array];
+        for (OCRTextBlock *b in rawRouteBlocks) {
+            OCRMergedRouteLine *lastLn = mergedLines.lastObject;
+            if (lastLn && fabs(b.uiCenter.y - lastLn.centerY) <= 6.5) {
+                lastLn.rawText  = [NSString stringWithFormat:@"%@ %@", lastLn.rawText, b.rawText];
+                lastLn.normText = [NSString stringWithFormat:@"%@ %@", lastLn.normText, b.normText];
+                lastLn.minY     = MIN(lastLn.minY, CGRectGetMinY(b.uiRect));
+                lastLn.maxY     = MAX(lastLn.maxY, CGRectGetMaxY(b.uiRect));
+                lastLn.centerY  = (lastLn.minY + lastLn.maxY) * 0.5;
+            } else {
+                OCRMergedRouteLine *ln = [[OCRMergedRouteLine alloc] init];
+                ln.rawText  = b.rawText ?: @"";
+                ln.normText = b.normText ?: @"";
+                ln.minY     = CGRectGetMinY(b.uiRect);
+                ln.maxY     = CGRectGetMaxY(b.uiRect);
+                ln.centerY  = b.uiCenter.y;
+                [mergedLines addObject:ln];
+            }
+        }
+
+        NSMutableArray<OCRMergedRouteLine *> *pickupLines  = [NSMutableArray array];
+        NSMutableArray<OCRMergedRouteLine *> *dropoffLines = [NSMutableArray array];
+
+        if (yellowDotY > routeTopY + 12.0 && yellowDotY < routeBotY) {
+            CGFloat splitY = (CGFloat)yellowDotY - 14.0;
+            for (OCRMergedRouteLine *ln in mergedLines) {
+                if (ln.centerY < splitY) {
+                    [pickupLines addObject:ln];
+                } else {
+                    [dropoffLines addObject:ln];
+                }
+            }
+        }
+
+        // Fallback split by largest vertical inter-stop gap (~27pt vs <=15pt) if yellow ring was outside/uncaptured
+        if ((pickupLines.count == 0 || dropoffLines.count == 0) && mergedLines.count >= 2) {
+            CGFloat bestGap = -1.0;
+            NSUInteger bestIdx = NSNotFound;
+            for (NSUInteger i = 1; i < mergedLines.count; i++) {
+                CGFloat g = mergedLines[i].minY - mergedLines[i - 1].maxY;
+                if (g > bestGap) {
+                    bestGap = g;
+                    bestIdx = i;
+                }
+            }
+            if (bestIdx != NSNotFound && bestGap >= 16.0) {
+                [pickupLines removeAllObjects];
+                [dropoffLines removeAllObjects];
+                for (NSUInteger i = 0; i < mergedLines.count; i++) {
+                    if (i < bestIdx) [pickupLines addObject:mergedLines[i]];
+                    else [dropoffLines addObject:mergedLines[i]];
+                }
+            } else if (pickupLines.count == 0 && dropoffLines.count > 0) {
+                // Only one block present -> treat as pickup
+                [pickupLines addObjectsFromArray:dropoffLines];
+                [dropoffLines removeAllObjects];
+            }
+        }
+
+        NSString *pTit = @"", *pSub = @"", *dTit = @"", *dSub = @"";
+        [self splitStopLines:pickupLines outTitle:&pTit outSubtitle:&pSub];
+        [self splitStopLines:dropoffLines outTitle:&dTit outSubtitle:&dSub];
+        res.pickupTitle     = pTit;
+        res.pickupSubtitle  = pSub;
+        res.dropoffTitle    = dTit;
+        res.dropoffSubtitle = dSub;
+
+        // --- BRANCH A: CONFIRMED GREEN FOOD (2-Gate Hanoi Filter: TTTM/Chain Blacklist + Price OR >3km) ---
         if (isHeaderFood) {
             res.isGreenFood = YES;
+            res.orderFingerprint = [self buildOrderFingerprintForFood:YES
+                                                             priceVND:detectedFare
+                                                          pickupTitle:(pTit.length > 0 ? pTit : pSub)
+                                                         dropoffTitle:(dTit.length > 0 ? dTit : dSub)];
 
             if (config.rejectAllFood) {
                 res.orderAction = OrderActionTapRejectX;
@@ -525,9 +731,9 @@
             }
 
             if (detectedFare <= 0) {
-                if (retryCount < 3) {
+                if (retryCount < 6) {
                     res.orderAction = OrderActionWaitRetryPrice;
-                    res.orderReason = @"Đang lấy nét lại giá đơn Green Food...";
+                    res.orderReason = @"Đang chờ load giá đơn Green Food (Chống lag 4G)...";
                     return res;
                 } else {
                     res.orderAction = OrderActionTapRejectX;
@@ -535,26 +741,39 @@
                                                                      cuocPhiBlock:cuocPhiBlock
                                                                        screenSize:screenSize
                                                                            config:config];
-                    res.orderReason = @"Green Food (Không rõ giá sau 3 nhịp) -> HỦY [X]";
+                    res.orderReason = @"Green Food (Không rõ giá sau 6 nhịp) -> HỦY [X]";
                     return res;
                 }
             }
 
-            if (detectedFare >= config.minFoodPriceVND) {
+            FoodFilterEvaluation *eval = [[HanoiFoodFilterEngine sharedEngine] evaluateGreenFoodWithFare:detectedFare
+                                                                                             pickupTitle:pTit
+                                                                                          pickupSubtitle:pSub
+                                                                                            dropoffTitle:dTit
+                                                                                         dropoffSubtitle:dSub
+                                                                                                  config:config
+                                                                                              retryCount:retryCount];
+            res.estimatedDistanceKm = eval.estimatedDistanceKm;
+
+            if (eval.decision == FoodFilterDecisionWaitTextLoading) {
+                res.orderAction = OrderActionWaitRetryPrice;
+                res.orderReason = eval.reasonSummary ?: @"Đang chờ load địa chỉ Green Food...";
+                return res;
+            }
+
+            if (eval.decision == FoodFilterDecisionAccept) {
                 res.orderAction = OrderActionTapAccept;
                 res.orderTargetPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock
                                                                     screenSize:screenSize
                                                                         config:config];
-                res.orderReason = [NSString stringWithFormat:@"Green Food %ldđ (>= %ldđ) -> ĐỚP ĐƠN!",
-                                   (long)detectedFare, (long)config.minFoodPriceVND];
+                res.orderReason = eval.reasonSummary;
             } else {
                 res.orderAction = OrderActionTapRejectX;
                 res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
                                                                  cuocPhiBlock:cuocPhiBlock
                                                                    screenSize:screenSize
                                                                        config:config];
-                res.orderReason = [NSString stringWithFormat:@"Green Food %ldđ (< %ldđ) -> HỦY [X]",
-                                   (long)detectedFare, (long)config.minFoodPriceVND];
+                res.orderReason = eval.reasonSummary;
             }
             return res;
         }
@@ -564,6 +783,10 @@
         BOOL isConfirmedBikeByBody = (hasPassengerRoute && !hasDeliveryRoute);
         if (isHeaderNonFood || isConfirmedBikeByBody) {
             res.isGreenFood = NO;
+            res.orderFingerprint = [self buildOrderFingerprintForFood:NO
+                                                             priceVND:detectedFare
+                                                          pickupTitle:(pTit.length > 0 ? pTit : pSub)
+                                                         dropoffTitle:(dTit.length > 0 ? dTit : dSub)];
             NSString *svcLabel = joinedHeaderRaw.length > 0
                 ? joinedHeaderRaw
                 : (isConfirmedBikeByBody ? @"Green Bike" : @"Bike/Express");

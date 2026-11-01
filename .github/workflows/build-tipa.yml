@@ -38,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.6.1-ts
-          name: "Pin & Nhiệt Độ v4.6.1 Auto-Map Riêng Bike Chở Khách & Chống Bấm Xuyên 0.0/8 (TrollStore)"
-          body: "Bản cập nhật v4.6.1: (1) Khóa cứng Auto-Tap nút tròn xanh 'Điều hướng' CHỈ chạy riêng cho chuyến Bike chở khách ('Hành khách' + 'Đã đến điểm đón' / 'Hoàn thành chuyến'), tự động bỏ qua không chạm Map đối với Express / Express 2H ghép đơn / Green Food (nhưng vẫn bảo vệ nối chuyến 100% không bao giờ tắt nhầm app khi đang chạy đơn giao hàng); (2) Giữ trọn cảm biến Pixel vồ nút Điều hướng tức thì kể cả khi bản đồ đứng yên 0 chuyển động + khóa chống bấm [X] xuyên xuống nút ⚠️ / 0.0/8 & tự đóng bảng lái xe liên tục."
+          tag_name: v4.7-ts
+          name: "Pin & Nhiệt Độ v4.7 Lọc TTTM/Quán Đông Hà Nội, Đo Đường >3km & Khiên Chống Lag 4G (TrollStore)"
+          body: "Bản cập nhật lớn v4.7: (1) Tích hợp trực tiếp cơ sở dữ liệu Offline 17.014 quán Green Food Hà Nội (0.3ms) kết hợp danh sách từ khóa tùy chỉnh — chặn cứng 100% đơn Food có Điểm nhận tại Trung tâm thương mại (TTTM), tầng hầm B1-B2, gian hàng/kiosk và các chuỗi quán đông xếp hàng lâu (Phê La, Chú Long, Katinat, Phúc Long, Lotteria, KFC, Cơm Thố Anh Nguyễn...); (2) Quy tắc Một Trong Hai cho Quán Sạch: Nhận đơn nếu Giá >= Mức tối thiểu HOẶC Quãng đường xe máy Điểm nhận -> Điểm giao > 3.0 km (đo thực tế qua Valhalla motor_scooter né Vành đai 3 trên cao + Nội suy đường phố Hà Nội Offline); (3) Khiên Chống Lag 4G toàn diện: chờ load đủ chữ khung trắng, khóa dấu vân tay đơn hàng 4.2s chống bấm lặp [X]/[Nhận] khi mạng xoay vòng, và cầu chì cắt mạng 650ms nhường băng thông cho app Xanh SM Bác Tài."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

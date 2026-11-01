@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"4.6.1"
+#define kCurrentDaemonVersion   @"4.7"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
@@ -23,6 +23,10 @@
 // Native iPhone 8 logical screen points
 #define kDefaultScreenW         375.0
 #define kDefaultScreenH         667.0
+
+#define kDefaultFoodMallKeywords @"vincom, aeon, lotte mall, lotte center, lotte mart, royal city, times city, park hill, big c, bigc, go! thang long, tops market, mega market, the garden, indochina, iph, the loop, keangnam, landmark 72, tasco mall, savico, artemis, discovery complex, trang tien plaza, ho guom plaza, mac plaza, machinco, mipec, the zei, tnr tower, sun plaza, cho dong xuan, trung tam thuong mai, tttm, tang ham, ham b1, ham b2, ham b3, gian hang, kiosk, food court, goods court, tang l1, tang l2, tang l3, tang l4, tang l5, 72a nguyen trai, 458 minh khai, 191 ba trieu, 54a nguyen chi thanh, 119 tran duy hung, 222 tran duy hung, 272 vo chi cong, 54 lieu giai, 241 xuan thuy, 27 co linh, 302 cau giay"
+
+#define kDefaultFoodChainKeywords @"phe la, katinat, ca phe muoi chu long, phuc long, koi the, the alley, gong cha, chagee, starbucks, lotteria, kfc, jollibee, mcdonald, popeyes, texas chicken, burger king, pizza 4p, pizza hut, domino, al fresco, com tho anh nguyen, com suon cay himc, bami king, haidilao, dookki, manwah, gogi house, kichi kichi, marukame"
 
 typedef NS_ENUM(NSInteger, CoordMode) {
     CoordModeAutoOCRWithOffset = 0,
@@ -56,6 +60,13 @@ typedef NS_ENUM(NSInteger, CoordMode) {
 @property (nonatomic, assign) BOOL autoAcceptBike;           // Auto-accept Bike, Express, Express 2H, etc.
 @property (nonatomic, assign) BOOL rejectAllFood;
 @property (nonatomic, assign) NSInteger minFoodPriceVND;     // Default 25000
+@property (nonatomic, assign) BOOL foodBlockMallAndBasement; // Default YES (Hard-reject [X] TTTM / Basement / Booth on Pickup)
+@property (nonatomic, assign) BOOL foodBlockCrowdedChains;   // Default YES (Hard-reject [X] crowded long-queue chains on Pickup)
+@property (nonatomic, assign) NSInteger foodMaxMerchantOrders; // Default 8000 (0 = disabled; Hard-reject if Hanoi DB order_count >= threshold)
+@property (nonatomic, copy)   NSString *foodMallKeywords;    // Editable CSV keywords for TTTM / Basement
+@property (nonatomic, copy)   NSString *foodChainKeywords;   // Editable CSV keywords for long-queue chains
+@property (nonatomic, assign) BOOL foodAcceptLongDistance;   // Default YES ("Một trong hai": clean shop accepts if Price >= min OR Distance > threshold)
+@property (nonatomic, assign) double minFoodDistanceKm;      // Default 3.0 km (Pickup -> Dropoff motorbike road distance)
 @property (nonatomic, assign) BOOL smartCoolMode;            // Default YES (0% OCR/GPU when in Google Maps / locked)
 @property (nonatomic, assign) NSInteger tapVerifyRetries;    // Default 2 (closed-loop tap retries if popup remains)
 @property (nonatomic, assign) BOOL hapticEnabled;

@@ -15,6 +15,7 @@
 @property (nonatomic, readonly) BOOL lastFrameLikelyHasBlueNavButton;   // 0.01ms pixel sensor: blue circle 'Điều hướng' on right side
 @property (nonatomic, readonly) BOOL lastFrameLikelyHasLobbyPowerButton;// 0.01ms pixel sensor: uncovered teal [Power] circle around (40, 455)
 @property (nonatomic, readonly) BOOL lastFrameLooksLikeGoogleMapsNav;   // 0.01ms pixel sensor: Google Maps top green turn banner
+@property (nonatomic, readonly) double lastOrderYellowDotY;             // 0.005ms pixel sensor: logical Y (pt) of yellow dropoff ring ◉ on order popup
 @property (nonatomic, readonly) NSInteger lastFrameChangedSamples;      // Out of 256 grid samples vs last OCR-analyzed frame
 
 + (instancetype)sharedEngine;

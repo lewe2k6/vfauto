@@ -130,6 +130,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
+        _lastOrderYellowDotY                = 0.0;
         _lastFrameChangedSamples            = kGridCount;
         _hasAnalyzedBaseline                = NO;
         _consecutiveEmptyCaptures           = 0;
@@ -404,6 +405,32 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         }
         _lastFrameHasOrderHeaderAtTop = (_lastFrameLikelyHasOrderPopup && pureWhiteHdrHits >= 7);
 
+        // 3b. Yellow Dropoff Ring ◉ Sensor (0.005ms): Finds exact Y separator between Điểm Nhận & Điểm Giao
+        if (_lastFrameLikelyHasOrderPopup && _logicalScreenSize.width > 100.0 && _logicalScreenSize.height > 100.0) {
+            double ySum   = 0.0;
+            int yellowCnt = 0;
+            int yLo = (int)(0.36 * _logicalScreenSize.height);
+            int yHi = (int)(0.86 * _logicalScreenSize.height);
+            int xLo = (int)(0.038 * _logicalScreenSize.width);
+            int xHi = (int)(0.115 * _logicalScreenSize.width);
+            for (int ly = yLo; ly <= yHi; ly += 2) {
+                int py = (int)(((double)ly / _logicalScreenSize.height) * (double)(_pixelH - 1));
+                const uint8_t *rowY = base + (size_t)py * _bytesPerRow;
+                for (int lx = xLo; lx <= xHi; lx += 2) {
+                    int px = (int)(((double)lx / _logicalScreenSize.width) * (double)(_pixelW - 1));
+                    uint32_t pY = *((const uint32_t *)(rowY + (size_t)px * 4));
+                    uint8_t bY = pY & 0xFF, gY = (pY >> 8) & 0xFF, rY = (pY >> 16) & 0xFF;
+                    if (rY >= 210 && gY >= 135 && gY <= 230 && bY <= 85 && ((int)rY - (int)bY >= 140)) {
+                        ySum += (double)ly;
+                        yellowCnt++;
+                    }
+                }
+            }
+            _lastOrderYellowDotY = (yellowCnt >= 6) ? (ySum / (double)yellowCnt) : 0.0;
+        } else {
+            _lastOrderYellowDotY = 0.0;
+        }
+
         // 4. Blue Navigation Circle Sensor (0.01ms): Detects blue [Map] circle around x ~ 323pt (y = 185..475pt)
         //    Wakes OCR immediately even when the map & sheet are 100% motionless after accepting an order!
         int blueNavHits = 0;
@@ -465,6 +492,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHasOrderHeaderAtTop       = NO;
         _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
+        _lastOrderYellowDotY                = 0.0;
         return nil;
     }
 
@@ -501,6 +529,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
+        _lastOrderYellowDotY                = 0.0;
         _consecutiveEmptyCaptures++;
         if (_consecutiveEmptyCaptures >= 3) {
             _consecutiveEmptyCaptures = 0;

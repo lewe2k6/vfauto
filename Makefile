@@ -19,6 +19,7 @@ APP_SRCS  := Sources/App/main.m \
 DAEMON_SRCS := Sources/Daemon/pind_main.m \
                Sources/Daemon/ScreenTouchEngine.m \
                Sources/Daemon/OrderScanner.m \
+               Sources/Daemon/HanoiFoodFilterEngine.m \
                Shared/TSUtil.m
 
 APP_FRAMEWORKS    := -framework Foundation -framework UIKit -framework CoreGraphics \
@@ -26,21 +27,23 @@ APP_FRAMEWORKS    := -framework Foundation -framework UIKit -framework CoreGraph
 
 DAEMON_FRAMEWORKS := -framework Foundation -framework UIKit -framework CoreGraphics \
                      -framework CoreImage -framework QuartzCore \
-                     -framework Vision -framework AudioToolbox
+                     -framework Vision -framework AudioToolbox -lz
 
 .PHONY: all clean
 
 all: $(OUT_TIPA)
 
-$(OUT_TIPA): $(APP_SRCS) $(DAEMON_SRCS) Resources/Info.plist Resources/app.entitlements Resources/daemon.entitlements
-	@echo "==> Generating App Icons..."
+$(OUT_TIPA): $(APP_SRCS) $(DAEMON_SRCS) Resources/Info.plist Resources/app.entitlements Resources/daemon.entitlements Resources/hanoi_food_index.zlib
+	@echo "==> Generating App Icons & Verifying Hanoi Food Index..."
 	python3 scripts/generate_icon.py
+	python3 scripts/build_hanoi_food_index.py
 	@echo "==> Preparing App Bundle..."
 	rm -rf build
 	mkdir -p "$(BUNDLE_DIR)"
 	cp Resources/Info.plist "$(BUNDLE_DIR)/Info.plist"
 	cp Resources/AppIcon60x60@2x.png "$(BUNDLE_DIR)/"
 	cp Resources/AppIcon60x60@3x.png "$(BUNDLE_DIR)/"
+	cp Resources/hanoi_food_index.zlib "$(BUNDLE_DIR)/hanoi_food_index.zlib"
 	@echo "==> Compiling Root Daemon (pind)..."
 	$(CC) $(CFLAGS) $(DAEMON_SRCS) $(DAEMON_FRAMEWORKS) -o "$(BUNDLE_DIR)/pind"
 	chmod 0755 "$(BUNDLE_DIR)/pind"

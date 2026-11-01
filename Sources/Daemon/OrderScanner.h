@@ -25,6 +25,12 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) NSInteger detectedPriceVND;
 @property (nonatomic, assign) CGPoint orderTargetPoint;
 @property (nonatomic, copy)   NSString *orderReason;
+@property (nonatomic, copy)   NSString *pickupTitle;
+@property (nonatomic, copy)   NSString *pickupSubtitle;
+@property (nonatomic, copy)   NSString *dropoffTitle;
+@property (nonatomic, copy)   NSString *dropoffSubtitle;
+@property (nonatomic, assign) double estimatedDistanceKm;
+@property (nonatomic, copy)   NSString *orderFingerprint;
 
 // 2. Lobby & Payment States
 @property (nonatomic, assign) BOOL isLobbyOnline;          // 'Đang trực tuyến'
@@ -59,6 +65,12 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount;
+
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                            yellowDotY:(double)yellowDotY
                                 config:(FilterConfig *)config
                        priceRetryCount:(NSInteger)retryCount;
 

@@ -15,6 +15,7 @@
 #import "SharedConfig.h"
 #import "ScreenTouchEngine.h"
 #import "OrderScanner.h"
+#import "HanoiFoodFilterEngine.h"
 
 #ifndef POSIX_SPAWN_CLOEXEC_DEFAULT
 #define POSIX_SPAWN_CLOEXEC_DEFAULT 0x4000
@@ -448,6 +449,66 @@ static void resetBothNavLocks(RuntimeDaemonState *state, NSString *reasonLog) {
     }
 }
 
+static BOOL extractFingerprintParts(NSString *fp, NSString **outType, NSInteger *outPrice, NSString **outPickupPrefix) {
+    if (!fp || fp.length == 0) return NO;
+    NSArray<NSString *> *parts = [fp componentsSeparatedByString:@"|"];
+    if (parts.count < 3) return NO;
+    if (outType) *outType = parts[0];
+    if (outPrice) *outPrice = [parts[1] integerValue];
+    if (outPickupPrefix) *outPickupPrefix = parts[2];
+    return YES;
+}
+
+static BOOL isSameSpinningOrderOnWeak4G(ScreenAnalysis *ana,
+                                        NSString *lastFingerprint,
+                                        double lastHandledEpoch,
+                                        double nowEpoch) {
+    if (!ana || !ana.hasOrderPopup || !lastFingerprint || lastFingerprint.length == 0) return NO;
+    if (lastHandledEpoch <= 0.0 || (nowEpoch - lastHandledEpoch) > 4.2) return NO;
+
+    NSString *lastType = nil, *lastPickup = nil;
+    NSInteger lastPrice = 0;
+    if (!extractFingerprintParts(lastFingerprint, &lastType, &lastPrice, &lastPickup)) return NO;
+
+    NSString *curType = ana.isGreenFood ? @"FOOD" : @"RIDE";
+    if (![curType isEqualToString:lastType]) {
+        return NO; // Switched between Food and Bike/Express -> 100% brand-new order!
+    }
+
+    if (ana.detectedPriceVND > 0 && lastPrice > 0 && ana.detectedPriceVND != lastPrice) {
+        return NO; // Different fare -> 100% brand-new order!
+    }
+
+    NSString *curFp = ana.orderFingerprint ?: @"";
+    if ([curFp isEqualToString:lastFingerprint]) {
+        return YES;
+    }
+
+    NSString *curTypeDummy = nil, *curPickup = nil;
+    NSInteger curPriceDummy = 0;
+    extractFingerprintParts(curFp, &curTypeDummy, &curPriceDummy, &curPickup);
+
+    // If loading spinner temporarily covered pickup text while fare & service stayed identical -> still same spinning card!
+    if ((!curPickup || curPickup.length == 0) && ana.detectedPriceVND > 0 && ana.detectedPriceVND == lastPrice) {
+        return YES;
+    }
+
+    if (curPickup.length >= 8 && lastPickup.length >= 8) {
+        NSUInteger cmpLen = MIN((NSUInteger)26, MIN(curPickup.length, lastPickup.length));
+        NSUInteger sameChars = 0;
+        for (NSUInteger i = 0; i < cmpLen; i++) {
+            if ([curPickup characterAtIndex:i] == [lastPickup characterAtIndex:i]) {
+                sameChars++;
+            }
+        }
+        if (sameChars * 5 >= cmpLen * 4) { // >= 80% match across up to 26 chars (prevents "Số 12 Đường Láng" vs "Số 12 Đường Giải Phóng" collision while tolerating OCR wobble!)
+            return YES;
+        }
+    }
+
+    return NO;
+}
+
 static void runDiagnosticCapture4Sec(FilterConfig *config,
                                      ScreenTouchEngine *engine,
                                      OrderScanner *scanner,
@@ -474,8 +535,9 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
     [engine markCurrentFrameAnalyzed];
     ScreenAnalysis *ana = [scanner analyzeScreenImage:img
                                            screenSize:engine.logicalScreenSize
+                                           yellowDotY:engine.lastOrderYellowDotY
                                                config:config
-                                      priceRetryCount:0];
+                                      priceRetryCount:6];
 
     NSString *matched = @"Màn hình bình thường (không phải bảng đơn/chuyến)";
     if (ana.hasOrderPopup) {
@@ -500,11 +562,17 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
 
     NSString *detFront = currentFrontmostAppBundleIDForConfig(config) ?: @"auto";
     triggerHapticFeedback(YES);
-    appendDaemonLog(@"[TEST OK] App:%@ | Đọc %ld cụm (Tiêu đề: '%@'): [%@]",
+    appendDaemonLog(@"[TEST OK] App:%@ | Đọc %ld cụm (Tiêu đề: '%@', Chấm vàng Y:%.0f): [%@]",
                     detFront,
                     (long)ana.ocrBlockCount,
                     ana.detectedServiceTitle ?: @"",
+                    engine.lastOrderYellowDotY,
                     ana.ocrSampleSummary ?: @"");
+    if (ana.hasOrderPopup && (ana.pickupTitle.length > 0 || ana.dropoffTitle.length > 0)) {
+        appendDaemonLog(@"[ĐỊA CHỈ] Nhận: '%@' | Giao: '%@'",
+                        ana.pickupTitle.length > 0 ? ana.pickupTitle : ana.pickupSubtitle,
+                        ana.dropoffSubtitle.length > 0 ? ana.dropoffSubtitle : ana.dropoffTitle);
+    }
     appendDaemonLog(@"[KẾT QUẢ NHẬN DIỆN] %@", matched);
     notify_post(kNotifyStatsUpdated);
 }
@@ -534,12 +602,15 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                            ScreenTouchEngine *engine,
                                            OrderScanner *scanner,
                                            BOOL resumingExistingPause,
-                                           BOOL *ioInActiveTrip) {
+                                           BOOL *ioInActiveTrip,
+                                           NSString *lastHandledOrderFp,
+                                           double lastHandledOrderEpoch) {
     FilterConfig *config = *ioConfig;
     gSkipPauseRequested = NO;
 
     BOOL didKillApp     = NO;
     BOOL didRelaunchApp = NO;
+    BOOL loggedWeak4GSpin = NO;
 
     if (!resumingExistingPause) {
         state.phaseDescription = @"Đang bấm [Power] Tắt nhận chuyến...";
@@ -553,11 +624,16 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         for (int attempt = 0; attempt < 18 && !gShouldExit && !gSkipPauseRequested; attempt++) {
             @autoreleasepool {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
-                state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
+                double iterNow = [[NSDate date] timeIntervalSince1970];
+                state.workerHeartbeatEpoch = iterNow;
                 [state saveStateAndNotify:NO];
 
                 CIImage *img = [engine captureScreenCIImage];
-                ScreenAnalysis *ana = [scanner analyzeScreenImage:img screenSize:engine.logicalScreenSize config:config priceRetryCount:0];
+                ScreenAnalysis *ana = [scanner analyzeScreenImage:img
+                                                       screenSize:engine.logicalScreenSize
+                                                       yellowDotY:engine.lastOrderYellowDotY
+                                                           config:config
+                                                  priceRetryCount:0];
 
                 // SAFETY GUARD 1: Active trip (Bike / Express / Food chained-ride) -> NEVER tap [Power] or Kill App!
                 if (ana.isAnyActiveTripScreen || ana.isPaymentConfirmScreen) {
@@ -578,10 +654,18 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                     break;
                 }
 
-                // BACK-TO-BACK ORDER INTERRUPT:
-                // Another order (Bike / Express / Good Food OR 2nd Bad Food) popped up before Offline completed!
-                // Abort Offline immediately so main loop either ACCEPTS Bike/Express/Good-Food OR REJECTS Bad Food #2 first!
+                // WEAK-4G SPINNING CARD GUARD + BACK-TO-BACK ORDER INTERRUPT:
+                // - If the SAME Food popup is still spinning on weak 4G waiting for server reject ACK -> wait quietly!
+                // - If a DIFFERENT order (Bike/Express OR 2nd Food shop) popped up -> abort Offline immediately to handle it!
                 if (ana.hasOrderPopup && ana.orderAction != OrderActionSkipDisabled) {
+                    if (isSameSpinningOrderOnWeak4G(ana, lastHandledOrderFp, lastHandledOrderEpoch, iterNow)) {
+                        if (!loggedWeak4GSpin) {
+                            loggedWeak4GSpin = YES;
+                            appendDaemonLog(@"[CHỐNG LAG 4G] Đơn cũ đang xoay chờ mạng đóng -> Chờ êm, không bấm bồi [X]!");
+                        }
+                        usleep(450000);
+                        continue;
+                    }
                     appendDaemonLog(@"Nổ liền đơn mới (%@) khi chưa kịp Tắt app -> Quay lại xử lý đơn ngay!",
                                     ana.detectedServiceTitle.length > 0 ? ana.detectedServiceTitle : @"Mới");
                     [engine invalidateAnalyzedBaseline];
@@ -923,14 +1007,16 @@ static int runWorkerMain(void) {
 
         ScreenTouchEngine *engine = [ScreenTouchEngine sharedEngine];
         OrderScanner *scanner     = [OrderScanner sharedScanner];
+        HanoiFoodFilterEngine *foodEngine = [HanoiFoodFilterEngine sharedEngine];
 
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.6.1 Bất Tử + Map Riêng Bike & Chống Bấm 0.0/8 chạy (WD:%d WK:%d, Quét:%@). Food >= %ldđ",
+            appendDaemonLog(@"pind v4.7 Bất Tử + Lọc TTTM/Quán Đông (%ld quán HN) & Đo >%.1fkm chạy (WD:%d WK:%d, Quét:%@)",
+                            (long)foodEngine.loadedMerchantCount,
+                            config.minFoodDistanceKm,
                             getRunningWatchdogPID(), myPid,
-                            screenOk ? @"OK" : @"LỖI",
-                            (long)config.minFoodPriceVND);
+                            screenOk ? @"OK" : @"LỖI");
             notify_post(kNotifyStatsUpdated);
         }
 
@@ -939,12 +1025,14 @@ static int runWorkerMain(void) {
 
         // Seamlessly finish an in-progress Food Pause if revived mid-countdown
         if (state.pauseEndEpoch > bootEpoch + 2.0 && config.masterEnabled) {
-            runOfflinePauseAndRestartCycle(&config, state, engine, scanner, YES, &inActiveTripSession);
+            runOfflinePauseAndRestartCycle(&config, state, engine, scanner, YES, &inActiveTripSession, nil, 0.0);
         }
 
         NSInteger retryCount                = 0;
         BOOL didSwipeBannerForCurrentPopup  = NO;
         NSString *lastSkippedPopupSignature = nil;
+        NSString *lastHandledOrderFingerprint = nil;
+        double lastHandledOrderEpoch        = 0.0;
         BOOL wasInCoolSleep                 = NO;
         BOOL prevFrameHadBlueNav            = NO;
         BOOL activeTripConfirmedNonBike     = NO;
@@ -1025,7 +1113,7 @@ static int runWorkerMain(void) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
                     }
-                    if ((now - bootEpoch) > 1200.0 || currentProcessFootprintMB() > 80) {
+                    if ((now - bootEpoch) > 1200.0 || currentProcessFootprintMB() > 92) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
@@ -1081,7 +1169,7 @@ static int runWorkerMain(void) {
                             [state saveStateAndNotify:YES];
                         }
 
-                        if (((now - bootEpoch) > 60.0 && currentProcessFootprintMB() > 85) ||
+                        if (((now - bootEpoch) > 60.0 && currentProcessFootprintMB() > 96) ||
                             (now - bootEpoch) > 2400.0) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:NO];
@@ -1142,7 +1230,7 @@ static int runWorkerMain(void) {
                     engine.lastFrameChangedSamples <= 3 &&
                     (now - lastFullOCREpoch) < 2.2) {
                     // Static screen inside Xanh SM with no order popup -> skip heavy Vision ANE OCR!
-                    if ((now - bootEpoch) > 90.0 && currentProcessFootprintMB() > 90) {
+                    if ((now - bootEpoch) > 90.0 && currentProcessFootprintMB() > 102) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
@@ -1157,6 +1245,7 @@ static int runWorkerMain(void) {
 
                 ScreenAnalysis *ana = [scanner analyzeScreenImage:screenImg
                                                        screenSize:engine.logicalScreenSize
+                                                       yellowDotY:engine.lastOrderYellowDotY
                                                            config:config
                                                   priceRetryCount:retryCount];
 
@@ -1187,6 +1276,15 @@ static int runWorkerMain(void) {
                 // 2. XỬ LÝ BẢNG NỔ ĐƠN ('Bike' / 'Express' / 'Express 2H' vs 'Green Food')
                 if (ana.hasOrderPopup) {
                     turboUntilEpoch = now + 4.0;
+
+                    // WEAK-4G SPINNING POPUP GUARD:
+                    // If we JUST tapped [Nhận] or [X] on this exact order and 4G lag keeps the card spinning on screen,
+                    // wait smoothly for GSM server ACK without double-tapping or double-counting stats!
+                    if (!config.dryRunMode &&
+                        isSameSpinningOrderOnWeak4G(ana, lastHandledOrderFingerprint, lastHandledOrderEpoch, now)) {
+                        usleep(260000);
+                        continue;
+                    }
 
                     if (ana.orderAction == OrderActionHeaderCovered) {
                         retryCount++;
@@ -1227,8 +1325,8 @@ static int runWorkerMain(void) {
 
                         // KHÓA KIỂM CHỨNG GIÁ 2 KHUNG HÌNH CHO ĐƠN GREEN FOOD (CHỐNG NHÒE 17k -> 77k)
                         if (ana.isGreenFood && !config.rejectAllFood) {
+                            double tVerifyStart = CFAbsoluteTimeGetCurrent();
                             usleep(95000);
-                            spentVerifyMs = 95;
                             if (gShouldExit) break;
 
                             CIImage *verifyImg = [engine captureScreenCIImage];
@@ -1236,6 +1334,7 @@ static int runWorkerMain(void) {
                                 [engine markCurrentFrameAnalyzed];
                                 ScreenAnalysis *verifyAna = [scanner analyzeScreenImage:verifyImg
                                                                              screenSize:engine.logicalScreenSize
+                                                                             yellowDotY:engine.lastOrderYellowDotY
                                                                                  config:config
                                                                         priceRetryCount:retryCount + 1];
                                 if (!verifyAna.hasOrderPopup) {
@@ -1252,6 +1351,8 @@ static int runWorkerMain(void) {
                                     ana = verifyAna;
                                 }
                             }
+                            double verifyElapsedMs = (CFAbsoluteTimeGetCurrent() - tVerifyStart) * 1000.0;
+                            spentVerifyMs = (verifyElapsedMs > 0.0) ? (uint32_t)verifyElapsedMs : 95;
                         }
 
                         retryCount = 0;
@@ -1352,6 +1453,7 @@ static int runWorkerMain(void) {
                                 [engine markCurrentFrameAnalyzed];
                                 ScreenAnalysis *chkAna = [scanner analyzeScreenImage:chkImg
                                                                           screenSize:engine.logicalScreenSize
+                                                                          yellowDotY:engine.lastOrderYellowDotY
                                                                               config:config
                                                                      priceRetryCount:2];
                                 if (chkAna.isAnyActiveTripScreen) {
@@ -1385,14 +1487,14 @@ static int runWorkerMain(void) {
                                     break;
                                 }
 
-                                // Nếu vừa bấm [X] hủy Food xong mà nổ liền 1 đơn Bike/Express/Food ngon (hoặc đơn Food thứ 2 khác giá):
+                                // Nếu vừa bấm [X] hủy Food xong mà nổ liền 1 đơn Bike/Express/Food ngon (hoặc đơn Food thứ 2 khác quán/khác giá):
                                 // DỪNG BỒI [X] NGAY LẬP TỨC để sang nhịp sau vồ đơn Bike/Express hoặc xử lý chuẩn đơn mới!
                                 if (!isAccept) {
+                                    double chkEpoch = [[NSDate date] timeIntervalSince1970];
                                     BOOL switchedToAcceptOrder = (chkAna.orderAction == OrderActionTapAccept || !chkAna.isGreenFood);
                                     BOOL switchedToDifferentFood = (chkAna.isGreenFood &&
-                                                                    chkAna.detectedPriceVND > 0 &&
-                                                                    ana.detectedPriceVND > 0 &&
-                                                                    chkAna.detectedPriceVND != ana.detectedPriceVND);
+                                                                    ana.orderFingerprint.length > 0 &&
+                                                                    !isSameSpinningOrderOnWeak4G(chkAna, ana.orderFingerprint, chkEpoch, chkEpoch));
                                     if (switchedToAcceptOrder || switchedToDifferentFood) {
                                         confirmedGone = YES;
                                         newOrderArrivedImmediately = YES;
@@ -1415,6 +1517,10 @@ static int runWorkerMain(void) {
                             BOOL acceptedBikeOrder = NO;
                             if (tapsSent > 0) {
                                 double doneNow = [[NSDate date] timeIntervalSince1970];
+                                if (ana.orderFingerprint.length > 0) {
+                                    lastHandledOrderFingerprint = ana.orderFingerprint;
+                                    lastHandledOrderEpoch       = doneNow;
+                                }
                                 if (isAccept) {
                                     inActiveTripSession = YES;
                                     consecutiveOfflineInterrupts = 0;
@@ -1469,7 +1575,7 @@ static int runWorkerMain(void) {
 
                         // CASE 3: Ở sảnh chờ rảnh rỗi vừa hủy Food -> Vào quy trình Tắt nhận chuyến + Kill App (nếu nổ chèn đơn mới thì tự ngắt quay ra ngay!)
                         if (!isAccept && ana.isGreenFood && config.pauseAfterRejectFood) {
-                            BOOL interruptedByNewOrder = runOfflinePauseAndRestartCycle(&config, state, engine, scanner, NO, &inActiveTripSession);
+                            BOOL interruptedByNewOrder = runOfflinePauseAndRestartCycle(&config, state, engine, scanner, NO, &inActiveTripSession, lastHandledOrderFingerprint, lastHandledOrderEpoch);
                             if (interruptedByNewOrder && consecutiveOfflineInterrupts < 8) {
                                 consecutiveOfflineInterrupts++;
                                 turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 6.5;
@@ -1490,6 +1596,11 @@ static int runWorkerMain(void) {
                     retryCount = 0;
                     didSwipeBannerForCurrentPopup = NO;
                     lastSkippedPopupSignature = nil;
+                    if (lastHandledOrderFingerprint && (now - lastHandledOrderEpoch) > 0.55) {
+                        // Card has cleanly left the screen -> reset fingerprint immediately!
+                        lastHandledOrderFingerprint = nil;
+                        lastHandledOrderEpoch       = 0.0;
+                    }
 
                     if (ana.hasBlockingBottomSheet) {
                         inActiveTripSession = NO;
