@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"5.0"
+#define kCurrentDaemonVersion   @"5.0.1"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"

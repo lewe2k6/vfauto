@@ -1,7 +1,7 @@
 #import "SecretConfigViewController.h"
 #import "CoordinatePickerViewController.h"
 #import "SharedConfig.h"
-#import <CoreImage/CoreImage.h>
+#import "PureQRCode.h"
 #import <notify.h>
 
 @implementation SecretConfigViewController {
@@ -51,6 +51,7 @@
     NSString    *_lastRenderedQRTopic;
     NSTimeInterval _lastGmapsCheckEpoch;
     BOOL         _cachedGmapsInstalled;
+    BOOL         _gmapsCheckInFlight;
 
     // Card 4: 4 Coordinates Calibration
     UISegmentedControl *_segCoordMode;
@@ -96,7 +97,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v5.0";
+    self.title = @"Tinh Chỉnh Lọc Đơn v5.0.1";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -515,27 +516,15 @@
     qrRow.alignment = UIStackViewAlignmentCenter;
     qrRow.spacing = 8;
 
-    UIView *qrFrame = [[UIView alloc] init];
-    qrFrame.backgroundColor = [UIColor whiteColor];
-    qrFrame.layer.cornerRadius = 12;
-    qrFrame.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[
-        [qrFrame.widthAnchor constraintEqualToConstant:168],
-        [qrFrame.heightAnchor constraintEqualToConstant:168]
-    ]];
-
     _qrImageView = [[UIImageView alloc] init];
-    _qrImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    _qrImageView.backgroundColor = [UIColor whiteColor];
+    _qrImageView.layer.cornerRadius = 12;
+    _qrImageView.clipsToBounds = YES;
     _qrImageView.contentMode = UIViewContentModeScaleAspectFit;
     _qrImageView.layer.magnificationFilter = kCAFilterNearest;
-    [qrFrame addSubview:_qrImageView];
-    [NSLayoutConstraint activateConstraints:@[
-        [_qrImageView.topAnchor constraintEqualToAnchor:qrFrame.topAnchor constant:10],
-        [_qrImageView.bottomAnchor constraintEqualToAnchor:qrFrame.bottomAnchor constant:-10],
-        [_qrImageView.leadingAnchor constraintEqualToAnchor:qrFrame.leadingAnchor constant:10],
-        [_qrImageView.trailingAnchor constraintEqualToAnchor:qrFrame.trailingAnchor constant:-10]
-    ]];
-    [qrRow addArrangedSubview:qrFrame];
+    [_qrImageView.widthAnchor constraintEqualToConstant:168].active = YES;
+    [_qrImageView.heightAnchor constraintEqualToConstant:168].active = YES;
+    [qrRow addArrangedSubview:_qrImageView];
 
     _lblMapTopic = [[UILabel alloc] init];
     _lblMapTopic.font = [UIFont monospacedSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
@@ -680,7 +669,7 @@
     _swMapRelay.on      = _cfg.mapRelayEnabled;
     _swMapReturn.on     = _cfg.mapRelayReturnToDriver;
 
-    _segCoordMode.selectedSegmentIndex = _cfg.coordMode;
+    _segCoordMode.selectedSegmentIndex = (_cfg.coordMode == CoordModeFixedManual) ? 1 : 0;
 
     _slCloseRatio.value = (float)_cfg.closeXRatio;
     _slCloseOffX.value  = (float)_cfg.closeOffsetX;
@@ -715,7 +704,10 @@
 
 - (void)renderMapRelayQRIfNeeded {
     NSString *topic = sanitizeMapRelayTopic(_cfg.mapRelayTopic);
-    if (![topic isEqualToString:_cfg.mapRelayTopic]) {
+    if (topic.length < 4) {
+        topic = generateRandomMapRelayTopic();
+        _cfg.mapRelayTopic = topic;
+    } else if (![topic isEqualToString:_cfg.mapRelayTopic]) {
         _cfg.mapRelayTopic = topic;
     }
     NSString *viewerUrl = buildMapRelayViewerURLString(topic);
@@ -726,20 +718,49 @@
     }
     _lastRenderedQRTopic = [topic copy];
 
-    NSData *qrData = [viewerUrl dataUsingEncoding:NSUTF8StringEncoding];
-    CIFilter *qrFilter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
-    if (qrFilter && qrData) {
-        [qrFilter setValue:qrData forKey:@"inputMessage"];
-        [qrFilter setValue:@"M" forKey:@"inputCorrectionLevel"];
-        CIImage *ciImg = [qrFilter.outputImage imageByApplyingTransform:CGAffineTransformMakeScale(10.0, 10.0)];
-        if (ciImg) {
-            CIContext *ciCtx = [CIContext contextWithOptions:nil];
-            CGImageRef cgImg = [ciCtx createCGImage:ciImg fromRect:ciImg.extent];
-            if (cgImg) {
-                _qrImageView.image = [UIImage imageWithCGImage:cgImg];
-                CGImageRelease(cgImg);
+    const char *utf8 = [viewerUrl UTF8String];
+    if (!utf8) return;
+    int len = (int)strlen(utf8);
+    uint8_t modules[37][37];
+    memset(modules, 0, sizeof(modules));
+    int dim = PureQR_EncodeUTF8((const uint8_t *)utf8, len, modules);
+    if (dim <= 0) return;
+
+    const int quiet = 3;
+    const int scale = 8;
+    const int pxSize = (dim + quiet * 2) * scale;
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (!cs) return;
+    CGContextRef ctx = CGBitmapContextCreate(NULL,
+                                             (size_t)pxSize,
+                                             (size_t)pxSize,
+                                             8,
+                                             (size_t)(pxSize * 4),
+                                             cs,
+                                             (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return;
+
+    CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
+    CGContextFillRect(ctx, CGRectMake(0, 0, pxSize, pxSize));
+
+    CGContextSetRGBFillColor(ctx, 0.0, 0.0, 0.0, 1.0);
+    for (int r = 0; r < dim; r++) {
+        CGFloat y = (CGFloat)(pxSize - (quiet + r + 1) * scale);
+        for (int c = 0; c < dim; c++) {
+            if (modules[r][c]) {
+                CGFloat x = (CGFloat)((quiet + c) * scale);
+                CGContextFillRect(ctx, CGRectMake(x, y, scale, scale));
             }
         }
+    }
+
+    CGImageRef cgImg = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if (cgImg) {
+        _qrImageView.image = [UIImage imageWithCGImage:cgImg];
+        CGImageRelease(cgImg);
     }
 }
 
@@ -1223,7 +1244,7 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v5.0!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v5.0.1!");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
@@ -1265,13 +1286,13 @@
     }
 
     if (wkPid > 0 && _cfg.masterEnabled && !heartbeatStale) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v5.0 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v5.0.1 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT-2GB]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG TỰ CHỮA LÀNH LÕI NGẦM v5.0 (WD:%d | WK:%d)...", wdPid, wkPid];
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG TỰ CHỮA LÀNH LÕI NGẦM v5.0.1 (WD:%d | WK:%d)...", wdPid, wkPid];
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";
@@ -1299,16 +1320,29 @@
         _lastMapRelayLabel.textColor = [UIColor colorWithWhite:0.72 alpha:1.0];
     }
 
-    if (_lastGmapsCheckEpoch == 0.0 || (now - _lastGmapsCheckEpoch) >= 4.0) {
+    if (!_gmapsCheckInFlight && (_lastGmapsCheckEpoch == 0.0 || (now - _lastGmapsCheckEpoch) >= 5.0)) {
+        _gmapsCheckInFlight = YES;
         _lastGmapsCheckEpoch = now;
-        _cachedGmapsInstalled = isGoogleMapsInstalledOnDevice();
-    }
-    if (_cachedGmapsInstalled) {
-        _lblGmapsStatus.text = @"PHÁT HIỆN MÁY NÀY VẪN CÒN APP GOOGLE MAPS!\nHãy xóa Google Maps trên chiếc iPhone 8 này để: (1) Nhẹ ~400MB RAM hết đơ Wi-Fi, (2) Khi bấm 'Điều hướng' trong Xanh SM thì iOS chuyển thẳng tọa độ qua Pin & Nhiệt Độ bắn sang máy thứ 2!";
-        _lblGmapsStatus.textColor = [UIColor systemOrangeColor];
-    } else {
-        _lblGmapsStatus.text = @"CHUẨN BÀI: Máy này đã gỡ Google Maps — Bấm 'Điều hướng' trong Xanh SM sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!";
-        _lblGmapsStatus.textColor = [UIColor systemGreenColor];
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            BOOL installed = isGoogleMapsInstalledOnDevice();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                strongSelf->_cachedGmapsInstalled = installed;
+                strongSelf->_gmapsCheckInFlight = NO;
+                if (installed) {
+                    strongSelf->_lblGmapsStatus.text = @"PHÁT HIỆN MÁY NÀY VẪN CÒN APP GOOGLE MAPS!\nHãy xóa Google Maps trên chiếc iPhone 8 này để: (1) Nhẹ ~400MB RAM hết đơ Wi-Fi, (2) Khi bấm 'Điều hướng' trong Xanh SM thì iOS chuyển thẳng tọa độ qua Pin & Nhiệt Độ bắn sang máy thứ 2!";
+                    strongSelf->_lblGmapsStatus.textColor = [UIColor systemOrangeColor];
+                } else {
+                    strongSelf->_lblGmapsStatus.text = @"CHUẨN BÀI: Máy này đã gỡ Google Maps — Bấm 'Điều hướng' trong Xanh SM sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!";
+                    strongSelf->_lblGmapsStatus.textColor = [UIColor systemGreenColor];
+                }
+            });
+        });
+    } else if (_lblGmapsStatus.text.length == 0) {
+        _lblGmapsStatus.text = @"Đang kiểm tra trạng thái app Google Maps trên máy...";
+        _lblGmapsStatus.textColor = [UIColor colorWithWhite:0.75 alpha:1.0];
     }
 
     _statsLabel.text = [NSString stringWithFormat:@"Đã nhận: %ld cuốc  |  Đã X Food: %ld đơn",

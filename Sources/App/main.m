@@ -19,15 +19,10 @@
         }
     }];
 
-    enqueueAndTriggerMapRelayFromURLString(url.absoluteString, sourceTag ?: @"XanhSM", YES, ^(BOOL ok, NSString *detail) {
-        if (bgTask != UIBackgroundTaskInvalid) {
-            [app endBackgroundTask:bgTask];
-            bgTask = UIBackgroundTaskInvalid;
-        }
-    });
+    enqueueAndTriggerMapRelayFromURLString(url.absoluteString, sourceTag ?: @"XanhSM", YES, nil);
 
-    // If handed off asynchronously to pind (no completion callback invoked directly), release bgTask cleanly after 5.5s
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Hold background assertion for 4.5s so either pind or the 0.45s fallback finishes network I/O cleanly
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (bgTask != UIBackgroundTaskInvalid) {
             [app endBackgroundTask:bgTask];
             bgTask = UIBackgroundTaskInvalid;

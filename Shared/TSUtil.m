@@ -220,10 +220,10 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
     if (d[@"statRejectedCount"])    st.statRejectedCount    = [d[@"statRejectedCount"] integerValue];
     if (d[@"pauseEndEpoch"])        st.pauseEndEpoch        = [d[@"pauseEndEpoch"] doubleValue];
     if (d[@"workerHeartbeatEpoch"]) st.workerHeartbeatEpoch = [d[@"workerHeartbeatEpoch"] doubleValue];
-    if (d[@"phaseDescription"])     st.phaseDescription     = d[@"phaseDescription"];
-    if (d[@"daemonVersion"])        st.daemonVersion        = d[@"daemonVersion"];
-    if (d[@"daemonBinaryPath"])     st.daemonBinaryPath     = d[@"daemonBinaryPath"];
-    if (d[@"lastRelayedSummary"])   st.lastRelayedSummary   = d[@"lastRelayedSummary"];
+    if ([d[@"phaseDescription"] isKindOfClass:[NSString class]])   st.phaseDescription   = d[@"phaseDescription"];
+    if ([d[@"daemonVersion"] isKindOfClass:[NSString class]])      st.daemonVersion      = d[@"daemonVersion"];
+    if ([d[@"daemonBinaryPath"] isKindOfClass:[NSString class]])   st.daemonBinaryPath   = d[@"daemonBinaryPath"];
+    if ([d[@"lastRelayedSummary"] isKindOfClass:[NSString class]]) st.lastRelayedSummary = d[@"lastRelayedSummary"];
     if (d[@"lastRelayedEpoch"])     st.lastRelayedEpoch     = [d[@"lastRelayedEpoch"] doubleValue];
     return st;
 }
@@ -365,9 +365,9 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
     if (dict[@"pauseDurationSec"])       cfg.pauseDurationSec       = [dict[@"pauseDurationSec"] integerValue];
     if (dict[@"autoKillAndRelaunchApp"]) cfg.autoKillAndRelaunchApp = [dict[@"autoKillAndRelaunchApp"] boolValue];
     if (dict[@"relaunchLeadSec"])        cfg.relaunchLeadSec        = [dict[@"relaunchLeadSec"] integerValue];
-    if (dict[@"driverAppBundleID"])      cfg.driverAppBundleID      = dict[@"driverAppBundleID"];
-    if (dict[@"driverAppExecName"])      cfg.driverAppExecName      = dict[@"driverAppExecName"];
-    if (dict[@"driverAppDisplayName"])   cfg.driverAppDisplayName   = dict[@"driverAppDisplayName"];
+    if ([dict[@"driverAppBundleID"] isKindOfClass:[NSString class]])    cfg.driverAppBundleID    = dict[@"driverAppBundleID"];
+    if ([dict[@"driverAppExecName"] isKindOfClass:[NSString class]])    cfg.driverAppExecName    = dict[@"driverAppExecName"];
+    if ([dict[@"driverAppDisplayName"] isKindOfClass:[NSString class]]) cfg.driverAppDisplayName = dict[@"driverAppDisplayName"];
 
     if (dict[@"mapRelayEnabled"])        cfg.mapRelayEnabled        = [dict[@"mapRelayEnabled"] boolValue];
     if ([dict[@"mapRelayTopic"] isKindOfClass:[NSString class]]) {
@@ -1678,17 +1678,17 @@ void triggerHapticFeedback(BOOL isAccept) {
 #pragma mark - Navigation URL Interceptor & Dual-Path Peer Relay (ntfy.sh + Anti-DNS-Poison IP Fallback)
 
 BOOL isGoogleMapsInstalledOnDevice(void) {
-    Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
-    if (wsCls) {
-        @try {
-            SEL defSel = NSSelectorFromString(@"defaultWorkspace");
-            id ws = [wsCls respondsToSelector:defSel] ? ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel) : nil;
-            SEL instSel = NSSelectorFromString(@"applicationIsInstalled:");
-            if (ws && [ws respondsToSelector:instSel]) {
-                return ((BOOL (*)(id, SEL, NSString *))objc_msgSend)(ws, instSel, @"com.google.Maps");
+    @try {
+        NSArray<InstalledAppInfo *> *apps = listInstalledUserApps();
+        for (InstalledAppInfo *app in apps) {
+            NSString *bid = app.bundleID;
+            if (![bid isKindOfClass:[NSString class]] || bid.length == 0) continue;
+            if ([bid caseInsensitiveCompare:@"com.google.Maps"] == NSOrderedSame ||
+                [bid.lowercaseString hasPrefix:@"com.google.maps."]) {
+                return YES;
             }
-        } @catch (NSException *ex) {}
-    }
+        }
+    } @catch (NSException *ex) {}
     return NO;
 }
 

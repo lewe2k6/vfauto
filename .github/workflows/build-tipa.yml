@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.0-ts
-          name: "Pin & Nhiệt Độ v5.0 — Chống Đơ Wi-Fi iPhone 8 2GB & Cầu Nối Bắn Map Sang Máy Thứ 2"
-          body: "Bản nâng cấp v5.0: (1) Xóa bỏ hoàn toàn tính năng Tự ấn nút Điều hướng (giữ nguyên nhận diện đang trong cuốc để hủy đơn Food nổ chồng chỉ bấm X); (2) Khắc phục triệt để bệnh iPhone 8 (2GB RAM) bắt Wi-Fi Hotspot mất mạng & kẹt icon thanh trạng thái: hạ Jetsam Worker xuống band 12 dưới mDNSResponder/wifid/SpringBoard, tự gọt RAM thông minh 128-135MB trên máy 2GB, cắt bỏ 15s quét AI thừa sau khi nhận Bike và giảm >73% tải XPC; (3) Tích hợp Cầu Nối Bắn Định Vị Map 0.2s: gỡ Google Maps trên iPhone 8, bấm 'Điều hướng' trong Xanh SM là tọa độ vệ tinh bắn thẳng sang máy thứ 2 (Android/iPhone 16) tự bung Google Maps dẫn đường xe máy kèm cơ chế xuyên lỗi DNS Hotspot qua Cloudflare 1.1.1.1."
+          tag_name: v5.0.1-ts
+          name: "Pin & Nhiệt Độ v5.0.1 — Vá Văng App Mở Bảng Mật & Cầu Nối Bắn Map 0.2s"
+          body: "Bản vá khẩn v5.0.1: (1) Sửa triệt để lỗi văng app khi ấn giữ 'Trạng thái Pin' do CIContext gọi Metal GPU trong môi trường platform-application trên iOS 16 — chuyển sang bộ vẽ QR C thuần chạy 100% trên RAM CPU (PureQRCode) không đụng CoreImage/Metal + bổ sung đầy đủ quyền AGX/IOGPU và chuyển dò Google Maps sang luồng phụ; (2) Giữ trọn toàn bộ nâng cấp v5.0: bỏ hẳn Auto-Tap Điều hướng, hạ Jetsam Worker xuống band 12 cứu Wi-Fi iPhone 8 2GB RAM, và bắn định vị Điều hướng sang máy thứ 2 trong 0.2s."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

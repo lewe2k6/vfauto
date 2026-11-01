@@ -23,7 +23,7 @@ DAEMON_SRCS := Sources/Daemon/pind_main.m \
                Shared/TSUtil.m
 
 APP_FRAMEWORKS    := -framework Foundation -framework UIKit -framework CoreGraphics \
-                     -framework CoreImage -framework QuartzCore -framework AudioToolbox
+                     -framework QuartzCore -framework AudioToolbox
 
 DAEMON_FRAMEWORKS := -framework Foundation -framework CoreGraphics \
                      -framework CoreImage -framework QuartzCore \
@@ -33,7 +33,7 @@ DAEMON_FRAMEWORKS := -framework Foundation -framework CoreGraphics \
 
 all: $(OUT_TIPA)
 
-$(OUT_TIPA): $(APP_SRCS) $(DAEMON_SRCS) Resources/Info.plist Resources/app.entitlements Resources/daemon.entitlements Resources/hanoi_food_index.zlib
+$(OUT_TIPA): $(APP_SRCS) $(DAEMON_SRCS) Sources/App/PureQRCode.h Resources/Info.plist Resources/app.entitlements Resources/daemon.entitlements Resources/hanoi_food_index.zlib
 	@echo "==> Generating App Icons & Verifying Hanoi Food Index..."
 	python3 scripts/generate_icon.py
 	python3 scripts/build_hanoi_food_index.py
