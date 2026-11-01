@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#070d19" />
+  <title>Cứu Hộ QR Đổi Pin VinFast (BSS)</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-header">
+      <div class="brand-group">
+        <h1>Cứu Hộ QR Trạm Pin BSS</h1>
+        <p>Bóc chữ xám mờ tủ liệt màn &rarr; Dựng mã QR chuẩn 1:1</p>
+      </div>
+      <div id="engineStatusPill" class="status-pill">Đang nạp...</div>
+    </header>
+
+    <!-- STEP 1: CAPTURE OR UPLOAD -->
+    <section class="card">
+      <div class="card-title">
+        <span>1. Thu Ảnh Dòng Chữ Đáy Tủ</span>
+      </div>
+
+      <div class="capture-grid">
+        <button id="btnOpenCam" type="button" class="btn btn-camera">
+          Camera Soi Đáy
+        </button>
+        <button id="btnPickFile" type="button" class="btn btn-upload">
+          Chọn Ảnh Chụp
+        </button>
+      </div>
+      <input id="fileInput" type="file" accept="image/*" class="workspace-hidden" />
+
+      <div class="tip-box">
+        <strong>Mẹo trị tủ liệt kẹt bảng trắng:</strong> Đưa điện thoại lại gần mép dưới màn hình tủ (<strong>12–18cm</strong>) sao cho bảng thông báo trắng ở giữa khuất khỏi khung ảnh &mdash; camera sẽ tự đẩy sáng tối đa giúp dòng chữ mờ <code>ID: BSS-...</code> nét căng!
+      </div>
+
+      <!-- Live Strip Viewfinder -->
+      <div id="cameraPanel" class="camera-panel workspace-hidden">
+        <div class="video-stage">
+          <video id="camVideo" playsinline muted autoplay></video>
+          <div class="aim-overlay">
+            <div class="aim-strip-box">
+              <div class="aim-label">Căn dòng chữ mờ "ID: BSS-..." lọt vào khung xanh này</div>
+            </div>
+          </div>
+        </div>
+        <div class="camera-controls">
+          <div class="cam-row">
+            <label for="camZoomSlider">Phóng to: <strong id="camZoomVal">1.0x</strong></label>
+            <input id="camZoomSlider" type="range" min="1" max="4" step="0.1" value="1.8" />
+          </div>
+          <div class="capture-grid">
+            <button id="btnSnapStrip" type="button" class="btn btn-camera">Chụp &amp; Tách Mã</button>
+            <div style="display:flex; gap:6px;">
+              <button id="btnTorch" type="button" class="btn btn-secondary" style="flex:1; display:none;">Đèn</button>
+              <button id="btnCloseCam" type="button" class="btn btn-secondary" style="flex:1;">Đóng</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2: NIGHT VISION & ROI CROP -->
+    <section id="visionCard" class="card workspace-hidden">
+      <div class="card-title">
+        <span>2. Bộ Lọc Kính Nhìn Đêm (Chống Phủ Tối)</span>
+        <button id="btnAutoRoi" type="button" class="btn btn-secondary" style="padding:5px 10px; font-size:0.74rem;">Tự Dò Lại</button>
+      </div>
+
+      <div class="source-stage-wrap">
+        <canvas id="sourceCanvas"></canvas>
+      </div>
+      <div class="crop-hint">
+        Khung xanh đã tự bám đáy màn hình. Nếu ảnh chụp lệch góc, dùng 1 ngón tay <strong>kéo khoanh trực tiếp lên dòng chữ xám</strong> trên ảnh để soi nét ngay!
+      </div>
+
+      <div class="nv-box">
+        <div class="nv-caption">
+          <span>Ảnh Kính Nhìn Đêm (Đối chiếu bằng mắt 1 giây):</span>
+          <button id="btnReOcr" type="button" class="btn btn-secondary" style="padding:4px 9px; font-size:0.73rem;">Đọc Lại OCR</button>
+        </div>
+        <canvas id="nightVisionCanvas"></canvas>
+
+        <div class="sliders-grid">
+          <div class="slider-item">
+            <label for="gainSlider"><span>Kéo sáng chữ mờ</span><strong id="gainVal">1.05x</strong></label>
+            <input id="gainSlider" type="range" min="0.55" max="2.60" step="0.05" value="1.05" />
+          </div>
+          <div class="slider-item">
+            <label for="tiltSlider"><span>Xoay thẳng chữ</span><strong id="tiltVal">0.0°</strong></label>
+            <input id="tiltSlider" type="range" min="-6.5" max="6.5" step="0.5" value="0" />
+          </div>
+        </div>
+      </div>
+
+      <div id="ocrProgressBox" class="ocr-progress workspace-hidden"></div>
+    </section>
+
+    <!-- STEP 3: EDITABLE CODE + INSTANT 1:1 QR -->
+    <section class="card">
+      <div class="card-title">
+        <span>3. Mã Trạm Trích Xuất &amp; QR Đổi Pin</span>
+        <span id="crossVerifyBadge"></span>
+      </div>
+
+      <div class="code-input-wrap">
+        <input id="bssCodeInput" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" placeholder="BSS-26063041024325" />
+        <button id="btnCopyCode" type="button" class="btn btn-secondary">Chép</button>
+      </div>
+      <div class="code-meta">
+        <span id="codeValidationMsg" class="badge-warn">Tải ảnh lên hoặc gõ trực tiếp dãy số sau BSS- để dựng QR tức thì</span>
+      </div>
+
+      <div id="qrCard" class="workspace-hidden">
+        <div class="qr-showcase">
+          <div class="qr-showcase-title">Vui lòng quét mã để đổi Pin</div>
+          <canvas id="qrCanvas"></canvas>
+          <div id="qrCodeCaption" class="qr-code-caption"></div>
+          <div class="qr-sub-note">Chuẩn 1:1 mã gốc tủ VinFast (đã tự động cắt bỏ chữ "ID: ")</div>
+        </div>
+
+        <div class="qr-actions">
+          <button id="btnFullscreenQr" type="button" class="btn btn-amber">Phóng Toàn Màn</button>
+          <button id="btnDownloadQr" type="button" class="btn btn-upload">Lưu Ảnh Vào Máy</button>
+        </div>
+
+        <div class="save-station-bar">
+          <input id="stationNoteInput" type="text" placeholder="Đặt tên nhớ trạm (VD: Tủ Nguyễn Xiển liệt màn)..." />
+          <button id="btnSaveStation" type="button" class="btn btn-camera" style="padding:10px 14px;">Lưu Trạm</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 4: SAVED DEAD-TOUCH STATIONS -->
+    <section class="card">
+      <div class="card-title">
+        <span>4. Danh Bạ Tủ Liệt Đã Lưu (Mở 1 Chạm)</span>
+      </div>
+      <div id="savedStationsList" class="station-list"></div>
+    </section>
+  </div>
+
+  <!-- FULLSCREEN BRIGHT QR MODAL -->
+  <div id="fullscreenModal" class="fullscreen-qr-modal workspace-hidden">
+    <div style="font-weight:800; font-size:1.1rem; margin-bottom:14px;">Quét mã để đổi Pin VinFast</div>
+    <canvas id="fullscreenQrCanvas"></canvas>
+    <div id="fullscreenCodeTxt" class="fullscreen-code"></div>
+    <button id="btnCloseFullscreen" type="button" class="fullscreen-close">Đóng Toàn Màn Hình</button>
+  </div>
+
+  <script src="./vendor/qrcode.js"></script>
+  <script src="./vendor/jsQR.js"></script>
+  <script src="./vendor/tesseract.min.js"></script>
+  <script src="./vision.js"></script>
+  <script src="./ocr_qr.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

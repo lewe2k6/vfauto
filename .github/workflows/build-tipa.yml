@@ -5,6 +5,8 @@ on:
     branches: [ "**" ]
     paths-ignore:
       - "dist/**"
+      - "docs/**"
+      - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
 
 permissions:

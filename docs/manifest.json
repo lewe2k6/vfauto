@@ -1,0 +1,10 @@
+{
+  "name": "Cứu Hộ QR Trạm Pin VinFast (BSS)",
+  "short_name": "QR Đổi Pin",
+  "description": "Trích xuất dòng chữ xám mờ ID: BSS-... trên tủ đổi pin liệt cảm ứng và tạo mã QR chuẩn 1:1 Offline",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#070d19",
+  "theme_color": "#070d19",
+  "orientation": "portrait"
+}
