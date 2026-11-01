@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vf-bss-qr-rescue-v2';
+const CACHE_NAME = 'vf-bss-qr-rescue-v3';
 const CORE_ASSETS = [
   './',
   './index.html',

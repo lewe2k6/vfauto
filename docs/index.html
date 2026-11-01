@@ -15,76 +15,35 @@
     <header class="top-header">
       <div class="brand-group">
         <h1>Cứu Hộ QR Trạm Pin BSS</h1>
-        <p>Bóc chữ xám đáy tủ liệt màn &rarr; Quét trực tiếp bằng máy thứ 2</p>
+        <p>Tải ảnh chữ xám đáy tủ &rarr; Tạo QR quét trực tiếp bằng máy thứ 2</p>
       </div>
       <div id="engineStatusPill" class="status-pill">Đang nạp...</div>
     </header>
 
-    <!-- STEP 1: CAPTURE OR UPLOAD -->
+    <!-- STEP 1: PICK PHOTO -->
     <section class="card">
       <div class="card-title">
-        <span>1. Thu Ảnh Dòng Chữ Đáy Tủ</span>
+        <span>1. Chọn Ảnh Chụp Màn Hình Tủ</span>
       </div>
 
-      <div class="capture-grid">
-        <button id="btnOpenCam" type="button" class="btn btn-camera">
-          Camera Soi Đáy
-        </button>
-        <button id="btnPickFile" type="button" class="btn btn-upload">
-          Chọn Ảnh Chụp
-        </button>
-      </div>
+      <button id="btnPickFile" type="button" class="btn btn-upload" style="width:100%;">
+        Chọn Ảnh Chụp Từ Máy
+      </button>
       <input id="fileInput" type="file" accept="image/*" class="workspace-hidden" />
 
       <div class="tip-box">
-        <strong>Mẹo chụp nét căng ban đêm:</strong> Chụp ngang nửa dưới màn hình tủ hoặc dí máy cách mặt kính <strong>12–18cm</strong> focus thẳng vào đoạn <code>ID: BSS-...</code> (đẩy bảng trắng ở giữa ra khỏi khung hình để camera tự đẩy sáng tối đa).
-      </div>
-
-      <!-- Live Strip Viewfinder -->
-      <div id="cameraPanel" class="camera-panel workspace-hidden">
-        <div class="video-stage">
-          <video id="camVideo" playsinline muted autoplay></video>
-          <div class="aim-overlay">
-            <div class="aim-strip-box">
-              <div class="aim-label">Căn dòng chữ mờ "ID: BSS-..." lọt vào khung xanh này</div>
-            </div>
-          </div>
-        </div>
-        <div class="camera-controls">
-          <div class="cam-row">
-            <label for="camZoomSlider">Phóng to: <strong id="camZoomVal">1.8x</strong></label>
-            <input id="camZoomSlider" type="range" min="1" max="4" step="0.1" value="1.8" />
-          </div>
-          <div class="capture-grid">
-            <button id="btnSnapStrip" type="button" class="btn btn-camera">Chụp &amp; Tách Mã</button>
-            <div style="display:flex; gap:6px;">
-              <button id="btnTorch" type="button" class="btn btn-secondary" style="flex:1; display:none;">Đèn</button>
-              <button id="btnCloseCam" type="button" class="btn btn-secondary" style="flex:1;">Đóng</button>
-            </div>
-          </div>
-        </div>
+        <strong>Mẹo chụp rõ ban đêm:</strong> Chụp ngang nửa dưới màn hình tủ hoặc chụp gần vào dòng <code>ID: BSS-...</code> ở đáy màn hình để bóc mã nhanh nhất.
       </div>
     </section>
 
-    <!-- STEP 2: NIGHT VISION & ROI CROP -->
+    <!-- STEP 2: AUTO NIGHT VISION -->
     <section id="visionCard" class="card workspace-hidden">
       <div class="card-title">
-        <span>2. Kính Nhìn Đêm (Chống Phủ Tối)</span>
-        <button id="btnAutoRoi" type="button" class="btn btn-secondary" style="padding:5px 10px; font-size:0.74rem;">Tự Dò Lại</button>
-      </div>
-
-      <div class="source-stage-wrap">
-        <canvas id="sourceCanvas"></canvas>
-      </div>
-      <div class="crop-hint">
-        Khung xanh tự động khoanh đúng ốc đảo chữ <code>ID: BSS-...</code> (kể cả ảnh chụp xa hay dí sát). Có thể dùng 1 ngón tay kéo khoanh lại trực tiếp trên ảnh nếu cần.
+        <span>2. Ảnh Kính Nhìn Đêm (Tự Động Cắt &amp; Kéo Sáng)</span>
+        <button id="btnReOcr" type="button" class="btn btn-secondary" style="padding:4px 9px; font-size:0.73rem;">Đọc Lại OCR</button>
       </div>
 
       <div class="nv-box">
-        <div class="nv-caption">
-          <span>Ảnh Kính Nhìn Đêm (Đối chiếu nhanh bằng mắt):</span>
-          <button id="btnReOcr" type="button" class="btn btn-secondary" style="padding:4px 9px; font-size:0.73rem;">Đọc Lại OCR</button>
-        </div>
         <canvas id="nightVisionCanvas"></canvas>
 
         <div class="sliders-grid">

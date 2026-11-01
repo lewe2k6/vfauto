@@ -1,26 +1,15 @@
 /**
- * app.js — Streamlined 2-Phone Night-Vision BSS QR Rescue Controller (v2)
+ * app.js — Pure Photo-Upload Auto Night-Vision BSS QR Rescue Controller (v3)
  */
 (function () {
   'use strict';
 
   // DOM Elements
-  const btnOpenCam        = document.getElementById('btnOpenCam');
   const btnPickFile       = document.getElementById('btnPickFile');
   const fileInput         = document.getElementById('fileInput');
   const engineStatusPill  = document.getElementById('engineStatusPill');
 
-  const cameraPanel       = document.getElementById('cameraPanel');
-  const camVideo          = document.getElementById('camVideo');
-  const camZoomSlider     = document.getElementById('camZoomSlider');
-  const camZoomVal        = document.getElementById('camZoomVal');
-  const btnSnapStrip      = document.getElementById('btnSnapStrip');
-  const btnTorch          = document.getElementById('btnTorch');
-  const btnCloseCam       = document.getElementById('btnCloseCam');
-
   const visionCard        = document.getElementById('visionCard');
-  const sourceCanvas      = document.getElementById('sourceCanvas');
-  const btnAutoRoi        = document.getElementById('btnAutoRoi');
   const nightVisionCanvas = document.getElementById('nightVisionCanvas');
   const gainSlider        = document.getElementById('gainSlider');
   const gainVal           = document.getElementById('gainVal');
@@ -45,7 +34,6 @@
   const btnCloseFullscreen = document.getElementById('btnCloseFullscreen');
 
   // State
-  let fullImgCanvas = null;
   let fullRgba = null;
   let fullW = 0;
   let fullH = 0;
@@ -53,16 +41,6 @@
   let currentVisionResult = null;
   let origCabinetQrCode = null;
   let manualTiltOverride = null;
-
-  let mediaStream = null;
-  let videoTrack = null;
-  let torchOn = false;
-  let digitalZoom = 1.8;
-
-  // Pointer drag state on sourceCanvas
-  let dragMode = null; // 'move' | 'draw'
-  let dragStartPt = null;
-  let dragStartRoi = null;
 
   function setProgress(msg) {
     if (!msg) {
@@ -92,112 +70,7 @@
   });
 
   // =========================================================================
-  // 1. LIVE CAMERA STRIP VIEWFINDER (ANTI-POPUP GLARE)
-  // =========================================================================
-  async function stopCamera() {
-    if (mediaStream) {
-      mediaStream.getTracks().forEach(function (t) { t.stop(); });
-      mediaStream = null;
-      videoTrack = null;
-    }
-    torchOn = false;
-    camVideo.srcObject = null;
-    cameraPanel.classList.add('workspace-hidden');
-  }
-
-  function applyZoomToStream(zVal) {
-    digitalZoom = zVal;
-    camZoomVal.textContent = digitalZoom.toFixed(1) + 'x';
-    camVideo.style.transform = 'scale(' + digitalZoom + ')';
-
-    if (videoTrack && videoTrack.getCapabilities) {
-      const caps = videoTrack.getCapabilities();
-      if (caps.zoom) {
-        const hwZ = Math.min(caps.zoom.max, Math.max(caps.zoom.min, digitalZoom));
-        videoTrack.applyConstraints({ advanced: [{ zoom: hwZ }] }).catch(function () {});
-        camVideo.style.transform = 'scale(1)';
-      }
-    }
-  }
-
-  btnOpenCam.addEventListener('click', async function () {
-    if (!mediaStream) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-          }
-        });
-        mediaStream = stream;
-        camVideo.srcObject = stream;
-        await camVideo.play();
-        videoTrack = stream.getVideoTracks()[0] || null;
-
-        if (videoTrack && videoTrack.getCapabilities) {
-          const caps = videoTrack.getCapabilities();
-          const adv = {};
-          if (caps.focusMode && caps.focusMode.indexOf('continuous') >= 0) {
-            adv.focusMode = 'continuous';
-          }
-          if (Object.keys(adv).length) {
-            videoTrack.applyConstraints({ advanced: [adv] }).catch(function () {});
-          }
-          btnTorch.style.display = caps.torch ? 'inline-flex' : 'none';
-        }
-        applyZoomToStream(parseFloat(camZoomSlider.value) || 1.8);
-        cameraPanel.classList.remove('workspace-hidden');
-      } catch (err) {
-        alert('Không mở được Camera trực tiếp trên trình duyệt này (' + (err.message || err) + '). Hãy bấm nút "Chọn Ảnh Chụp" bên cạnh!');
-      }
-    } else {
-      stopCamera();
-    }
-  });
-
-  camZoomSlider.addEventListener('input', function () {
-    applyZoomToStream(parseFloat(camZoomSlider.value) || 1.0);
-  });
-
-  btnTorch.addEventListener('click', function () {
-    if (!videoTrack) return;
-    torchOn = !torchOn;
-    videoTrack.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(function () {
-      torchOn = false;
-    });
-  });
-
-  btnCloseCam.addEventListener('click', stopCamera);
-
-  btnSnapStrip.addEventListener('click', function () {
-    if (!camVideo.videoWidth || !camVideo.videoHeight) return;
-    const vw = camVideo.videoWidth;
-    const vh = camVideo.videoHeight;
-
-    const effZoom = (camVideo.style.transform && camVideo.style.transform.indexOf('scale(1)') < 0) ? digitalZoom : 1.0;
-    const visW = vw / effZoom;
-    const visH = vh / effZoom;
-    const visX = (vw - visW) * 0.5;
-    const visY = (vh - visH) * 0.5;
-
-    const cropW = Math.round(visW * 0.88);
-    const cropH = Math.round(visH * 0.28);
-    const cropX = Math.round(visX + (visW - cropW) * 0.5);
-    const cropY = Math.round(visY + (visH - cropH) * 0.5);
-
-    const snap = document.createElement('canvas');
-    snap.width = cropW;
-    snap.height = cropH;
-    snap.getContext('2d').drawImage(camVideo, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-    stopCamera();
-    loadCanvasIntoPipeline(snap);
-  });
-
-  // =========================================================================
-  // 2. FILE UPLOAD & CLIPBOARD PASTE
+  // 1. FILE UPLOAD & CLIPBOARD PASTE
   // =========================================================================
   btnPickFile.addEventListener('click', function () {
     fileInput.value = '';
@@ -222,7 +95,6 @@
   });
 
   function loadImageFile(fileBlob) {
-    stopCamera();
     setProgress('Đang nạp ảnh vào bộ lọc Kính Đêm...');
     const url = URL.createObjectURL(fileBlob);
     const img = new Image();
@@ -250,10 +122,9 @@
   }
 
   // =========================================================================
-  // 3. NIGHT-VISION PIPELINE + INTERACTIVE CROP + OCR
+  // 2. AUTO NIGHT-VISION PIPELINE + OCR
   // =========================================================================
   function loadCanvasIntoPipeline(srcCanv) {
-    fullImgCanvas = srcCanv;
     fullW = srcCanv.width;
     fullH = srcCanv.height;
     fullRgba = srcCanv.getContext('2d').getImageData(0, 0, fullW, fullH).data;
@@ -270,27 +141,8 @@
     runOcrOnCurrentVision();
   }
 
-  function drawSourceWithRoiOverlay() {
-    if (!fullImgCanvas || !currentRoi) return;
-    sourceCanvas.width = fullW;
-    sourceCanvas.height = fullH;
-    const ctx = sourceCanvas.getContext('2d');
-    ctx.drawImage(fullImgCanvas, 0, 0);
-
-    ctx.fillStyle = 'rgba(2, 6, 23, 0.48)';
-    ctx.fillRect(0, 0, fullW, currentRoi.y);
-    ctx.fillRect(0, currentRoi.y + currentRoi.h, fullW, fullH - (currentRoi.y + currentRoi.h));
-    ctx.fillRect(0, currentRoi.y, currentRoi.x, currentRoi.h);
-    ctx.fillRect(currentRoi.x + currentRoi.w, currentRoi.y, fullW - (currentRoi.x + currentRoi.w), currentRoi.h);
-
-    ctx.strokeStyle = '#10b981';
-    ctx.lineWidth = Math.max(2, Math.round(fullW * 0.004));
-    ctx.strokeRect(currentRoi.x, currentRoi.y, currentRoi.w, currentRoi.h);
-  }
-
   function refreshNightVisionPreview(syncTiltSlider) {
     if (!fullRgba || !currentRoi) return;
-    drawSourceWithRoiOverlay();
 
     const gain = parseFloat(gainSlider.value) || 1.05;
     currentVisionResult = BSSVision.buildNightVisionVariants(fullRgba, fullW, fullH, currentRoi, {
@@ -330,7 +182,7 @@
         setProgress('Dòng chữ đáy quá mờ — Đã cứu hộ từ góc mã QR còn sót trên ảnh!');
         applyDetectedCode(origCabinetQrCode, 'qr-fallback', true);
       } else {
-        setProgress('Ảnh hơi mờ nên máy chưa chốt hết số — Hãy nhìn khung "Kính Nhìn Đêm" bên trên rồi gõ/sửa vào ô dưới (hoặc kéo khung xanh trùm đúng dòng chữ)!');
+        setProgress('Ảnh hơi mờ nên máy chưa chốt hết số — Hãy nhìn khung "Ảnh Kính Nhìn Đêm" bên trên rồi gõ/sửa vào ô dưới!');
         if (!bssCodeInput.value) {
           bssCodeInput.value = 'BSS-';
         }
@@ -344,75 +196,6 @@
       if (myRun === runCounter) btnReOcr.disabled = false;
     }
   }
-
-  // Interactive Pointer Drag / Draw on sourceCanvas
-  function canvasCoordsFromEvent(e) {
-    const rect = sourceCanvas.getBoundingClientRect();
-    const scaleX = fullW / Math.max(1, rect.width);
-    const scaleY = fullH / Math.max(1, rect.height);
-    return {
-      x: Math.max(0, Math.min(fullW - 1, (e.clientX - rect.left) * scaleX)),
-      y: Math.max(0, Math.min(fullH - 1, (e.clientY - rect.top) * scaleY))
-    };
-  }
-
-  sourceCanvas.addEventListener('pointerdown', function (e) {
-    if (!fullRgba || !currentRoi) return;
-    sourceCanvas.setPointerCapture(e.pointerId);
-    const pt = canvasCoordsFromEvent(e);
-    dragStartPt = pt;
-    dragStartRoi = Object.assign({}, currentRoi);
-
-    const inside = (
-      pt.x >= currentRoi.x && pt.x <= currentRoi.x + currentRoi.w &&
-      pt.y >= currentRoi.y && pt.y <= currentRoi.y + currentRoi.h
-    );
-    dragMode = inside ? 'move' : 'draw';
-  });
-
-  sourceCanvas.addEventListener('pointermove', function (e) {
-    if (!dragMode || !dragStartPt || !fullRgba) return;
-    const pt = canvasCoordsFromEvent(e);
-    if (dragMode === 'move') {
-      const dx = pt.x - dragStartPt.x;
-      const dy = pt.y - dragStartPt.y;
-      currentRoi = {
-        x: Math.max(0, Math.min(fullW - dragStartRoi.w, Math.round(dragStartRoi.x + dx))),
-        y: Math.max(0, Math.min(fullH - dragStartRoi.h, Math.round(dragStartRoi.y + dy))),
-        w: dragStartRoi.w,
-        h: dragStartRoi.h,
-        mode: 'manual-move'
-      };
-    } else {
-      const x0 = Math.min(dragStartPt.x, pt.x);
-      const y0 = Math.min(dragStartPt.y, pt.y);
-      const w = Math.max(24, Math.abs(pt.x - dragStartPt.x));
-      const h = Math.max(16, Math.abs(pt.y - dragStartPt.y));
-      currentRoi = {
-        x: Math.round(x0),
-        y: Math.round(y0),
-        w: Math.min(fullW - Math.round(x0), Math.round(w)),
-        h: Math.min(fullH - Math.round(y0), Math.round(h)),
-        mode: 'manual-draw'
-      };
-    }
-    manualTiltOverride = null;
-    refreshNightVisionPreview(true);
-  });
-
-  sourceCanvas.addEventListener('pointerup', function () {
-    if (!dragMode) return;
-    dragMode = null;
-    runOcrOnCurrentVision();
-  });
-
-  btnAutoRoi.addEventListener('click', function () {
-    if (!fullRgba) return;
-    manualTiltOverride = null;
-    currentRoi = BSSVision.autoLocateBssIdRoi(fullRgba, fullW, fullH);
-    refreshNightVisionPreview(true);
-    runOcrOnCurrentVision();
-  });
 
   gainSlider.addEventListener('input', function () {
     gainVal.textContent = parseFloat(gainSlider.value).toFixed(2) + 'x';
@@ -430,7 +213,7 @@
   });
 
   // =========================================================================
-  // 4. CODE SANITIZATION & LIVE 1:1 QR GENERATION FOR 2ND PHONE SCANNING
+  // 3. CODE SANITIZATION & LIVE 1:1 QR GENERATION FOR 2ND PHONE SCANNING
   // =========================================================================
   function applyDetectedCode(rawCode, sourceTag, shouldScroll) {
     const clean = BSSOcrQr.sanitizeUserBssInput(rawCode);
