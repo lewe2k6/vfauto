@@ -149,7 +149,7 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
 
     NSURLSession *_fastNetSession;
     NSLock *_cacheLock;
-    NSMutableDictionary<NSString *, NSValue *> *_geocodeCache;
+    NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *_geocodeCache;
     NSMutableArray<NSString *> *_geocodeLRU;
     NSMutableDictionary<NSString *, NSNumber *> *_routeDistCache;
     NSMutableArray<NSString *> *_routeSourceKeys;
@@ -1006,12 +1006,11 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     if (cacheKey.length < 4) return NO;
 
     [_cacheLock lock];
-    NSValue *cachedVal = _geocodeCache[cacheKey];
+    NSArray<NSNumber *> *cachedPair = _geocodeCache[cacheKey];
     [_cacheLock unlock];
-    if (cachedVal) {
-        CGPoint pt = [cachedVal CGPointValue];
-        *outLat = (double)pt.x;
-        *outLng = (double)pt.y;
+    if (cachedPair.count == 2) {
+        *outLat = [cachedPair[0] doubleValue];
+        *outLng = [cachedPair[1] doubleValue];
         return YES;
     }
 
@@ -1066,7 +1065,7 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
             [_geocodeLRU removeObjectAtIndex:0];
         }
     }
-    _geocodeCache[cacheKey] = [NSValue valueWithCGPoint:CGPointMake((CGFloat)lat, (CGFloat)lng)];
+    _geocodeCache[cacheKey] = @[ @(lat), @(lng) ];
     [_geocodeLRU addObject:cacheKey];
     [_cacheLock unlock];
 
