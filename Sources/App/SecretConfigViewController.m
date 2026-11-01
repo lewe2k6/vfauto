@@ -929,10 +929,10 @@
     nav.navigationBar.tintColor = [UIColor systemTealColor];
 
     __weak typeof(self) weakSelf = self;
-    UIAction *cancelAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+    UIAction *cancelAct = [UIAction actionWithTitle:@"Hủy" image:nil identifier:nil handler:^(__kindof UIAction *action) {
         [nav dismissViewControllerAnimated:YES completion:nil];
     }];
-    UIAction *saveAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+    UIAction *saveAct = [UIAction actionWithTitle:@"Lưu" image:nil identifier:nil handler:^(__kindof UIAction *action) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (strongSelf) {
             NSString *cleaned = [tv.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -945,26 +945,29 @@
         }
         [nav dismissViewControllerAnimated:YES completion:nil];
     }];
-    UIAction *resetAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+    UIAction *resetAct = [UIAction actionWithTitle:@"Mặc định gốc" image:nil identifier:nil handler:^(__kindof UIAction *action) {
         tv.text = isMall ? kDefaultFoodMallKeywords : kDefaultFoodChainKeywords;
     }];
-    UIAction *hideKbAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+    UIAction *resetBtnAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
+        tv.text = isMall ? kDefaultFoodMallKeywords : kDefaultFoodChainKeywords;
+    }];
+    UIAction *hideKbAct = [UIAction actionWithTitle:@"Ẩn bàn phím" image:nil identifier:nil handler:^(__kindof UIAction *action) {
         [tv resignFirstResponder];
     }];
-    [resetDefaultBtn addAction:resetAct forControlEvents:UIControlEventTouchUpInside];
+    [resetDefaultBtn addAction:resetBtnAct forControlEvents:UIControlEventTouchUpInside];
 
     UIToolbar *kbBar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 375, 42)];
     kbBar.barStyle = UIBarStyleBlack;
     kbBar.tintColor = [UIColor systemTealColor];
     kbBar.items = @[
-        [[UIBarButtonItem alloc] initWithTitle:@"Mặc định gốc" primaryAction:resetAct],
+        [[UIBarButtonItem alloc] initWithPrimaryAction:resetAct],
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil],
-        [[UIBarButtonItem alloc] initWithTitle:@"Ẩn bàn phím" primaryAction:hideKbAct]
+        [[UIBarButtonItem alloc] initWithPrimaryAction:hideKbAct]
     ];
     tv.inputAccessoryView = kbBar;
 
-    editorVC.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Hủy" primaryAction:cancelAct];
-    editorVC.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Lưu" primaryAction:saveAct];
+    editorVC.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:cancelAct];
+    editorVC.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:saveAct];
 
     UILayoutGuide *g = editorVC.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
