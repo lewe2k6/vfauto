@@ -382,7 +382,7 @@ input[type="range"] {
 }
 
 #qrCanvas {
-  max-width: 270px;
+  max-width: 310px;
   width: 100%;
   height: auto;
   display: block;
@@ -394,7 +394,7 @@ input[type="range"] {
 .qr-code-caption {
   margin-top: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 1.02rem;
+  font-size: 1.08rem;
   font-weight: 800;
   color: #0f172a;
 }
@@ -406,71 +406,7 @@ input[type="range"] {
 }
 
 .qr-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.save-station-bar {
   display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.save-station-bar input {
-  flex: 1;
-  background: #080f1e;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  padding: 10px 11px;
-  color: #fff;
-  font-size: 0.86rem;
-}
-
-/* Saved Stations List */
-.station-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.station-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-}
-
-.station-info {
-  cursor: pointer;
-  flex: 1;
-}
-
-.station-name {
-  font-size: 0.9rem;
-  font-weight: 700;
-  color: #f1f5f9;
-}
-
-.station-code {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 0.8rem;
-  color: #38bdf8;
-}
-
-.btn-del {
-  background: rgba(239, 68, 68, 0.16);
-  color: #fca5a5;
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  padding: 7px 10px;
-  border-radius: 8px;
-  font-size: 0.78rem;
-  font-weight: 700;
-  cursor: pointer;
 }
 
 /* Fullscreen High-Brightness QR Overlay */

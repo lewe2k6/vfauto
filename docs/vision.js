@@ -1,5 +1,5 @@
 /**
- * vision.js — Night-Vision Pixel Recovery, Sharp Bicubic & Auto-ROI Engine for VinFast BSS Screens
+ * vision.js — Adaptive Night-Vision, Close-Up Moire Killer & Tight Text-Island Engine for VinFast BSS Screens
  * Runs 100% client-side in Browser (<canvas> ImageData) and Node.js (Uint8Array/Buffer).
  */
 (function (root, factory) {
@@ -16,7 +16,7 @@
   }
 
   /**
-   * Green-weighted luminance maximizes contrast of grey/white LCD subpixels against dark-blue cabinet bezels.
+   * Green-weighted luminance maximizes contrast of grey/white LCD subpixels against dark-blue cabinet panels.
    */
   function extractCleanLuma(rgba, width, height) {
     const luma = new Float32Array(width * height);
@@ -26,85 +26,110 @@
     return luma;
   }
 
+  function buildIntegralImages(buf, w, h) {
+    const stride = w + 1;
+    const sum = new Float64Array(stride * (h + 1));
+    const sqSum = new Float64Array(stride * (h + 1));
+    for (let y = 1; y <= h; y++) {
+      let rSum = 0, rSq = 0;
+      const srcRow = (y - 1) * w;
+      const dstRow = y * stride;
+      const prevRow = (y - 1) * stride;
+      for (let x = 1; x <= w; x++) {
+        const v = buf[srcRow + x - 1];
+        rSum += v;
+        rSq += v * v;
+        sum[dstRow + x] = sum[prevRow + x] + rSum;
+        sqSum[dstRow + x] = sqSum[prevRow + x] + rSq;
+      }
+    }
+    return { sum, sqSum, stride, w, h };
+  }
+
+  function boxMean(integ, x, y, rx, ry) {
+    const radY = (ry === undefined) ? rx : ry;
+    const x1 = Math.max(0, x - rx);
+    const y1 = Math.max(0, y - radY);
+    const x2 = Math.min(integ.w, x + rx + 1);
+    const y2 = Math.min(integ.h, y + radY + 1);
+    const area = Math.max(1, (x2 - x1) * (y2 - y1));
+    const st = integ.stride;
+    const s = integ.sum[y2 * st + x2] - integ.sum[y1 * st + x2] - integ.sum[y2 * st + x1] + integ.sum[y1 * st + x1];
+    return s / area;
+  }
+
   /**
-   * Automatically locates the narrow horizontal strip containing "ID: BSS-..."
-   * Works across:
-   *  1) Normal full station screen (below the 2 white cards)
-   *  2) Dead-touchscreen stuck popup screen (below the dimmed outer modal / cards)
-   *  3) Close-up macro shot / live strip viewfinder crop
+   * Automatically locates the tight horizontal island containing "ID: BSS-..." across ALL shooting styles:
+   *  1) Live camera horizontal strip (width / height >= 2.6)
+   *  2) Normal or 1-scrim / 2-scrim dead-touchscreen shots where cards/popup shelf appear above (portrait or landscape)
+   *  3) Direct Close-Up Focus shots aimed straight at "ID: BSS-..." (no white cards in frame, rejects "MAN LIET" marker ink below)
    */
   function autoLocateBssIdRoi(rgba, width, height) {
-    // Already a horizontal strip crop (from Live Strip Viewfinder or user pre-crop)
-    if (width / Math.max(1, height) >= 2.4) {
-      return {
-        x: Math.round(width * 0.02),
-        y: Math.round(height * 0.04),
-        w: Math.round(width * 0.96),
-        h: Math.round(height * 0.92),
-        mode: 'closeup-strip'
-      };
+    const luma = extractCleanLuma(rgba, width, height);
+    const integ = buildIntegralImages(luma, width, height);
+
+    // Case 0: Already a narrow horizontal strip from Live Camera Strip Viewfinder
+    if (width / Math.max(1, height) >= 2.6) {
+      return refineTightIslandInBand(
+        luma, integ, width, height,
+        Math.round(height * 0.04),
+        Math.round(height * 0.96),
+        Math.round(width * 0.02),
+        Math.round(width * 0.98),
+        180,
+        'closeup-strip'
+      );
     }
 
-    const luma = extractCleanLuma(rgba, width, height);
-    const xLo = Math.floor(width * 0.25);
-    const xHi = Math.ceil(width * 0.75);
-    const sampleStep = Math.max(1, Math.floor((xHi - xLo) / 120));
-
+    // Measure row brightness percentiles across central [26%..74%] width to check if card shelf exists above
+    const xLo = Math.floor(width * 0.26);
+    const xHi = Math.ceil(width * 0.74);
+    const stepX = Math.max(1, Math.floor((xHi - xLo) / 140));
     const p85 = new Float32Array(height);
-    const strokeEnergy = new Float32Array(height);
+    const p35 = new Float32Array(height);
     const rowBuf = [];
 
     for (let y = 2; y < height - 2; y++) {
       rowBuf.length = 0;
-      let sSum = 0;
-      let sCnt = 0;
       const rOff = y * width;
-      for (let x = xLo; x < xHi; x += sampleStep) {
+      for (let x = xLo; x < xHi; x += stepX) {
         rowBuf.push(luma[rOff + x]);
-        if (x >= 3 && x < width - 3) {
-          const dx = Math.abs(luma[rOff + x + 2] - luma[rOff + x - 2]);
-          const dy = Math.abs(luma[(y + 2) * width + x] - luma[(y - 2) * width + x]);
-          const net = dx - 0.55 * dy;
-          if (net > 0) sSum += net;
-          sCnt++;
-        }
       }
       rowBuf.sort(function (a, b) { return a - b; });
       p85[y] = rowBuf.length ? rowBuf[Math.floor(rowBuf.length * 0.85)] : 0;
-      strokeEnergy[y] = sCnt ? (sSum / sCnt) : 0;
+      p35[y] = rowBuf.length ? rowBuf[Math.floor(rowBuf.length * 0.35)] : 0;
     }
 
-    const p85Smooth = new Float32Array(height);
+    const p85Sm = new Float32Array(height);
     for (let y = 3; y < height - 3; y++) {
-      p85Smooth[y] = (p85[y - 2] + p85[y - 1] + p85[y] + p85[y + 1] + p85[y + 2]) / 5.0;
+      p85Sm[y] = (p85[y - 2] + p85[y - 1] + p85[y] + p85[y + 1] + p85[y + 2]) * 0.2;
     }
 
-    // Detect steepest bright->dark cliff where cards/outer modal end and dark bottom LCD bezel margin begins.
-    const upWin = Math.max(8, Math.round(height * 0.04));
-    const dnWin = Math.max(8, Math.round(height * 0.025));
+    // Stage 1: Detect steepest bright->dark cliff where cards / modal end and dark LCD footer begins
+    const upWin = Math.max(8, Math.round(height * 0.038));
+    const dnWin = Math.max(8, Math.round(height * 0.024));
     let bestDropY = -1;
 
-    let y = Math.round(height * 0.15);
-    const yEnd = Math.round(height * 0.86) - dnWin;
+    let y = Math.round(height * 0.16);
+    const yEnd = Math.round(height * 0.88) - dnWin;
     while (y < yEnd) {
-      let upSum = 0;
-      for (let k = 2; k <= upWin + 1; k++) upSum += p85Smooth[Math.max(0, y - k)];
+      let upSum = 0, dnSum = 0;
+      for (let k = 2; k <= upWin + 1; k++) upSum += p85Sm[Math.max(0, y - k)];
+      for (let k = 2; k <= dnWin + 1; k++) dnSum += p85Sm[Math.min(height - 1, y + k)];
       const upAvg = upSum / upWin;
-
-      let dnSum = 0;
-      for (let k = 2; k <= dnWin + 1; k++) dnSum += p85Smooth[Math.min(height - 1, y + k)];
       const dnAvg = dnSum / dnWin;
 
-      if (upAvg >= 88 && dnAvg <= 80 && (upAvg - dnAvg) >= 38) {
+      // Handles normal white cards (upAvg ~210), 1-scrim dimmed cards (upAvg ~106-135), and 2-scrim cards (upAvg ~85+)
+      if (upAvg >= 80 && dnAvg <= 76 && (upAvg - dnAvg) >= 34) {
         let peakCliff = -1;
         let cliffY = y;
         const zEnd = Math.min(yEnd, y + upWin);
         for (let r = Math.max(4, y - 4); r <= zEnd; r++) {
           let u2 = 0, d2 = 0;
-          for (let k = 2; k <= dnWin + 1; k++) d2 += p85Smooth[Math.min(height - 1, r + k)];
-          for (let k = 2; k <= upWin + 1; k++) u2 += p85Smooth[Math.max(0, r - k)];
-          if ((u2 / upWin) >= 85 && (d2 / dnWin) <= 82) {
-            const cliff = p85Smooth[r - 3] - p85Smooth[Math.min(height - 1, r + 3)];
+          for (let k = 2; k <= upWin + 1; k++) u2 += p85Sm[Math.max(0, r - k)];
+          for (let k = 2; k <= dnWin + 1; k++) d2 += p85Sm[Math.min(height - 1, r + k)];
+          if ((u2 / upWin) >= 78 && (d2 / dnWin) <= 78) {
+            const cliff = p85Sm[r - 3] - p85Sm[Math.min(height - 1, r + 3)];
             if (cliff > peakCliff) {
               peakCliff = cliff;
               cliffY = r;
@@ -118,48 +143,282 @@
       }
     }
 
+    // Case 1: Card shelf found above -> search the dark-blue LCD footer band strictly BELOW bestDropY + safety gap!
     if (bestDropY > 0) {
-      // Capture slight margin above bestDropY so tilted left/right text ends are never clipped!
-      const roiY = clamp(bestDropY - Math.max(4, Math.round(height * 0.005)), 0, height - 20);
-      const roiH = clamp(Math.round(height * 0.035), 24, height - roiY);
-      const roiX = Math.round(width * 0.28);
-      const roiW = Math.round(width * 0.42);
+      // Step clear of the bright card bottom border (at least 6px or 0.9% height below cliff) so card edge never outscores dim text!
+      const searchY0 = Math.min(height - 20, bestDropY + Math.max(6, Math.round(height * 0.009)));
+      const maxSearchH = Math.round(height * 0.13);
+      let searchY1 = Math.min(height - 6, bestDropY + maxSearchH);
 
-      return {
-        x: roiX,
-        y: roiY,
-        w: roiW,
-        h: roiH,
-        dropY: bestDropY,
-        mode: 'auto-shelf-anchor'
-      };
+      // Stop before the LCD dark-blue footer drops into the physical black plastic bezel
+      const probeY = Math.min(height - 6, searchY0 + Math.max(6, Math.round(height * 0.010)));
+      const footerRefP85 = p85Sm[probeY];
+      if (footerRefP85 > 13) {
+        for (let ry = probeY + 8; ry < searchY1; ry++) {
+          if (p85Sm[ry] < footerRefP85 * 0.72 && p35[ry] < footerRefP85 * 0.65) {
+            searchY1 = Math.min(searchY1, ry + 3);
+            break;
+          }
+        }
+      }
+
+      const cardBgCeiling = Math.max(68, footerRefP85 * 1.9 + 22);
+      return refineTightIslandInBand(
+        luma, integ, width, height,
+        searchY0,
+        Math.max(searchY0 + 16, searchY1),
+        Math.round(width * 0.20),
+        Math.round(width * 0.80),
+        cardBgCeiling,
+        'shelf-tight-island'
+      );
     }
 
-    // Close-up macro photo without a bright shelf: find the strongest horizontal text-stroke band
-    const bandHalf = Math.max(8, Math.round(height * 0.05));
-    let peakY = Math.round(height * 0.5);
-    let bestScore = -1;
-    for (let ry = Math.round(height * 0.08) + bandHalf; ry <= Math.round(height * 0.92) - bandHalf; ry++) {
-      let sc = 0;
-      for (let dy = -bandHalf; dy <= bandHalf; dy++) sc += strokeEnergy[ry + dy];
-      if (sc > bestScore) {
-        bestScore = sc;
-        peakY = ry;
+    // Case 2: Direct Close-Up Focus Shot on "ID: BSS-..." (no white card shelf in frame!)
+    // Scan full width [3%..97%] and distinguish positive emissive LCD characters from dark marker ink ("MAN LIET") on painted metal!
+    return locateDirectCloseUpFocusRoi(luma, integ, width, height);
+  }
+
+  /**
+   * Finds the exact vertical center & tight horizontal text island inside a candidate [y0..y1, xMin..xMax] band.
+   */
+  function refineTightIslandInBand(luma, integ, width, height, y0, y1, xMin, xMax, bgCeiling, modeName) {
+    const rxBg = Math.max(6, Math.round(width * 0.012));
+    const ryBg = Math.max(4, Math.round(height * 0.008));
+    const dxStep = Math.max(1, Math.round(width * 0.002));
+
+    // Score each row by summing top-K positive emissive character-edge responses (ignores empty dark wings & bright card corners!)
+    const rowScore = new Float32Array(height);
+    const topK = 28;
+    const hits = [];
+
+    for (let y = Math.max(2, y0); y <= Math.min(height - 3, y1); y++) {
+      hits.length = 0;
+      const rOff = y * width;
+      for (let x = Math.max(4, xMin); x <= Math.min(width - 5, xMax); x += dxStep) {
+        const localBg = boxMean(integ, x, y, rxBg, ryBg);
+        if (localBg > bgCeiling) continue; // mask out solid bright card shelf / glare
+        const val = luma[rOff + x];
+        const pos = val - localBg;
+        if (pos > 2.0) {
+          const hEdge = Math.abs(luma[rOff + x + dxStep] - luma[rOff + x - dxStep]);
+          hits.push(pos + 0.45 * hEdge);
+        }
+      }
+      if (hits.length >= 6) {
+        hits.sort(function (a, b) { return b - a; });
+        let s = 0;
+        const lim = Math.min(topK, hits.length);
+        for (let k = 0; k < lim; k++) s += hits[k];
+        rowScore[y] = s / lim;
       }
     }
-    const roiH = clamp(Math.round(height * 0.32), 32, height);
-    const roiY = clamp(Math.round(peakY - roiH * 0.5), 0, height - roiH);
+
+    // Subtract median sensor-grain floor from rowScore so dark background noise never bloats band height!
+    const validRowScores = [];
+    for (let y = Math.max(2, y0); y <= Math.min(height - 3, y1); y++) {
+      validRowScores.push(rowScore[y]);
+    }
+    validRowScores.sort(function (a, b) { return a - b; });
+    const rowNoiseFloor = validRowScores.length ? validRowScores[Math.floor(validRowScores.length * 0.45)] : 0;
+    for (let y = Math.max(2, y0); y <= Math.min(height - 3, y1); y++) {
+      rowScore[y] = Math.max(0, rowScore[y] - rowNoiseFloor);
+    }
+
+    // Find peak text line center row
+    const winY = clamp(Math.round((y1 - y0) * 0.10), 2, 12);
+    let bestRow = Math.round((y0 + y1) * 0.5);
+    let bestS = -1;
+    for (let y = Math.max(2, y0); y <= Math.min(height - 3, y1); y++) {
+      let s = 0;
+      for (let dy = -winY; dy <= winY; dy++) {
+        const yy = clamp(y + dy, 0, height - 1);
+        s += rowScore[yy];
+      }
+      if (s > bestS) {
+        bestS = s;
+        bestRow = y;
+      }
+    }
+
+    // Measure natural vertical thickness of the text band around bestRow above noise floor
+    const peakRowVal = Math.max(0.01, rowScore[bestRow]);
+    let bandTop = bestRow;
+    let bandBot = bestRow;
+    const maxExpandY = (modeName === 'shelf-tight-island')
+      ? Math.max(8, Math.round(height * 0.025))
+      : Math.max(12, Math.round(height * 0.09));
+    while (bandTop > y0 && rowScore[bandTop - 1] >= peakRowVal * 0.25 && (bestRow - bandTop) < maxExpandY) bandTop--;
+    while (bandBot < y1 && rowScore[bandBot + 1] >= peakRowVal * 0.25 && (bandBot - bestRow) < maxExpandY) bandBot++;
+
+    const rawTextH = Math.max(6, bandBot - bandTop + 1);
+    const padY = Math.max(7, Math.round(rawTextH * 0.85));
+    const minValidY = (modeName === 'shelf-tight-island') ? Math.max(0, y0 - 2) : 0;
+    const ry = clamp(bandTop - padY, minValidY, height - 14);
+    const rh = clamp((bandBot + padY) - ry + 1, 16, height - ry);
+
+    // Tight horizontal island around the 22-character "ID: BSS-..." cluster inside [ry..ry+rh]
+    const colPeak = new Float32Array(width);
+    for (let x = Math.max(3, xMin); x <= Math.min(width - 4, xMax); x++) {
+      let maxP = 0;
+      for (let y = ry + 1; y < ry + rh - 1; y++) {
+        const localBg = boxMean(integ, x, y, rxBg, ryBg);
+        if (localBg > bgCeiling) continue;
+        const p = luma[y * width + x] - localBg;
+        if (p > maxP) maxP = p;
+      }
+      colPeak[x] = maxP;
+    }
+
+    const winX = Math.max(6, Math.round(width * 0.012));
+    const colSm = new Float32Array(width);
+    const colSamples = [];
+    for (let x = Math.max(winX, xMin); x <= Math.min(width - winX - 1, xMax); x++) {
+      let s = 0;
+      for (let dx = -winX; dx <= winX; dx++) s += colPeak[x + dx];
+      const v = s / (2 * winX + 1);
+      colSm[x] = v;
+      colSamples.push(v);
+    }
+    colSamples.sort(function (a, b) { return a - b; });
+    // In wide/shelf shots, text spans ~35% of [xMin..xMax] so p35 is pure background grain; in full-width close-ups, p12 is background
+    const colFloorPct = (modeName === 'shelf-tight-island') ? 0.38 : 0.12;
+    const colNoiseFloor = colSamples.length ? colSamples[Math.floor(colSamples.length * colFloorPct)] : 0;
+
+    let maxCol = 0.01;
+    for (let x = Math.max(winX, xMin); x <= Math.min(width - winX - 1, xMax); x++) {
+      colSm[x] = Math.max(0, colSm[x] - colNoiseFloor);
+      if (colSm[x] > maxCol) maxCol = colSm[x];
+    }
+
+    // Locate horizontal center using a word-scale window (~15% width) so tiny corner glare specks never beat a 22-char ID line!
+    const wordHalf = Math.max(18, Math.round(width * 0.075));
+    let bestWordSum = -1;
+    let centerCol = Math.round((xMin + xMax) * 0.5);
+    for (let x = Math.max(wordHalf, xMin); x <= Math.min(width - wordHalf - 1, xMax); x++) {
+      let ws = 0;
+      for (let dx = -wordHalf; dx <= wordHalf; dx += 2) ws += colSm[x + dx];
+      if (ws > bestWordSum) {
+        bestWordSum = ws;
+        centerCol = x;
+      }
+    }
+    // Re-measure local peak around the true word center so threshold scales to the text, not an edge artifact
+    let wordPeak = 0.01;
+    for (let dx = -wordHalf; dx <= wordHalf; dx++) {
+      const xx = clamp(centerCol + dx, 0, width - 1);
+      if (colSm[xx] > wordPeak) wordPeak = colSm[xx];
+    }
+
+    const thr = wordPeak * 0.24;
+    const maxGap = Math.max(10, Math.round(width * 0.032));
+    let ix0 = centerCol, gap = 0;
+    for (let x = centerCol; x >= xMin; x--) {
+      if (colSm[x] >= thr) { ix0 = x; gap = 0; }
+      else { gap++; if (gap > maxGap) break; }
+    }
+    let ix1 = centerCol; gap = 0;
+    for (let x = centerCol; x <= xMax; x++) {
+      if (colSm[x] >= thr) { ix1 = x; gap = 0; }
+      else { gap++; if (gap > maxGap) break; }
+    }
+
+    const padX = Math.max(14, Math.round((ix1 - ix0 + 1) * 0.09));
+    ix0 = clamp(ix0 - padX, 0, width - 20);
+    ix1 = clamp(ix1 + padX, ix0 + 20, width - 1);
+
+    // Safety fallback if image has virtually zero contrast before manual slider boost
+    if (ix1 - ix0 < Math.round(width * 0.10)) {
+      ix0 = xMin;
+      ix1 = xMax;
+    }
+
     return {
-      x: Math.round(width * 0.05),
-      y: roiY,
-      w: Math.round(width * 0.90),
-      h: roiH,
-      mode: 'closeup-stroke-band'
+      x: ix0,
+      y: ry,
+      w: ix1 - ix0 + 1,
+      h: rh,
+      mode: modeName
     };
   }
 
   /**
-   * Estimates text baseline slope in degrees (-6.0 .. +6.0) using horizontal character-stroke gradients.
+   * Dedicated Close-Up Focus Locator when the user aims closely at "ID: BSS-..." without white cards above.
+   * Rejects dark marker handwriting ("MAN LIET KO BAM") on blue painted metal below the screen bezel!
+   */
+  function locateDirectCloseUpFocusRoi(luma, integ, width, height) {
+    const xMin = Math.round(width * 0.03);
+    const xMax = Math.round(width * 0.97);
+
+    // Measure row median (rowP50):
+    // - On LCD screen ("ID: BSS-..."), rowP50 is the dark screen background; characters rise ABOVE rowP50 (posEnergy >> negEnergy).
+    // - On painted cabinet metal ("MAN LIET KO BAM"), rowP50 is bright blue paint; dark marker ink plunges BELOW rowP50 (negEnergy >> posEnergy)!
+    const rowP50 = new Float32Array(height);
+    const tmp = [];
+    const stepX = Math.max(1, Math.floor((xMax - xMin) / 140));
+    for (let y = 2; y < height - 2; y++) {
+      tmp.length = 0;
+      for (let x = xMin; x < xMax; x += stepX) tmp.push(luma[y * width + x]);
+      tmp.sort(function (a, b) { return a - b; });
+      rowP50[y] = tmp[Math.floor(tmp.length * 0.5)] || 0;
+    }
+
+    const rowLineScore = new Float32Array(height);
+    for (let y = Math.round(height * 0.03); y < Math.round(height * 0.95); y++) {
+      const med = rowP50[y];
+      if (med > 115) continue; // painted cabinet in daylight / bright modal card
+      let posEnergy = 0;
+      let negEnergy = 0;
+      let posPeaks = 0;
+      let inPos = false;
+      const rOff = y * width;
+
+      for (let x = xMin; x <= xMax; x += stepX) {
+        const diff = luma[rOff + x] - med;
+        if (diff > 4.0) {
+          posEnergy += diff;
+          if (!inPos) { posPeaks++; inPos = true; }
+        } else {
+          inPos = false;
+          if (diff < -6.0) negEnergy += (-diff);
+        }
+      }
+
+      if (posEnergy > negEnergy * 1.35 && posPeaks >= 5) {
+        rowLineScore[y] = posEnergy * (1.0 + Math.min(28, posPeaks) * 0.10);
+      }
+    }
+
+    const bandWin = clamp(Math.round(height * 0.035), 4, 22);
+    let peakY = Math.round(height * 0.45);
+    let bestScore = -1;
+    for (let y = Math.round(height * 0.04); y < Math.round(height * 0.94); y++) {
+      let sc = 0;
+      for (let dy = -bandWin; dy <= bandWin; dy++) {
+        const yy = clamp(y + dy, 0, height - 1);
+        sc += rowLineScore[yy];
+      }
+      if (sc > bestScore) {
+        bestScore = sc;
+        peakY = y;
+      }
+    }
+
+    const searchHalf = clamp(Math.round(height * 0.12), 16, Math.round(height * 0.22));
+    const sy0 = clamp(peakY - searchHalf, 2, height - 20);
+    const sy1 = clamp(peakY + searchHalf, sy0 + 16, height - 3);
+    const autoExposedBgCeil = Math.max(95, rowP50[peakY] * 1.75 + 28);
+
+    return refineTightIslandInBand(
+      luma, integ, width, height,
+      sy0, sy1, xMin, xMax,
+      autoExposedBgCeil,
+      'closeup-focus-island'
+    );
+  }
+
+  /**
+   * Estimates text baseline slope in degrees (-5.5 .. +5.5) using horizontal character-stroke gradients.
    */
   function estimateTextTiltDeg(hpSignal, w, h) {
     const hGrad = new Float32Array(w * h);
@@ -194,7 +453,7 @@
 
       let sum = 0, n = 0;
       for (let y = 0; y < h; y++) {
-        if (cnt[y] > 12) {
+        if (cnt[y] > Math.max(8, Math.round(w * 0.15))) {
           proj[y] /= cnt[y];
           sum += proj[y];
           n++;
@@ -206,7 +465,7 @@
       const mean = sum / n;
       let variance = 0;
       for (let y = 0; y < h; y++) {
-        if (cnt[y] > 12) {
+        if (proj[y] > 0) {
           const d = proj[y] - mean;
           variance += d * d;
         }
@@ -221,7 +480,7 @@
   }
 
   function cubicWeight(v0, v1, v2, v3, t) {
-    const a = -0.55; // Sharp Catmull-Rom bicubic kernel preserves inner digit loops (6, 8, 0, B, S)!
+    const a = -0.68; // Crisp Catmull-Rom bicubic kernel separates adjacent digits while keeping inner loops open!
     const t2 = t * t;
     const t3 = t2 * t;
     return (
@@ -233,11 +492,27 @@
   }
 
   /**
-   * Sharp Catmull-Rom Bicubic counter-rotation + upscaler.
+   * Adaptive Resampler:
+   * - When upscaling tiny wide-shot text (scale >= 1): Sharp Catmull-Rom Bicubic + background border fill (no vertical edge streaks!)
+   * - When downscaling huge 12MP macro close-up text (scale < 1): Box-area anti-aliased pre-filter kills RGB LCD Moire grid!
    */
-  function bicubicDeskewAndUpscale(src, sw, sh, angleDeg, scaleX, scaleY) {
-    const dw = Math.max(24, Math.round(sw * scaleX));
-    const dh = Math.max(20, Math.round(sh * scaleY));
+  function adaptiveDeskewAndResample(src, sw, sh, angleDeg, scaleX, scaleY, fillBgVal) {
+    let workSrc = src;
+    if (scaleX < 0.92 || scaleY < 0.92) {
+      // Anti-aliasing pre-blur suppresses cabinet LCD RGB subpixel moire grid on close-up macro shots!
+      const integ = buildIntegralImages(src, sw, sh);
+      const rx = Math.max(1, Math.round(0.55 / Math.min(scaleX, scaleY)));
+      const ry = Math.max(1, Math.round(0.55 / scaleY));
+      workSrc = new Float32Array(sw * sh);
+      for (let y = 0; y < sh; y++) {
+        for (let x = 0; x < sw; x++) {
+          workSrc[y * sw + x] = boxMean(integ, x, y, rx, ry);
+        }
+      }
+    }
+
+    const dw = Math.max(32, Math.round(sw * scaleX));
+    const dh = Math.max(24, Math.round(sh * scaleY));
     const dst = new Float32Array(dw * dh);
 
     const rad = (angleDeg * Math.PI) / 180.0;
@@ -248,10 +523,9 @@
     const dcx = (dw - 1) * 0.5;
     const dcy = (dh - 1) * 0.5;
 
-    function getClamped(x, y) {
-      const cx = x < 0 ? 0 : x >= sw ? sw - 1 : x;
-      const cy = y < 0 ? 0 : y >= sh ? sh - 1 : y;
-      return src[cy * sw + cx];
+    function sampleSafe(x, y) {
+      if (x < 0 || x >= sw || y < 0 || y >= sh) return fillBgVal;
+      return workSrc[y * sw + x];
     }
 
     for (let dy = 0; dy < dh; dy++) {
@@ -262,84 +536,41 @@
         const sx = scx + ux * cosA - uy * sinA;
         const sy = scy + ux * sinA + uy * cosA;
 
+        if (sx < 0 || sx >= sw - 1 || sy < 0 || sy >= sh - 1) {
+          dst[dRow + dx] = fillBgVal;
+          continue;
+        }
+
         const ix = Math.floor(sx);
         const iy = Math.floor(sy);
         const fx = sx - ix;
         const fy = sy - iy;
 
-        const r0 = cubicWeight(getClamped(ix - 1, iy - 1), getClamped(ix, iy - 1), getClamped(ix + 1, iy - 1), getClamped(ix + 2, iy - 1), fx);
-        const r1 = cubicWeight(getClamped(ix - 1, iy),     getClamped(ix, iy),     getClamped(ix + 1, iy),     getClamped(ix + 2, iy),     fx);
-        const r2 = cubicWeight(getClamped(ix - 1, iy + 1), getClamped(ix, iy + 1), getClamped(ix + 1, iy + 1), getClamped(ix + 2, iy + 1), fx);
-        const r3 = cubicWeight(getClamped(ix - 1, iy + 2), getClamped(ix, iy + 2), getClamped(ix + 1, iy + 2), getClamped(ix + 2, iy + 2), fx);
+        const r0 = cubicWeight(sampleSafe(ix - 1, iy - 1), sampleSafe(ix, iy - 1), sampleSafe(ix + 1, iy - 1), sampleSafe(ix + 2, iy - 1), fx);
+        const r1 = cubicWeight(sampleSafe(ix - 1, iy),     sampleSafe(ix, iy),     sampleSafe(ix + 1, iy),     sampleSafe(ix + 2, iy),     fx);
+        const r2 = cubicWeight(sampleSafe(ix - 1, iy + 1), sampleSafe(ix, iy + 1), sampleSafe(ix + 1, iy + 1), sampleSafe(ix + 2, iy + 1), fx);
+        const r3 = cubicWeight(sampleSafe(ix - 1, iy + 2), sampleSafe(ix, iy + 2), sampleSafe(ix + 1, iy + 2), sampleSafe(ix + 2, iy + 2), fx);
         dst[dRow + dx] = cubicWeight(r0, r1, r2, r3, fy);
       }
     }
     return { data: dst, width: dw, height: dh };
   }
 
-  function buildIntegralImages(buf, w, h) {
-    const stride = w + 1;
-    const sum = new Float64Array(stride * (h + 1));
-    const sqSum = new Float64Array(stride * (h + 1));
-    for (let y = 1; y <= h; y++) {
-      let rSum = 0, rSq = 0;
-      const srcRow = (y - 1) * w;
-      const dstRow = y * stride;
-      const prevRow = (y - 1) * stride;
-      for (let x = 1; x <= w; x++) {
-        const v = buf[srcRow + x - 1];
-        rSum += v;
-        rSq += v * v;
-        sum[dstRow + x] = sum[prevRow + x] + rSum;
-        sqSum[dstRow + x] = sqSum[prevRow + x] + rSq;
-      }
-    }
-    return { sum, sqSum, stride, w, h };
-  }
-
-  function boxStats(integ, x, y, rx, ry) {
-    const radY = (ry === undefined) ? rx : ry;
-    const x1 = Math.max(0, x - rx);
-    const y1 = Math.max(0, y - radY);
-    const x2 = Math.min(integ.w, x + rx + 1);
-    const y2 = Math.min(integ.h, y + radY + 1);
-    const area = Math.max(1, (x2 - x1) * (y2 - y1));
-    const st = integ.stride;
-
-    const a = y1 * st + x1;
-    const b = y1 * st + x2;
-    const c = y2 * st + x1;
-    const d = y2 * st + x2;
-
-    const s = integ.sum[d] - integ.sum[b] - integ.sum[c] + integ.sum[a];
-    const sq = integ.sqSum[d] - integ.sqSum[b] - integ.sqSum[c] + integ.sqSum[a];
-    const mean = s / area;
-    const variance = Math.max(0, sq / area - mean * mean);
-    return { mean, std: Math.sqrt(variance) };
-  }
-
   /**
-   * Finds tight horizontal & vertical bounds of the single text line inside the deskewed high-pass strip.
+   * Trims cleanly around the single deskewed text line so Tesseract LSTM sees pure characters + quiet white margin.
    */
-  function trimToActiveTextBand(hp, rawUp, w, h) {
-    const rawSorted = [];
-    for (let i = 0; i < rawUp.length; i += 7) rawSorted.push(rawUp[i]);
-    rawSorted.sort(function (a, b) { return a - b; });
-    const darkMed = rawSorted[Math.floor(rawSorted.length * 0.35)] || 20;
-    const brightCardCeiling = Math.max(darkMed + 65, darkMed * 2.5);
-
+  function trimToActiveTextBand(hp, w, h) {
     const rowEnergy = new Float32Array(h);
     for (let y = 2; y < h - 2; y++) {
       const r = y * w;
       let e = 0;
       for (let x = 6; x < w - 6; x++) {
-        if (rawUp[r + x] > brightCardCeiling) continue;
         e += Math.abs(hp[r + x + 2] - hp[r + x - 2]);
       }
       rowEnergy[y] = e / Math.max(1, w - 12);
     }
 
-    const halfWin = clamp(Math.round(h * 0.14), 8, 28);
+    const halfWin = clamp(Math.round(h * 0.14), 8, 26);
     let peakY = Math.round(h * 0.5);
     let bestS = -1;
     for (let y = halfWin + 1; y < h - halfWin - 1; y++) {
@@ -350,10 +581,10 @@
 
     const pVal = Math.max(0.01, rowEnergy[peakY]);
     let y0 = peakY, y1 = peakY;
-    while (y0 > 1 && rowEnergy[y0 - 1] >= pVal * 0.14 && (peakY - y0) < halfWin * 2.2) y0--;
-    while (y1 < h - 2 && rowEnergy[y1 + 1] >= pVal * 0.14 && (y1 - peakY) < halfWin * 2.2) y1++;
+    while (y0 > 1 && rowEnergy[y0 - 1] >= pVal * 0.16 && (peakY - y0) < halfWin * 2.2) y0--;
+    while (y1 < h - 2 && rowEnergy[y1 + 1] >= pVal * 0.16 && (y1 - peakY) < halfWin * 2.2) y1++;
 
-    const padY = Math.max(10, Math.round((y1 - y0 + 1) * 0.45));
+    const padY = Math.max(10, Math.round((y1 - y0 + 1) * 0.42));
     y0 = clamp(y0 - padY, 0, h - 16);
     y1 = clamp(y1 + padY, y0 + 16, h - 1);
 
@@ -363,11 +594,11 @@
       let c = 0;
       for (let y = y0; y <= y1; y++) {
         const idx = y * w + x;
-        if (rawUp[idx] <= brightCardCeiling) c += Math.abs(hp[idx + 2] - hp[idx - 2]);
+        c += Math.abs(hp[idx + 2] - hp[idx - 2]);
       }
       colEnergy[x] = c / Math.max(1, y1 - y0 + 1);
     }
-    const cw = 20;
+    const cw = clamp(Math.round(w * 0.025), 8, 22);
     const colSmooth = new Float32Array(w);
     let maxCol = 0.01;
     for (let x = cw; x < w - cw; x++) {
@@ -378,16 +609,16 @@
     }
 
     let x0 = 0, x1 = w - 1;
-    for (let x = cw; x < w - cw; x++) { if (colSmooth[x] >= maxCol * 0.18) { x0 = x; break; } }
-    for (let x = w - cw - 1; x >= cw; x--) { if (colSmooth[x] >= maxCol * 0.18) { x1 = x; break; } }
-    if (x1 - x0 < w * 0.20) {
+    for (let x = cw; x < w - cw; x++) { if (colSmooth[x] >= maxCol * 0.20) { x0 = x; break; } }
+    for (let x = w - cw - 1; x >= cw; x--) { if (colSmooth[x] >= maxCol * 0.20) { x1 = x; break; } }
+    if (x1 - x0 < w * 0.22) {
       x0 = 0; x1 = w - 1;
     } else {
-      x0 = clamp(x0 - 28, 0, w - 24);
-      x1 = clamp(x1 + 28, x0 + 24, w - 1);
+      x0 = clamp(x0 - 24, 0, w - 24);
+      x1 = clamp(x1 + 24, x0 + 24, w - 1);
     }
 
-    return { x0, y0, x1, y1, brightCardCeiling };
+    return { x0, y0, x1, y1 };
   }
 
   function wrapWhiteBorderRGBA(grayInkOnWhite, w, h, pad) {
@@ -408,14 +639,15 @@
   }
 
   /**
-   * Main Night-Vision Recovery Pipeline:
-   * Preserves delicate inner loops on tiny fonts via Catmull-Rom Bicubic + Smooth Linear Grayscale,
-   * while pulling ultra-dim double-scrim text out of darkness via Wide-Radius Local Background Subtraction.
+   * Main Night-Vision & Adaptive Close-Up Recovery Pipeline:
+   * - Masks out any solid bright card shelf edge smoothly into local dark LCD background (never clips tilted letters!)
+   * - Dynamically upscales tiny 6px wide-shot text up to 5.4x OR anti-alias downscales huge 200px close-up text down to 0.42x
+   *   so Tesseract ALWAYS receives crisp ~40px cap-height characters with zero LCD moire!
    */
   function buildNightVisionVariants(rgba, imgW, imgH, roi, options) {
     const opts = Object.assign({
-      gain: 1.0,           // 1.0 = natural smooth anti-aliased strokes (user slider: 0.5 .. 2.5)
-      thresholdBias: 0,    // -35 .. +35
+      gain: 1.0,
+      thresholdBias: 0,
       manualTiltDeg: null
     }, options || {});
 
@@ -434,17 +666,28 @@
       }
     }
 
-    // 1. Pre-highpass on native ROI (masking out any bright card edge) to measure true character line tilt
-    const preInteg = buildIntegralImages(roiLuma, rw, rh);
-    const preHp = new Float32Array(rw * rh);
+    // 1. Replace any solid bright card border (where local 11x5 mean is much brighter than dark LCD background)
+    //    with darkMed BEFORE resampling so tilted characters near a card edge never get clipped OR ringed!
     const rawSorted = Array.from(roiLuma).sort(function (a, b) { return a - b; });
-    const darkCeil = (rawSorted[Math.floor(rawSorted.length * 0.35)] || 20) * 2.4 + 55;
-    const preRad = Math.max(5, Math.round(rh * 0.22));
+    const darkMed = rawSorted[Math.floor(rawSorted.length * 0.32)] || 18;
+    const preInteg = buildIntegralImages(roiLuma, rw, rh);
+    const cardMaskCeil = Math.max(darkMed + 62, darkMed * 2.55);
+    const cleanRoi = new Float32Array(rw * rh);
+    const preHp = new Float32Array(rw * rh);
+    const preRadX = Math.max(6, Math.round(rh * 0.28));
+    const preRadY = Math.max(4, Math.round(rh * 0.20));
+
     for (let y = 0; y < rh; y++) {
       for (let x = 0; x < rw; x++) {
         const idx = y * rw + x;
-        if (roiLuma[idx] > darkCeil) { preHp[idx] = 0; continue; }
-        preHp[idx] = Math.max(0, roiLuma[idx] - boxStats(preInteg, x, y, preRad).mean);
+        const locMean = boxMean(preInteg, x, y, Math.max(5, Math.round(rh * 0.18)), Math.max(3, Math.round(rh * 0.12)));
+        if (locMean > cardMaskCeil && roiLuma[idx] > darkMed + 45) {
+          cleanRoi[idx] = darkMed;
+          preHp[idx] = 0;
+        } else {
+          cleanRoi[idx] = roiLuma[idx];
+          preHp[idx] = Math.max(0, roiLuma[idx] - boxMean(preInteg, x, y, preRadX, preRadY));
+        }
       }
     }
 
@@ -452,34 +695,64 @@
       ? opts.manualTiltDeg
       : estimateTextTiltDeg(preHp, rw, rh);
 
-    // 2. Sharp Catmull-Rom Bicubic Deskew + Upscale (scale ~3.5x on small strips, ~1.8-2.5x on close-ups)
-    const scaleY = clamp(128.0 / Math.max(18, rh), 1.5, 4.0);
-    const scaleX = scaleY * 1.06; // Slight 6% horizontal breathing room prevents adjacent digits from kissing
-    const up = bicubicDeskewAndUpscale(roiLuma, rw, rh, autoTilt, scaleX, scaleY);
+    // 2. Multi-Scale Adaptive Normalization:
+    //    - Scale A (~68px strip height -> ~24px glyphs): keeps 6px JPEG wide-shot digits ('34') & 12MP macro close-ups crisp without over-magnifying blur!
+    //    - Scale B (~96px strip height -> ~35px glyphs): optimal for Night-Vision local background subtraction on ultra-dimmed strokes!
+    const scaleCompactY = clamp(Math.min(68.0 / Math.max(14, rh), (560.0 / Math.max(60, rw)) * 1.12), 0.30, 3.8);
+    const upCompact = adaptiveDeskewAndResample(cleanRoi, rw, rh, autoTilt, scaleCompactY * 1.14, scaleCompactY, darkMed);
+    const compInteg = buildIntegralImages(upCompact.data, upCompact.width, upCompact.height);
+    const compHp = new Float32Array(upCompact.width * upCompact.height);
+    const cBgX = Math.max(18, Math.round(upCompact.height * 0.40));
+    const cBgY = Math.max(12, Math.round(upCompact.height * 0.26));
+    for (let y = 0; y < upCompact.height; y++) {
+      const r = y * upCompact.width;
+      for (let x = 0; x < upCompact.width; x++) {
+        compHp[r + x] = Math.max(0, upCompact.data[r + x] - boxMean(compInteg, x, y, cBgX, cBgY));
+      }
+    }
+    const trimComp = trimToActiveTextBand(compHp, upCompact.width, upCompact.height);
+    const cw = trimComp.x1 - trimComp.x0 + 1;
+    const ch = trimComp.y1 - trimComp.y0 + 1;
+    const compTrimRaw = new Float32Array(cw * ch);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        compTrimRaw[y * cw + x] = upCompact.data[(trimComp.y0 + y) * upCompact.width + (trimComp.x0 + x)];
+      }
+    }
+    const compSorted = Array.from(compTrimRaw).sort(function (a, b) { return a - b; });
+    const compLo = compSorted[Math.floor(compSorted.length * 0.26)] || 10;
+    const compHi = compSorted[Math.floor(compSorted.length * 0.996)] || 80;
+    const compSpan = Math.max(2.0, compHi - compLo);
+
+    const scaleByH = 96.0 / Math.max(14, rh);
+    const scaleByW = 740.0 / Math.max(60, rw);
+    const scaleY = clamp(Math.min(scaleByH, scaleByW * 1.12), 0.35, 5.2);
+    const scaleX = scaleY * 1.14;
+    const up = adaptiveDeskewAndResample(cleanRoi, rw, rh, autoTilt, scaleX, scaleY, darkMed);
     const uw = up.width;
     const uh = up.height;
 
-    // 3. Wide-radius Local Background Subtraction (flattens uneven night lighting & modal dark scrims!)
+    // 3. Wide-radius Local Background Subtraction (flattens uneven night glare & modal backdrop scrims!)
     const integ = buildIntegralImages(up.data, uw, uh);
-    const rBgX = Math.max(24, Math.round(uh * 0.38));
-    const rBgY = Math.max(16, Math.round(uh * 0.24));
+    const rBgX = Math.max(26, Math.round(uh * 0.40));
+    const rBgY = Math.max(18, Math.round(uh * 0.26));
     const rSharp = 2;
+    const unsharpStrength = scaleY >= 1.6 ? 0.38 : 0.0;
     const hpFull = new Float32Array(uw * uh);
 
     for (let y = 0; y < uh; y++) {
       const row = y * uw;
       for (let x = 0; x < uw; x++) {
         const center = up.data[row + x];
-        const near = boxStats(integ, x, y, rSharp, rSharp).mean;
-        const bg = boxStats(integ, x, y, rBgX, rBgY).mean;
-        // Mild unsharp lift (0.35) opens inner loops of '6' and '8' without creating ringing halos
-        const unsharp = center + 0.35 * (center - near);
+        const near = boxMean(integ, x, y, rSharp, rSharp);
+        const bg = boxMean(integ, x, y, rBgX, rBgY);
+        const unsharp = center + unsharpStrength * (center - near);
         hpFull[row + x] = Math.max(0, unsharp - bg);
       }
     }
 
-    // 4. Trim cleanly around the horizontal text line so card/bezel edges are excluded
-    const trim = trimToActiveTextBand(hpFull, up.data, uw, uh);
+    // 4. Trim cleanly around the deskewed text island
+    const trim = trimToActiveTextBand(hpFull, uw, uh);
     const fw = trim.x1 - trim.x0 + 1;
     const fh = trim.y1 - trim.y0 + 1;
     const hp = new Float32Array(fw * fh);
@@ -488,49 +761,49 @@
     for (let y = 0; y < fh; y++) {
       for (let x = 0; x < fw; x++) {
         const sIdx = (trim.y0 + y) * uw + (trim.x0 + x);
-        const masked = up.data[sIdx] > trim.brightCardCeiling;
-        hp[y * fw + x] = masked ? 0 : hpFull[sIdx];
-        rawTrim[y * fw + x] = masked ? (trim.brightCardCeiling * 0.3) : up.data[sIdx];
+        hp[y * fw + x] = hpFull[sIdx];
+        rawTrim[y * fw + x] = up.data[sIdx];
       }
     }
 
-    // Measure percentiles for both direct local-stretched greyscale AND high-pass night-vision
     const hpSamples = Array.from(hp).sort(function (a, b) { return a - b; });
-    const hpLo = hpSamples[Math.floor(hpSamples.length * 0.25)] || 0;
-    const hpHi = hpSamples[Math.floor(hpSamples.length * 0.997)] || 8;
+    const hpLo = hpSamples[Math.floor(hpSamples.length * 0.28)] || 0;
+    const hpHi = hpSamples[Math.floor(hpSamples.length * 0.996)] || 8;
     const hpSpan = Math.max(1.2, hpHi - hpLo);
 
     const rawSamples = Array.from(rawTrim).sort(function (a, b) { return a - b; });
-    const rawLo = rawSamples[Math.floor(rawSamples.length * 0.22)] || 10;
-    const rawHi = rawSamples[Math.floor(rawSamples.length * 0.997)] || 80;
+    const rawLo = rawSamples[Math.floor(rawSamples.length * 0.25)] || 10;
+    const rawHi = rawSamples[Math.floor(rawSamples.length * 0.996)] || 80;
     const rawSpan = Math.max(2.0, rawHi - rawLo);
 
     const previewRgba = new Uint8ClampedArray(fw * fh * 4);
-    const varBicubicPure = new Uint8ClampedArray(fw * fh);
+    const varBicubicPure = new Uint8ClampedArray(cw * ch);
     const varNightLinear = new Uint8ClampedArray(fw * fh);
     const varNightCrisp  = new Uint8ClampedArray(fw * fh);
 
     const biasShift = (opts.thresholdBias / 100.0) * 0.25;
 
-    for (let i = 0; i < fw * fh; i++) {
-      // Variant 1: Pure Catmull-Rom Bicubic Linear Inverted Grayscale (zero morphological distortion!)
-      const nRaw = clamp(((rawTrim[i] - rawLo) / rawSpan) * opts.gain + biasShift, 0, 1);
-      varBicubicPure[i] = Math.round(255 * (1.0 - nRaw));
+    for (let i = 0; i < cw * ch; i++) {
+      // Variant 1: Compact-Scale Pure Resampled Linear Grayscale (keeps tiny 6px digits & 12MP macro close-ups super clean!)
+      const nComp = clamp(((compTrimRaw[i] - compLo) / compSpan) * opts.gain + biasShift, 0, 1);
+      varBicubicPure[i] = Math.round(255 * (1.0 - nComp));
+    }
 
-      // Variant 2: Night-Vision Background-Subtracted Smooth Grayscale (defeats uneven glare & modal scrims!)
+    for (let i = 0; i < fw * fh; i++) {
+      // Variant 2: Night-Vision Background-Subtracted Smooth Grayscale
       const nHp = clamp(((hp[i] - hpLo) / hpSpan) * opts.gain + biasShift, 0, 1);
       varNightLinear[i] = Math.round(255 * (1.0 - Math.pow(nHp, 0.95)));
 
-      // Variant 3: High-Contrast Crisp Ink (for ultra-faint strokes)
-      const nCrisp = clamp((nHp - 0.16) / 0.62, 0, 1);
-      varNightCrisp[i] = Math.round(255 * (1.0 - Math.pow(nCrisp, 1.35)));
+      // Variant 3: High-Contrast Crisp Ink (separates faint digits in 1-scrim & 2-scrim dark photos)
+      const nCrisp = clamp((nHp - 0.15) / 0.64, 0, 1);
+      varNightCrisp[i] = Math.round(255 * (1.0 - Math.pow(nCrisp, 1.32)));
 
       // Human Night-Vision Preview (high-contrast bright cyan-white on deep slate)
       const pv = Math.round(clamp(Math.pow(nHp, 0.78) * 255, 0, 255));
       const p4 = i * 4;
-      previewRgba[p4]     = Math.round(12 + pv * 0.92);
-      previewRgba[p4 + 1] = Math.round(18 + pv * 0.96);
-      previewRgba[p4 + 2] = Math.round(28 + pv * 0.90);
+      previewRgba[p4]     = Math.round(10 + pv * 0.93);
+      previewRgba[p4 + 1] = Math.round(16 + pv * 0.96);
+      previewRgba[p4 + 2] = Math.round(26 + pv * 0.91);
       previewRgba[p4 + 3] = 255;
     }
 
@@ -538,10 +811,11 @@
     return {
       roi: { x: rx, y: ry, w: rw, h: rh, mode: roi.mode || 'manual' },
       detectedTiltDeg: autoTilt,
+      scaleAppliedY: scaleY,
       dynamicSpan: hpSpan,
       preview: { rgba: previewRgba, width: fw, height: fh },
       ocrVariants: [
-        Object.assign({ name: 'bicubic-pure' }, wrapWhiteBorderRGBA(varBicubicPure, fw, fh, pad)),
+        Object.assign({ name: 'bicubic-pure' }, wrapWhiteBorderRGBA(varBicubicPure, cw, ch, pad)),
         Object.assign({ name: 'night-linear' }, wrapWhiteBorderRGBA(varNightLinear, fw, fh, pad)),
         Object.assign({ name: 'night-crisp' },  wrapWhiteBorderRGBA(varNightCrisp,  fw, fh, pad))
       ]
@@ -577,9 +851,10 @@
       while ((m = prefRegex.exec(compact)) !== null) {
         const digits = m[1].split('').map(fixDigitChar).join('');
         if (digits.length >= 10 && digits.length <= 18) {
-          const lenBonus = (digits.length === 14) ? 50 : (digits.length >= 12 && digits.length <= 16 ? 20 : 5);
+          const lenBonus = (digits.length === 14) ? 60 : (digits.length >= 12 && digits.length <= 16 ? 18 : 4);
+          const vfPrefixBonus = digits.startsWith('260') ? 15 : 0;
           const exactPrefixBonus = m[0].startsWith('BSS-') ? 25 : 15;
-          const score = 100 + lenBonus + exactPrefixBonus;
+          const score = 100 + lenBonus + vfPrefixBonus + exactPrefixBonus;
           if (score > bestScore) {
             bestScore = score;
             bestCandidate = { code: 'BSS-' + digits, digits: digits, confidenceTier: 'high', score: score };
@@ -592,8 +867,9 @@
         const digits = m[1].split('').map(fixDigitChar).join('');
         if (digits.length >= 12 && digits.length <= 16) {
           const hasDash = m[0].startsWith('-');
-          const lenBonus = (digits.length === 14) ? 35 : 10;
-          const score = (hasDash ? 65 : 45) + lenBonus;
+          const lenBonus = (digits.length === 14) ? 45 : 10;
+          const vfPrefixBonus = digits.startsWith('260') ? 12 : 0;
+          const score = (hasDash ? 65 : 45) + lenBonus + vfPrefixBonus;
           if (score > bestScore) {
             bestScore = score;
             bestCandidate = { code: 'BSS-' + digits, digits: digits, confidenceTier: hasDash ? 'medium' : 'recovered', score: score };
@@ -606,16 +882,13 @@
   }
 
   /**
-   * Character-by-character consensus merger across multiple OCR variant reads!
-   * If Variant 1 reads "BSS-26063041024125" and Variant 2 reads "BSS-20063041024325",
-   * merges high-confidence digit positions cleanly!
+   * Character-by-character consensus merger across multiple OCR variant reads.
    */
   function mergeParsedCandidates(candidates) {
     if (!candidates || !candidates.length) return null;
     const sorted = candidates.slice().sort(function (a, b) { return b.totalWeight - a.totalWeight; });
     const top = sorted[0];
 
-    // Group all candidates sharing the same digit length (especially 14 digits) to vote per-digit!
     const sameLen = sorted.filter(function (c) { return c.digits.length === top.digits.length; });
     if (sameLen.length <= 1) return top;
 
