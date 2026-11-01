@@ -7,8 +7,7 @@
 typedef void (^CoordPickerSaveAllBlock)(CGPoint closePt,
                                         CGPoint acceptPt,
                                         CGPoint offlinePt,
-                                        CGPoint onlinePt,
-                                        CGPoint navPt);
+                                        CGPoint onlinePt);
 
 @interface CoordinatePickerViewController : UIViewController
 

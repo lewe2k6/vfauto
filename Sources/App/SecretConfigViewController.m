@@ -1,6 +1,7 @@
 #import "SecretConfigViewController.h"
 #import "CoordinatePickerViewController.h"
 #import "SharedConfig.h"
+#import <CoreImage/CoreImage.h>
 #import <notify.h>
 
 @implementation SecretConfigViewController {
@@ -8,10 +9,10 @@
     UIScrollView *_scrollView;
     UIStackView *_stackView;
 
-    // Card 0: Live Status, Nav Locks, Pause Countdown & Counters
+    // Card 0: Live Status, Map Relay Status, Pause Countdown & Counters
     UILabel *_daemonStatusLabel;
     UILabel *_phaseLabel;
-    UILabel *_navLockLabel;
+    UILabel *_lastMapRelayLabel;
     UIButton *_skipPauseBtn;
     UILabel *_statsLabel;
 
@@ -41,14 +42,17 @@
     UILabel  *_lblRelaunchSec; UISlider *_slRelaunchSec;
     UILabel  *_lblDriverApp;
 
-    // Card 3: Auto-Tap Blue Navigation (Pickup & Dropoff)
-    UISwitch *_swNavPickup;
-    UISwitch *_swNavDropoff;
-    UILabel  *_lblNavTaps;     UISlider *_slNavTaps;
-    UILabel  *_lblNavGapMs;    UISlider *_slNavGapMs;
-    UILabel  *_lblNavSettleMs; UISlider *_slNavSettleMs;
+    // Card 3: Navigation Relay Bridge (iPhone 8 -> Second Phone)
+    UILabel     *_lblGmapsStatus;
+    UISwitch    *_swMapRelay;
+    UISwitch    *_swMapReturn;
+    UIImageView *_qrImageView;
+    UILabel     *_lblMapTopic;
+    NSString    *_lastRenderedQRTopic;
+    NSTimeInterval _lastGmapsCheckEpoch;
+    BOOL         _cachedGmapsInstalled;
 
-    // Card 4: 5 Coordinates Calibration
+    // Card 4: 4 Coordinates Calibration
     UISegmentedControl *_segCoordMode;
     UIStackView *_autoCoordGroup;
     UIStackView *_manualCoordGroup;
@@ -60,8 +64,6 @@
     UILabel *_lblAcceptOffY;   UISlider *_slAcceptOffY;
     UILabel *_lblOnlineOffX;   UISlider *_slOnlineOffX;
     UILabel *_lblOnlineOffY;   UISlider *_slOnlineOffY;
-    UILabel *_lblNavOffX;      UISlider *_slNavOffX;
-    UILabel *_lblNavOffY;      UISlider *_slNavOffY;
 
     UILabel *_lblManCloseX;    UISlider *_slManCloseX;
     UILabel *_lblManCloseY;    UISlider *_slManCloseY;
@@ -71,8 +73,6 @@
     UILabel *_lblManOfflineY;  UISlider *_slManOfflineY;
     UILabel *_lblManOnlineX;   UISlider *_slManOnlineX;
     UILabel *_lblManOnlineY;   UISlider *_slManOnlineY;
-    UILabel *_lblManNavX;      UISlider *_slManNavX;
-    UILabel *_lblManNavY;      UISlider *_slManNavY;
 
     // Card 5: Timing & Humanizer + Live Log
     UILabel *_lblTapRetries;   UISlider *_slTapRetries;
@@ -96,7 +96,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.9";
+    self.title = @"Tinh Chỉnh Lọc Đơn v5.0";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -282,9 +282,9 @@
         [_stackView.widthAnchor constraintEqualToAnchor:_scrollView.widthAnchor constant:-24]
     ]];
 
-    // --- CARD 0: LIVE STATUS, NAV LOCKS & COUNTDOWN ---
+    // --- CARD 0: LIVE STATUS, MAP RELAY & COUNTDOWN ---
     UIStackView *statBody = nil;
-    [self makeCardWithTitle:@"Trạng Thái Trực Tiếp & Khóa Điều Hướng" addTo:_stackView outBody:&statBody];
+    [self makeCardWithTitle:@"Trạng Thái Trực Tiếp & Cầu Nối Map" addTo:_stackView outBody:&statBody];
 
     _daemonStatusLabel = [[UILabel alloc] init];
     _daemonStatusLabel.font = [UIFont monospacedDigitSystemFontOfSize:14 weight:UIFontWeightBold];
@@ -307,23 +307,11 @@
     [_skipPauseBtn addTarget:self action:@selector(skipPauseTapped) forControlEvents:UIControlEventTouchUpInside];
     [statBody addArrangedSubview:_skipPauseBtn];
 
-    UIStackView *navLockRow = [[UIStackView alloc] init];
-    navLockRow.axis = UILayoutConstraintAxisHorizontal;
-    navLockRow.alignment = UIStackViewAlignmentCenter;
-
-    _navLockLabel = [[UILabel alloc] init];
-    _navLockLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];
-    _navLockLabel.textColor = [UIColor colorWithWhite:0.85 alpha:1.0];
-    _navLockLabel.numberOfLines = 0;
-    [navLockRow addArrangedSubview:_navLockLabel];
-
-    UIButton *resetNavBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [resetNavBtn setTitle:@"Mở khóa Map" forState:UIControlStateNormal];
-    [resetNavBtn setTitleColor:[UIColor systemTealColor] forState:UIControlStateNormal];
-    resetNavBtn.titleLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightBold];
-    [resetNavBtn addTarget:self action:@selector(resetNavLocksTapped) forControlEvents:UIControlEventTouchUpInside];
-    [navLockRow addArrangedSubview:resetNavBtn];
-    [statBody addArrangedSubview:navLockRow];
+    _lastMapRelayLabel = [[UILabel alloc] init];
+    _lastMapRelayLabel.font = [UIFont monospacedDigitSystemFontOfSize:11.8 weight:UIFontWeightMedium];
+    _lastMapRelayLabel.textColor = [UIColor colorWithRed:0.35 green:0.92 blue:0.86 alpha:1.0];
+    _lastMapRelayLabel.numberOfLines = 0;
+    [statBody addArrangedSubview:_lastMapRelayLabel];
 
     UIStackView *statRow = [[UIStackView alloc] init];
     statRow.axis = UILayoutConstraintAxisHorizontal;
@@ -421,7 +409,7 @@
 
     _swHaptic = [self addSwitchRowTo:sec1
                                title:@"Báo rung Haptic"
-                            subtitle:@"Rung 1 nhịp khi hủy/tap Map, rung 2 nhịp khi Nhận"
+                            subtitle:@"Rung 1 nhịp khi hủy/bắn Map, rung 2 nhịp khi Nhận"
                               action:@selector(generalControlChanged)];
 
     _swDryRun = [self addSwitchRowTo:sec1
@@ -503,27 +491,87 @@
     [appBtnRow addArrangedSubview:testKillBtn];
     [sec2 addArrangedSubview:appBtnRow];
 
-    // --- CARD 3: AUTO-TAP BLUE NAVIGATION BUTTON (ANTI-LOOP) ---
+    // --- CARD 3: NAVIGATION RELAY BRIDGE (IPHONE 8 -> SECOND PHONE) ---
     UIStackView *sec3 = nil;
-    [self makeCardWithTitle:@"3. Auto Tap Nút Xanh Điều Hướng (Chỉ Bike Chở Khách)" addTo:_stackView outBody:&sec3];
+    [self makeCardWithTitle:@"3. Bắn Định Vị Map Sang Máy Thứ 2 (0% Tốn RAM Máy 8)" addTo:_stackView outBody:&sec3];
 
-    _swNavPickup = [self addSwitchRowTo:sec3
-                                  title:@"Auto tap Map khi tới màn 'Đã đến điểm đón'"
-                               subtitle:@"Chỉ áp dụng cho cuốc Bike chở khách (Bỏ qua Express / Express 2H / Food)"
+    _lblGmapsStatus = [[UILabel alloc] init];
+    _lblGmapsStatus.font = [UIFont systemFontOfSize:12.2 weight:UIFontWeightSemibold];
+    _lblGmapsStatus.numberOfLines = 0;
+    [sec3 addArrangedSubview:_lblGmapsStatus];
+
+    _swMapRelay = [self addSwitchRowTo:sec3
+                                 title:@"Bắt Nút 'Điều Hướng' -> Bắn Sang Máy Kia"
+                              subtitle:@"Gỡ Google Maps trên iPhone 8: Bấm 'Điều hướng' trong Xanh SM là tọa độ vệ tinh bắn thẳng sang máy thứ 2"
+                                action:@selector(generalControlChanged)];
+
+    _swMapReturn = [self addSwitchRowTo:sec3
+                                  title:@"Tự Quay Lại Xanh SM Ngay Lập Tức (0.08s)"
+                               subtitle:@"Màn hình iPhone 8 đứng yên ở Xanh SM, không bị văng ra ngoài"
                                  action:@selector(generalControlChanged)];
 
-    _swNavDropoff = [self addSwitchRowTo:sec3
-                                   title:@"Auto tap Map khi tới màn 'Hoàn thành chuyến'"
-                                subtitle:@"Chỉ bấm 1 lần duy nhất ở Pha Trả khách (Tự mở khóa khi hiện 'Xác nhận hoàn thành' hoặc về sảnh chờ)"
-                                  action:@selector(generalControlChanged)];
+    UIStackView *qrRow = [[UIStackView alloc] init];
+    qrRow.axis = UILayoutConstraintAxisVertical;
+    qrRow.alignment = UIStackViewAlignmentCenter;
+    qrRow.spacing = 8;
 
-    _slNavTaps     = [self addSliderRowTo:sec3 min:1.0f   max:5.0f    outLabel:&_lblNavTaps     action:@selector(sliderChanged)];
-    _slNavGapMs    = [self addSliderRowTo:sec3 min:100.0f max:350.0f  outLabel:&_lblNavGapMs    action:@selector(sliderChanged)];
-    _slNavSettleMs = [self addSliderRowTo:sec3 min:300.0f max:2000.0f outLabel:&_lblNavSettleMs action:@selector(sliderChanged)];
+    UIView *qrFrame = [[UIView alloc] init];
+    qrFrame.backgroundColor = [UIColor whiteColor];
+    qrFrame.layer.cornerRadius = 12;
+    qrFrame.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [qrFrame.widthAnchor constraintEqualToConstant:168],
+        [qrFrame.heightAnchor constraintEqualToConstant:168]
+    ]];
 
-    // --- CARD 4: 5 COORDINATES & SCREENSHOT PICKER ---
+    _qrImageView = [[UIImageView alloc] init];
+    _qrImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    _qrImageView.contentMode = UIViewContentModeScaleAspectFit;
+    _qrImageView.layer.magnificationFilter = kCAFilterNearest;
+    [qrFrame addSubview:_qrImageView];
+    [NSLayoutConstraint activateConstraints:@[
+        [_qrImageView.topAnchor constraintEqualToAnchor:qrFrame.topAnchor constant:10],
+        [_qrImageView.bottomAnchor constraintEqualToAnchor:qrFrame.bottomAnchor constant:-10],
+        [_qrImageView.leadingAnchor constraintEqualToAnchor:qrFrame.leadingAnchor constant:10],
+        [_qrImageView.trailingAnchor constraintEqualToAnchor:qrFrame.trailingAnchor constant:-10]
+    ]];
+    [qrRow addArrangedSubview:qrFrame];
+
+    _lblMapTopic = [[UILabel alloc] init];
+    _lblMapTopic.font = [UIFont monospacedSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    _lblMapTopic.textColor = [UIColor colorWithWhite:0.90 alpha:1.0];
+    _lblMapTopic.textAlignment = NSTextAlignmentCenter;
+    _lblMapTopic.numberOfLines = 0;
+    [qrRow addArrangedSubview:_lblMapTopic];
+    [sec3 addArrangedSubview:qrRow];
+
+    UIStackView *relayRow1 = [[UIStackView alloc] init];
+    relayRow1.axis = UILayoutConstraintAxisHorizontal;
+    relayRow1.distribution = UIStackViewDistributionFillEqually;
+    relayRow1.spacing = 8;
+    UIButton *copyLinkBtn = [self makeStepButton:@"Copy Link Màn Phụ" tag:0 action:@selector(copyMapViewerLinkTapped)];
+    copyLinkBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.52 blue:0.46 alpha:1.0];
+    UIButton *editTopicBtn = [self makeStepButton:@"Đổi Mã Kênh" tag:0 action:@selector(editMapTopicTapped)];
+    editTopicBtn.backgroundColor = [UIColor colorWithRed:0.24 green:0.28 blue:0.38 alpha:1.0];
+    [relayRow1 addArrangedSubview:copyLinkBtn];
+    [relayRow1 addArrangedSubview:editTopicBtn];
+    [sec3 addArrangedSubview:relayRow1];
+
+    UIStackView *relayRow2 = [[UIStackView alloc] init];
+    relayRow2.axis = UILayoutConstraintAxisHorizontal;
+    relayRow2.distribution = UIStackViewDistributionFillEqually;
+    relayRow2.spacing = 8;
+    UIButton *testRelayBtn = [self makeStepButton:@"Bắn Thử Map Ngay" tag:0 action:@selector(testMapRelayTapped)];
+    testRelayBtn.backgroundColor = [UIColor colorWithRed:0.14 green:0.44 blue:0.82 alpha:1.0];
+    UIButton *clipRelayBtn = [self makeStepButton:@"Bắn Từ Clipboard" tag:0 action:@selector(relayClipboardTapped)];
+    clipRelayBtn.backgroundColor = [UIColor colorWithRed:0.46 green:0.28 blue:0.56 alpha:1.0];
+    [relayRow2 addArrangedSubview:testRelayBtn];
+    [relayRow2 addArrangedSubview:clipRelayBtn];
+    [sec3 addArrangedSubview:relayRow2];
+
+    // --- CARD 4: 4 COORDINATES & SCREENSHOT PICKER ---
     UIStackView *sec4 = nil;
-    [self makeCardWithTitle:@"4. Tinh Chỉnh 5 Tọa Độ & Kéo Hồng Tâm" addTo:_stackView outBody:&sec4];
+    [self makeCardWithTitle:@"4. Tinh Chỉnh 4 Tọa Độ & Kéo Hồng Tâm" addTo:_stackView outBody:&sec4];
 
     _segCoordMode = [[UISegmentedControl alloc] initWithItems:@[@"Bám Chữ + Bù Lệch", @"Tọa Độ Tĩnh / Ảnh"]];
     _segCoordMode.selectedSegmentTintColor = [UIColor colorWithRed:0.0 green:0.65 blue:0.60 alpha:1.0];
@@ -532,7 +580,7 @@
     [sec4 addArrangedSubview:_segCoordMode];
 
     UIButton *pickImgBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [pickImgBtn setTitle:@"Mở Ảnh Màn Hình Kéo 5 Hồng Tâm" forState:UIControlStateNormal];
+    [pickImgBtn setTitle:@"Mở Ảnh Màn Hình Kéo 4 Hồng Tâm" forState:UIControlStateNormal];
     [pickImgBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     pickImgBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
     pickImgBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.52 blue:0.85 alpha:1.0];
@@ -552,11 +600,9 @@
     _slAcceptOffY = [self addSliderRowTo:_autoCoordGroup min:-40.0f max:40.0f outLabel:&_lblAcceptOffY action:@selector(sliderChanged)];
     _slOnlineOffX = [self addSliderRowTo:_autoCoordGroup min:-50.0f max:50.0f outLabel:&_lblOnlineOffX action:@selector(sliderChanged)];
     _slOnlineOffY = [self addSliderRowTo:_autoCoordGroup min:-40.0f max:40.0f outLabel:&_lblOnlineOffY action:@selector(sliderChanged)];
-    _slNavOffX    = [self addSliderRowTo:_autoCoordGroup min:-40.0f max:40.0f outLabel:&_lblNavOffX action:@selector(sliderChanged)];
-    _slNavOffY    = [self addSliderRowTo:_autoCoordGroup min:-60.0f max:10.0f outLabel:&_lblNavOffY action:@selector(sliderChanged)];
     [sec4 addArrangedSubview:_autoCoordGroup];
 
-    // Group B: Manual Fixed X/Y for all 5 buttons
+    // Group B: Manual Fixed X/Y for all 4 buttons
     _manualCoordGroup = [[UIStackView alloc] init];
     _manualCoordGroup.axis = UILayoutConstraintAxisVertical;
     _manualCoordGroup.spacing = 10;
@@ -566,8 +612,6 @@
     _slManAcceptY  = [self addSliderRowTo:_manualCoordGroup min:450.0f max:662.0f outLabel:&_lblManAcceptY action:@selector(sliderChanged)];
     _slManOnlineX  = [self addSliderRowTo:_manualCoordGroup min:30.0f max:345.0f outLabel:&_lblManOnlineX action:@selector(sliderChanged)];
     _slManOnlineY  = [self addSliderRowTo:_manualCoordGroup min:180.0f max:500.0f outLabel:&_lblManOnlineY action:@selector(sliderChanged)];
-    _slManNavX     = [self addSliderRowTo:_manualCoordGroup min:150.0f max:365.0f outLabel:&_lblManNavX action:@selector(sliderChanged)];
-    _slManNavY     = [self addSliderRowTo:_manualCoordGroup min:150.0f max:500.0f outLabel:&_lblManNavY action:@selector(sliderChanged)];
     [sec4 addArrangedSubview:_manualCoordGroup];
 
     // Offline Power [⏻] is always icon-based, keep visible in both modes
@@ -633,11 +677,8 @@
     _swAutoKill.on      = _cfg.autoKillAndRelaunchApp;
     _slRelaunchSec.value= (float)_cfg.relaunchLeadSec;
 
-    _swNavPickup.on     = _cfg.autoNavPickup;
-    _swNavDropoff.on    = _cfg.autoNavDropoff;
-    _slNavTaps.value    = (float)_cfg.navTapCount;
-    _slNavGapMs.value   = (float)_cfg.navTapIntervalMs;
-    _slNavSettleMs.value= (float)_cfg.navSettleDelayMs;
+    _swMapRelay.on      = _cfg.mapRelayEnabled;
+    _swMapReturn.on     = _cfg.mapRelayReturnToDriver;
 
     _segCoordMode.selectedSegmentIndex = _cfg.coordMode;
 
@@ -648,8 +689,6 @@
     _slAcceptOffY.value = (float)_cfg.acceptOffsetY;
     _slOnlineOffX.value = (float)_cfg.onlineOffsetX;
     _slOnlineOffY.value = (float)_cfg.onlineOffsetY;
-    _slNavOffX.value    = (float)_cfg.navOffsetX;
-    _slNavOffY.value    = (float)_cfg.navOffsetY;
 
     _slManCloseX.value   = (float)_cfg.manualCloseX;
     _slManCloseY.value   = (float)_cfg.manualCloseY;
@@ -659,8 +698,6 @@
     _slManOfflineY.value = (float)_cfg.manualOfflineY;
     _slManOnlineX.value  = (float)_cfg.manualOnlineX;
     _slManOnlineY.value  = (float)_cfg.manualOnlineY;
-    _slManNavX.value     = (float)_cfg.manualNavX;
-    _slManNavY.value     = (float)_cfg.manualNavY;
 
     _slTapRetries.value = (float)_cfg.tapVerifyRetries;
     _slScanMs.value   = (float)_cfg.scanIntervalMs;
@@ -674,6 +711,36 @@
     _slCooldown.value = (float)_cfg.cooldownMs;
 
     [self updateValueLabels];
+}
+
+- (void)renderMapRelayQRIfNeeded {
+    NSString *topic = sanitizeMapRelayTopic(_cfg.mapRelayTopic);
+    if (![topic isEqualToString:_cfg.mapRelayTopic]) {
+        _cfg.mapRelayTopic = topic;
+    }
+    NSString *viewerUrl = buildMapRelayViewerURLString(topic);
+    _lblMapTopic.text = [NSString stringWithFormat:@"Mã kênh riêng: %@\nQuét QR bằng Cam máy thứ 2 để ghép đôi 1 lần", topic];
+
+    if (_qrImageView.image && [_lastRenderedQRTopic isEqualToString:topic]) {
+        return;
+    }
+    _lastRenderedQRTopic = [topic copy];
+
+    NSData *qrData = [viewerUrl dataUsingEncoding:NSUTF8StringEncoding];
+    CIFilter *qrFilter = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+    if (qrFilter && qrData) {
+        [qrFilter setValue:qrData forKey:@"inputMessage"];
+        [qrFilter setValue:@"M" forKey:@"inputCorrectionLevel"];
+        CIImage *ciImg = [qrFilter.outputImage imageByApplyingTransform:CGAffineTransformMakeScale(10.0, 10.0)];
+        if (ciImg) {
+            CIContext *ciCtx = [CIContext contextWithOptions:nil];
+            CGImageRef cgImg = [ciCtx createCGImage:ciImg fromRect:ciImg.extent];
+            if (cgImg) {
+                _qrImageView.image = [UIImage imageWithCGImage:cgImg];
+                CGImageRelease(cgImg);
+            }
+        }
+    }
 }
 
 - (void)updateValueLabels {
@@ -707,9 +774,7 @@
                             _cfg.driverAppDisplayName.length ? _cfg.driverAppDisplayName : @"Chưa chọn",
                             _cfg.driverAppBundleID.length ? _cfg.driverAppBundleID : @"Tự động dò"];
 
-    _lblNavTaps.text     = [NSString stringWithFormat:@"Số lần tap liên tiếp vào nút xanh Điều hướng: %ld lần", (long)_cfg.navTapCount];
-    _lblNavGapMs.text    = [NSString stringWithFormat:@"Khoảng cách giữa các nhịp tap Map: %ld ms", (long)_cfg.navTapIntervalMs];
-    _lblNavSettleMs.text = [NSString stringWithFormat:@"Chờ thẻ khách đứng yên trước khi tap Map: %ld ms", (long)_cfg.navSettleDelayMs];
+    [self renderMapRelayQRIfNeeded];
 
     BOOL isManual = (_cfg.coordMode == CoordModeFixedManual);
     _autoCoordGroup.hidden   = isManual;
@@ -722,8 +787,6 @@
     _lblAcceptOffY.text = [NSString stringWithFormat:@"2. Bù lệch dọc [Nhận chuyến] (ΔY): %+.0f pt", _cfg.acceptOffsetY];
     _lblOnlineOffX.text = [NSString stringWithFormat:@"4. Bù lệch ngang [Mở nhận chuyến] (ΔX): %+.0f pt", _cfg.onlineOffsetX];
     _lblOnlineOffY.text = [NSString stringWithFormat:@"4. Bù lệch dọc [Mở nhận chuyến] (ΔY): %+.0f pt", _cfg.onlineOffsetY];
-    _lblNavOffX.text    = [NSString stringWithFormat:@"5. Bù lệch ngang nút xanh [➤ Map] (ΔX): %+.0f pt", _cfg.navOffsetX];
-    _lblNavOffY.text    = [NSString stringWithFormat:@"5. Khoảng cách dọc nút xanh so với chữ 'Điều hướng': %+.0f pt", _cfg.navOffsetY];
 
     _lblManCloseX.text   = [NSString stringWithFormat:@"1. Tọa độ X nút [X]: %.0f pt", _cfg.manualCloseX];
     _lblManCloseY.text   = [NSString stringWithFormat:@"1. Tọa độ Y nút [X]: %.0f pt", _cfg.manualCloseY];
@@ -731,8 +794,6 @@
     _lblManAcceptY.text  = [NSString stringWithFormat:@"2. Tọa độ Y [Nhận chuyến]: %.0f pt", _cfg.manualAcceptY];
     _lblManOnlineX.text  = [NSString stringWithFormat:@"4. Tọa độ X [Mở nhận chuyến]: %.0f pt", _cfg.manualOnlineX];
     _lblManOnlineY.text  = [NSString stringWithFormat:@"4. Tọa độ Y [Mở nhận chuyến]: %.0f pt", _cfg.manualOnlineY];
-    _lblManNavX.text     = [NSString stringWithFormat:@"5. Tọa độ X nút xanh [➤ Map]: %.0f pt", _cfg.manualNavX];
-    _lblManNavY.text     = [NSString stringWithFormat:@"5. Tọa độ Y nút xanh [➤ Map]: %.0f pt", _cfg.manualNavY];
 
     _lblManOfflineX.text = [NSString stringWithFormat:@"3. Tọa độ X nút tròn [⏻ Tắt trực tuyến]: %.0f pt", _cfg.manualOfflineX];
     _lblManOfflineY.text = [NSString stringWithFormat:@"3. Tọa độ Y nút tròn [⏻ Tắt trực tuyến]: %.0f pt", _cfg.manualOfflineY];
@@ -791,8 +852,8 @@
     _cfg.dryRunMode             = _swDryRun.isOn;
     _cfg.pauseAfterRejectFood   = _swPauseFood.isOn;
     _cfg.autoKillAndRelaunchApp = _swAutoKill.isOn;
-    _cfg.autoNavPickup          = _swNavPickup.isOn;
-    _cfg.autoNavDropoff         = _swNavDropoff.isOn;
+    _cfg.mapRelayEnabled        = _swMapRelay.isOn;
+    _cfg.mapRelayReturnToDriver = _swMapReturn.isOn;
     _cfg.coordMode              = (CoordMode)_segCoordMode.selectedSegmentIndex;
 
     [self updateValueLabels];
@@ -806,10 +867,6 @@
     _cfg.pauseDurationSec = (NSInteger)(roundf(_slPauseSec.value / 10.0f) * 10);
     _cfg.relaunchLeadSec  = (NSInteger)roundf(_slRelaunchSec.value);
 
-    _cfg.navTapCount      = (NSInteger)roundf(_slNavTaps.value);
-    _cfg.navTapIntervalMs = (NSInteger)(roundf(_slNavGapMs.value / 10.0f) * 10);
-    _cfg.navSettleDelayMs = (NSInteger)(roundf(_slNavSettleMs.value / 50.0f) * 50);
-
     _cfg.closeXRatio   = _slCloseRatio.value;
     _cfg.closeOffsetX  = roundf(_slCloseOffX.value);
     _cfg.closeOffsetY  = roundf(_slCloseOffY.value);
@@ -817,8 +874,6 @@
     _cfg.acceptOffsetY = roundf(_slAcceptOffY.value);
     _cfg.onlineOffsetX = roundf(_slOnlineOffX.value);
     _cfg.onlineOffsetY = roundf(_slOnlineOffY.value);
-    _cfg.navOffsetX    = roundf(_slNavOffX.value);
-    _cfg.navOffsetY    = roundf(_slNavOffY.value);
 
     _cfg.manualCloseX   = roundf(_slManCloseX.value);
     _cfg.manualCloseY   = roundf(_slManCloseY.value);
@@ -828,8 +883,6 @@
     _cfg.manualOfflineY = roundf(_slManOfflineY.value);
     _cfg.manualOnlineX  = roundf(_slManOnlineX.value);
     _cfg.manualOnlineY  = roundf(_slManOnlineY.value);
-    _cfg.manualNavX     = roundf(_slManNavX.value);
-    _cfg.manualNavY     = roundf(_slManNavY.value);
 
     _cfg.tapVerifyRetries = (NSInteger)roundf(_slTapRetries.value);
     _cfg.scanIntervalMs   = (NSInteger)(roundf(_slScanMs.value / 10.0f) * 10);
@@ -1031,7 +1084,88 @@
     });
 }
 
-#pragma mark - Screenshot Coordinate Picker (5 Pins)
+#pragma mark - Navigation Relay Bridge Actions (Card 3)
+
+- (void)showQuickAlert:(NSString *)title message:(NSString *)msg {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:title
+                                                                message:msg
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)copyMapViewerLinkTapped {
+    NSString *url = buildMapRelayViewerURLString(_cfg.mapRelayTopic);
+    [UIPasteboard generalPasteboard].string = url;
+    triggerHapticFeedback(NO);
+    [self showQuickAlert:@"Đã Copy Link Màn Phụ"
+                 message:[NSString stringWithFormat:@"Đã chép:\n%@\n\nDán link này vào trình duyệt trên máy thứ 2 (hoặc đưa Cam máy thứ 2 quét thẳng mã QR ở trên) là xong!", url]];
+}
+
+- (void)editMapTopicTapped {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Mã Kênh Bắn Map Riêng"
+                                                                message:@"Đặt mã bí mật riêng (chữ, số, gạch ngang) hoặc bấm Tạo Mã Mới để đổi kênh khác:"
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        tf.autocorrectionType = UITextAutocorrectionTypeNo;
+        tf.text = self->_cfg.mapRelayTopic;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Tạo Mã Ngẫu Nhiên" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        self->_cfg.mapRelayTopic = generateRandomMapRelayTopic();
+        [self updateValueLabels];
+        [self->_cfg saveToDiskAndNotify:YES];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Lưu Mã" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        self->_cfg.mapRelayTopic = sanitizeMapRelayTopic(ac.textFields.firstObject.text);
+        [self updateValueLabels];
+        [self->_cfg saveToDiskAndNotify:YES];
+    }]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)testMapRelayTapped {
+    triggerHapticFeedback(NO);
+    __weak typeof(self) weakSelf = self;
+    enqueueAndTriggerMapRelayFromURLString(@"comgooglemaps://?daddr=21.028511,105.804817&directionsmode=driving",
+                                           @"TestUI",
+                                           NO,
+                                           ^(BOOL ok, NSString *detail) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf refreshStatusAndLogs];
+        [strongSelf showQuickAlert:(ok ? @"Đã Bắn Thử Thành Công!" : @"Chưa Bắn Được Map")
+                           message:(ok
+                                    ? [NSString stringWithFormat:@"Tọa độ mẫu (%@) đã nổ sang kênh %@.\nNhìn sang màn máy thứ 2 kiểm tra Google Maps nhảy luôn!", detail ?: @"21.028511,105.804817", strongSelf->_cfg.mapRelayTopic]
+                                    : [NSString stringWithFormat:@"Chi tiết: %@", detail ?: @"Kiểm tra lại kết nối mạng"])];
+    });
+}
+
+- (void)relayClipboardTapped {
+    NSString *clip = [[UIPasteboard generalPasteboard].string stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (clip.length < 3) {
+        [self showQuickAlert:@"Clipboard Đang Trống"
+                     message:@"Hãy copy địa chỉ hoặc tọa độ trước rồi bấm nút này để bắn sang máy thứ 2."];
+        return;
+    }
+    triggerHapticFeedback(NO);
+    NSString *wrapped = clip;
+    if ([clip rangeOfString:@"://"].location == NSNotFound) {
+        NSString *enc = [clip stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]] ?: clip;
+        wrapped = [NSString stringWithFormat:@"comgooglemaps://?daddr=%@&directionsmode=driving", enc];
+    }
+    __weak typeof(self) weakSelf = self;
+    enqueueAndTriggerMapRelayFromURLString(wrapped, @"Clipboard", NO, ^(BOOL ok, NSString *detail) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf refreshStatusAndLogs];
+        [strongSelf showQuickAlert:(ok ? @"Đã Bắn Từ Clipboard!" : @"Lỗi Bắn Clipboard")
+                           message:(detail ?: clip)];
+    });
+}
+
+#pragma mark - Screenshot Coordinate Picker (4 Pins)
 
 - (void)openScreenshotPicker {
     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
@@ -1046,7 +1180,7 @@
         if (!img) return;
         CoordinatePickerViewController *vc = [[CoordinatePickerViewController alloc] initWithScreenshot:img
                                                                                                  config:self->_cfg
-                                                                                                 onSave:^(CGPoint closePt, CGPoint acceptPt, CGPoint offlinePt, CGPoint onlinePt, CGPoint navPt) {
+                                                                                                 onSave:^(CGPoint closePt, CGPoint acceptPt, CGPoint offlinePt, CGPoint onlinePt) {
             self->_cfg.coordMode      = CoordModeFixedManual;
             self->_cfg.manualCloseX   = round(closePt.x);
             self->_cfg.manualCloseY   = round(closePt.y);
@@ -1056,8 +1190,6 @@
             self->_cfg.manualOfflineY = round(offlinePt.y);
             self->_cfg.manualOnlineX  = round(onlinePt.x);
             self->_cfg.manualOnlineY  = round(onlinePt.y);
-            self->_cfg.manualNavX     = round(navPt.x);
-            self->_cfg.manualNavY     = round(navPt.y);
             [self syncUIFromConfig];
             [self->_cfg saveToDiskAndNotify:YES];
         }];
@@ -1065,7 +1197,7 @@
     }];
 }
 
-#pragma mark - Live Status, Nav Locks & Logs
+#pragma mark - Live Status, Map Relay & Logs
 
 - (void)skipPauseTapped {
     notify_post(kNotifySkipPause);
@@ -1091,20 +1223,11 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.9!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v5.0!");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
     });
-}
-
-- (void)resetNavLocksTapped {
-    RuntimeDaemonState *st = [RuntimeDaemonState loadState];
-    st.navPickupLocked  = NO;
-    st.navDropoffLocked = NO;
-    [st saveStateAndNotify:NO];
-    notify_post(kNotifyResetNavLocks);
-    [self refreshStatusAndLogs];
 }
 
 - (void)resetStatsTapped {
@@ -1142,13 +1265,13 @@
     }
 
     if (wkPid > 0 && _cfg.masterEnabled && !heartbeatStale) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.9 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v5.0 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
-                                   _cfg.smartCoolMode ? @" [MÁT]" : @"",
+                                   _cfg.smartCoolMode ? @" [MÁT-2GB]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG TỰ CHỮA LÀNH LÕI NGẦM v4.9 (WD:%d | WK:%d)...", wdPid, wkPid];
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG TỰ CHỮA LÀNH LÕI NGẦM v5.0 (WD:%d | WK:%d)...", wdPid, wkPid];
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";
@@ -1157,16 +1280,36 @@
 
     if (st.pauseEndEpoch > now && (wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
         int rem = (int)ceil(st.pauseEndEpoch - now);
-        _phaseLabel.text = [NSString stringWithFormat:@"⏳ ĐANG NGHỈ XẢ ĐƠN FOOD — Tự bật lại sau: %02d:%02d", rem / 60, rem % 60];
+        _phaseLabel.text = [NSString stringWithFormat:@"ĐANG NGHỈ XẢ ĐƠN FOOD — Tự bật lại sau: %02d:%02d", rem / 60, rem % 60];
         _skipPauseBtn.hidden = NO;
     } else {
         _phaseLabel.text = [NSString stringWithFormat:@"Trạng thái: %@", st.phaseDescription ?: @"Đang canh đơn"];
         _skipPauseBtn.hidden = YES;
     }
 
-    _navLockLabel.text = [NSString stringWithFormat:@"Chốt Map: Đón [%@] | Trả [%@]",
-                          st.navPickupLocked ? @"ĐÃ KHÓA" : @"MỞ",
-                          st.navDropoffLocked ? @"ĐÃ KHÓA" : @"MỞ"];
+    if (st.lastRelayedEpoch > 0.0 && st.lastRelayedSummary.length > 0) {
+        int ago = MAX(0, (int)llround(now - st.lastRelayedEpoch));
+        NSString *agoStr = (ago < 60)
+            ? [NSString stringWithFormat:@"%ds trước", ago]
+            : [NSString stringWithFormat:@"%dp trước", ago / 60];
+        _lastMapRelayLabel.text = [NSString stringWithFormat:@"Bắn Map gần nhất (%@): %@", agoStr, st.lastRelayedSummary];
+        _lastMapRelayLabel.textColor = [UIColor colorWithRed:0.35 green:0.95 blue:0.78 alpha:1.0];
+    } else {
+        _lastMapRelayLabel.text = @"Bắn Map: Sẵn sàng hứng nút 'Điều hướng' từ Xanh SM";
+        _lastMapRelayLabel.textColor = [UIColor colorWithWhite:0.72 alpha:1.0];
+    }
+
+    if (_lastGmapsCheckEpoch == 0.0 || (now - _lastGmapsCheckEpoch) >= 4.0) {
+        _lastGmapsCheckEpoch = now;
+        _cachedGmapsInstalled = isGoogleMapsInstalledOnDevice();
+    }
+    if (_cachedGmapsInstalled) {
+        _lblGmapsStatus.text = @"PHÁT HIỆN MÁY NÀY VẪN CÒN APP GOOGLE MAPS!\nHãy xóa Google Maps trên chiếc iPhone 8 này để: (1) Nhẹ ~400MB RAM hết đơ Wi-Fi, (2) Khi bấm 'Điều hướng' trong Xanh SM thì iOS chuyển thẳng tọa độ qua Pin & Nhiệt Độ bắn sang máy thứ 2!";
+        _lblGmapsStatus.textColor = [UIColor systemOrangeColor];
+    } else {
+        _lblGmapsStatus.text = @"CHUẨN BÀI: Máy này đã gỡ Google Maps — Bấm 'Điều hướng' trong Xanh SM sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!";
+        _lblGmapsStatus.textColor = [UIColor systemGreenColor];
+    }
 
     _statsLabel.text = [NSString stringWithFormat:@"Đã nhận: %ld cuốc  |  Đã X Food: %ld đơn",
                         (long)st.statAcceptedCount, (long)st.statRejectedCount];

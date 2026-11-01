@@ -1,7 +1,8 @@
-const CACHE_NAME = 'vf-bss-qr-rescue-v4';
+const CACHE_NAME = 'vf-bss-qr-rescue-v5';
 const CORE_ASSETS = [
   './',
   './index.html',
+  './map.html',
   './styles.css?v=4',
   './vision.js?v=4',
   './ocr_qr.js?v=4',
@@ -40,9 +41,16 @@ self.addEventListener('activate', function (event) {
   );
 });
 
-// Network-first for HTML/CSS/App JS (never serves stale code when online!), Cache-first for heavy vendor libraries
+// Network-first for same-origin HTML/CSS/App JS, Cache-first for heavy vendor libraries; bypass cross-origin streams (e.g. ntfy.sh)
 self.addEventListener('fetch', function (event) {
   if (event.request.method !== 'GET') return;
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(event.request.url);
+  } catch (_) {
+    return;
+  }
+  if (parsedUrl.origin !== self.location.origin) return;
   const url = event.request.url || '';
   const isVendor = url.indexOf('/vendor/') >= 0;
 

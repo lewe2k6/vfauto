@@ -68,7 +68,7 @@
 
 @implementation CoordinatePickerViewController {
     UIImage *_screenshot;
-    CGPoint _closePt, _acceptPt, _offlinePt, _onlinePt, _navPt;
+    CGPoint _closePt, _acceptPt, _offlinePt, _onlinePt;
     CGFloat _jitterRadius;
     CoordPickerSaveAllBlock _onSave;
 
@@ -76,7 +76,6 @@
     CrosshairPinView *_pinAccept;
     CrosshairPinView *_pinOffline;
     CrosshairPinView *_pinOnline;
-    CrosshairPinView *_pinNav;
 }
 
 - (instancetype)initWithScreenshot:(UIImage *)screenshot
@@ -89,7 +88,6 @@
         _acceptPt     = CGPointMake(cfg.manualAcceptX, cfg.manualAcceptY);
         _offlinePt    = CGPointMake(cfg.manualOfflineX, cfg.manualOfflineY);
         _onlinePt     = CGPointMake(cfg.manualOnlineX, cfg.manualOnlineY);
-        _navPt        = CGPointMake(cfg.manualNavX, cfg.manualNavY);
         _jitterRadius = cfg.jitterRadiusPt;
         _onSave       = [onSave copy];
         self.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -128,7 +126,6 @@
     _pinAccept  = [self spawnPin:@"2.Nhận"      color:[UIColor systemGreenColor]  at:_acceptPt];
     _pinOffline = [self spawnPin:@"3.Tắt ⏻"     color:[UIColor systemOrangeColor] at:_offlinePt];
     _pinOnline  = [self spawnPin:@"4.Mở nhận"   color:[UIColor systemPurpleColor] at:_onlinePt];
-    _pinNav     = [self spawnPin:@"5.Map ➤"     color:[UIColor systemBlueColor]   at:_navPt];
 
     UIView *hud = [[UIView alloc] initWithFrame:CGRectMake(20, 115, self.view.bounds.size.width - 40, 102)];
     hud.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.84];
@@ -137,7 +134,7 @@
     hud.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.22].CGColor;
 
     UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(8, 8, hud.bounds.size.width - 16, 40)];
-    hint.text = @"Kéo 5 hồng tâm đè khít lên từng nút tương ứng.\n(Hộp đen này kéo đi chỗ khác được)";
+    hint.text = @"Kéo 4 hồng tâm đè khít lên từng nút tương ứng.\n(Hộp đen này kéo đi chỗ khác được)";
     hint.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightMedium];
     hint.textColor = [UIColor colorWithWhite:0.92 alpha:1.0];
     hint.numberOfLines = 2;
@@ -157,7 +154,7 @@
 
     UIButton *saveBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     saveBtn.frame = CGRectMake(18 + btnW, 54, btnW, 38);
-    [saveBtn setTitle:@"Lưu Cả 5 Tọa Độ" forState:UIControlStateNormal];
+    [saveBtn setTitle:@"Lưu Cả 4 Tọa Độ" forState:UIControlStateNormal];
     [saveBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     saveBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
     saveBtn.backgroundColor = [UIColor systemGreenColor];
@@ -190,7 +187,6 @@
     else if (pin == _pinAccept)  _acceptPt  = pin.center;
     else if (pin == _pinOffline) _offlinePt = pin.center;
     else if (pin == _pinOnline)  _onlinePt  = pin.center;
-    else if (pin == _pinNav)     _navPt     = pin.center;
 }
 
 - (void)handleHudPan:(UIPanGestureRecognizer *)gr {
@@ -206,7 +202,7 @@
 
 - (void)saveTapped {
     if (_onSave) {
-        _onSave(_closePt, _acceptPt, _offlinePt, _onlinePt, _navPt);
+        _onSave(_closePt, _acceptPt, _offlinePt, _onlinePt);
     }
     [self dismissViewControllerAnimated:YES completion:nil];
 }

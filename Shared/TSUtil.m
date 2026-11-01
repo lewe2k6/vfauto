@@ -100,6 +100,7 @@ void upgradeSharedFilesProtectionNone(void) {
     NSArray<NSString *> *paths = @[
         kConfigPlistPath,
         kRuntimeStatePath,
+        kMapRelayQueuePath,
         kDaemonLogPath,
         kDaemonPidPath,
         kWatchdogPidPath
@@ -161,6 +162,38 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     return val ? [val boolValue] : NO;
 }
 
+NSString *generateRandomMapRelayTopic(void) {
+    static const char kAlphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";
+    char buf[9];
+    for (int i = 0; i < 8; i++) {
+        buf[i] = kAlphabet[arc4random_uniform((uint32_t)(sizeof(kAlphabet) - 1))];
+    }
+    buf[8] = '\0';
+    return [NSString stringWithFormat:@"vf-map-%s", buf];
+}
+
+NSString *sanitizeMapRelayTopic(NSString *rawTopic) {
+    if (!rawTopic || rawTopic.length == 0) return @"";
+    NSString *low = [rawTopic.lowercaseString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSMutableString *clean = [NSMutableString stringWithCapacity:low.length];
+    for (NSUInteger i = 0; i < low.length && clean.length < 48; i++) {
+        unichar c = [low characterAtIndex:i];
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+            [clean appendFormat:@"%C", c];
+        }
+    }
+    while ([clean hasPrefix:@"-"] || [clean hasPrefix:@"_"]) {
+        [clean deleteCharactersInRange:NSMakeRange(0, 1)];
+    }
+    return [clean copy];
+}
+
+NSString *buildMapRelayViewerURLString(NSString *topic) {
+    NSString *clean = sanitizeMapRelayTopic(topic);
+    if (clean.length < 4) clean = @"vf-map";
+    return [NSString stringWithFormat:@"%@?k=%@", kMapRelayViewerBaseURL, clean];
+}
+
 @implementation RuntimeDaemonState
 
 - (instancetype)init {
@@ -168,13 +201,13 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (self) {
         _statAcceptedCount    = 0;
         _statRejectedCount    = 0;
-        _navPickupLocked      = NO;
-        _navDropoffLocked     = NO;
         _pauseEndEpoch        = 0.0;
         _workerHeartbeatEpoch = 0.0;
         _phaseDescription     = @"Đang rảnh / Canh đơn";
         _daemonVersion        = @"";
         _daemonBinaryPath     = @"";
+        _lastRelayedSummary   = @"";
+        _lastRelayedEpoch     = 0.0;
     }
     return self;
 }
@@ -185,13 +218,13 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (!d) return st;
     if (d[@"statAcceptedCount"])    st.statAcceptedCount    = [d[@"statAcceptedCount"] integerValue];
     if (d[@"statRejectedCount"])    st.statRejectedCount    = [d[@"statRejectedCount"] integerValue];
-    if (d[@"navPickupLocked"])      st.navPickupLocked      = [d[@"navPickupLocked"] boolValue];
-    if (d[@"navDropoffLocked"])     st.navDropoffLocked     = [d[@"navDropoffLocked"] boolValue];
     if (d[@"pauseEndEpoch"])        st.pauseEndEpoch        = [d[@"pauseEndEpoch"] doubleValue];
     if (d[@"workerHeartbeatEpoch"]) st.workerHeartbeatEpoch = [d[@"workerHeartbeatEpoch"] doubleValue];
     if (d[@"phaseDescription"])     st.phaseDescription     = d[@"phaseDescription"];
     if (d[@"daemonVersion"])        st.daemonVersion        = d[@"daemonVersion"];
     if (d[@"daemonBinaryPath"])     st.daemonBinaryPath     = d[@"daemonBinaryPath"];
+    if (d[@"lastRelayedSummary"])   st.lastRelayedSummary   = d[@"lastRelayedSummary"];
+    if (d[@"lastRelayedEpoch"])     st.lastRelayedEpoch     = [d[@"lastRelayedEpoch"] doubleValue];
     return st;
 }
 
@@ -199,13 +232,13 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     NSDictionary *d = @{
         @"statAcceptedCount":    @(self.statAcceptedCount),
         @"statRejectedCount":    @(self.statRejectedCount),
-        @"navPickupLocked":      @(self.navPickupLocked),
-        @"navDropoffLocked":     @(self.navDropoffLocked),
         @"pauseEndEpoch":        @(self.pauseEndEpoch),
         @"workerHeartbeatEpoch": @(self.workerHeartbeatEpoch),
         @"phaseDescription":     self.phaseDescription ?: @"",
         @"daemonVersion":        self.daemonVersion ?: @"",
-        @"daemonBinaryPath":     self.daemonBinaryPath ?: @""
+        @"daemonBinaryPath":     self.daemonBinaryPath ?: @"",
+        @"lastRelayedSummary":   self.lastRelayedSummary ?: @"",
+        @"lastRelayedEpoch":     @(self.lastRelayedEpoch)
     };
     writeDictUnprotectedAtomically(d, kRuntimeStatePath);
     if (sendNotify) {
@@ -220,10 +253,10 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _masterEnabled          = NO;
-        _autoAcceptBike         = YES;
-        _rejectAllFood          = NO;
-        _minFoodPriceVND        = 25000;
+        _masterEnabled            = NO;
+        _autoAcceptBike           = YES;
+        _rejectAllFood            = NO;
+        _minFoodPriceVND          = 25000;
         _foodBlockMallAndBasement = YES;
         _foodBlockCrowdedChains   = YES;
         _foodMaxMerchantOrders    = 8000;
@@ -231,57 +264,51 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
         _foodChainKeywords        = kDefaultFoodChainKeywords;
         _foodAcceptLongDistance   = YES;
         _minFoodDistanceKm        = 3.0;
-        _smartCoolMode          = YES;
-        _tapVerifyRetries       = 2;
-        _hapticEnabled          = YES;
-        _dryRunMode             = NO;
+        _smartCoolMode            = YES;
+        _tapVerifyRetries         = 2;
+        _hapticEnabled            = YES;
+        _dryRunMode               = NO;
 
-        _pauseAfterRejectFood   = YES;
-        _pauseDurationSec       = 120; // 2 minutes
-        _autoKillAndRelaunchApp = NO;
-        _relaunchLeadSec        = 15;
-        _driverAppBundleID      = @"";
-        _driverAppExecName      = @"";
-        _driverAppDisplayName   = @"Tự động dò Xanh SM";
+        _pauseAfterRejectFood     = YES;
+        _pauseDurationSec         = 120; // 2 minutes
+        _autoKillAndRelaunchApp   = NO;
+        _relaunchLeadSec          = 15;
+        _driverAppBundleID        = @"";
+        _driverAppExecName        = @"";
+        _driverAppDisplayName     = @"Tự động dò Xanh SM";
 
-        _autoNavPickup          = YES;
-        _autoNavDropoff         = YES;
-        _navTapCount            = 3;
-        _navTapIntervalMs       = 180;
-        _navSettleDelayMs       = 650;
+        _mapRelayEnabled          = YES;
+        _mapRelayTopic            = @"";
+        _mapRelayReturnToDriver   = YES;
 
-        _coordMode              = CoordModeAutoOCRWithOffset;
-        _closeXRatio            = 0.903; // 338.6 / 375.0 measured on iPhone 8
-        _closeOffsetX           = 0.0;
-        _closeOffsetY           = 0.0;
-        _acceptOffsetX          = 0.0;
-        _acceptOffsetY          = 0.0;
-        _onlineOffsetX          = 0.0;
-        _onlineOffsetY          = 0.0;
-        _navOffsetX             = 0.0;
-        _navOffsetY             = -26.0; // Blue circle center is 26pt above 'Điều hướng' text
+        _coordMode                = CoordModeAutoOCRWithOffset;
+        _closeXRatio              = 0.903; // 338.6 / 375.0 measured on iPhone 8
+        _closeOffsetX             = 0.0;
+        _closeOffsetY             = 0.0;
+        _acceptOffsetX            = 0.0;
+        _acceptOffsetY            = 0.0;
+        _onlineOffsetX            = 0.0;
+        _onlineOffsetY            = 0.0;
 
         // Exact coordinates measured from real iPhone 8 (375 x 667 pt) screenshots
-        _manualCloseX           = 339.0;
-        _manualCloseY           = 52.0;
-        _manualAcceptX          = 187.0;
-        _manualAcceptY          = 640.0;
-        _manualOfflineX         = 40.0;
-        _manualOfflineY         = 455.0;
-        _manualOnlineX          = 187.0;
-        _manualOnlineY          = 307.0;
-        _manualNavX             = 323.0;
-        _manualNavY             = 278.0;
+        _manualCloseX             = 339.0;
+        _manualCloseY             = 52.0;
+        _manualAcceptX            = 187.0;
+        _manualAcceptY            = 640.0;
+        _manualOfflineX           = 40.0;
+        _manualOfflineY           = 455.0;
+        _manualOnlineX            = 187.0;
+        _manualOnlineY            = 307.0;
 
-        _scanIntervalMs         = 350;
-        _acceptDelayMinMs       = 180;
-        _acceptDelayMaxMs       = 420;
-        _rejectDelayMinMs       = 400;
-        _rejectDelayMaxMs       = 850;
-        _jitterRadiusPt         = 5.0;
-        _holdMinMs              = 45;
-        _holdMaxMs              = 85;
-        _cooldownMs             = 2500;
+        _scanIntervalMs           = 350;
+        _acceptDelayMinMs         = 180;
+        _acceptDelayMaxMs         = 420;
+        _rejectDelayMinMs         = 400;
+        _rejectDelayMaxMs         = 850;
+        _jitterRadiusPt           = 5.0;
+        _holdMinMs                = 45;
+        _holdMaxMs                = 85;
+        _cooldownMs               = 2500;
     }
     return self;
 }
@@ -295,12 +322,16 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
             // Existing config file had a momentary lock/I/O contention -> keep Master ON safely!
             cfg.masterEnabled = YES;
         }
+        cfg.mapRelayTopic = generateRandomMapRelayTopic();
         if (geteuid() != 0) {
             InstalledAppInfo *detected = autoDetectDriverApp();
             if (detected) {
                 cfg.driverAppBundleID    = detected.bundleID;
                 cfg.driverAppExecName    = detected.executableName;
                 cfg.driverAppDisplayName = detected.displayName;
+            }
+            if (!cPath || access(cPath, F_OK) != 0) {
+                [cfg saveToDiskAndNotify:NO];
             }
         }
         return cfg;
@@ -338,11 +369,17 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (dict[@"driverAppExecName"])      cfg.driverAppExecName      = dict[@"driverAppExecName"];
     if (dict[@"driverAppDisplayName"])   cfg.driverAppDisplayName   = dict[@"driverAppDisplayName"];
 
-    if (dict[@"autoNavPickup"])          cfg.autoNavPickup          = [dict[@"autoNavPickup"] boolValue];
-    if (dict[@"autoNavDropoff"])         cfg.autoNavDropoff         = [dict[@"autoNavDropoff"] boolValue];
-    if (dict[@"navTapCount"])            cfg.navTapCount            = [dict[@"navTapCount"] integerValue];
-    if (dict[@"navTapIntervalMs"])       cfg.navTapIntervalMs       = [dict[@"navTapIntervalMs"] integerValue];
-    if (dict[@"navSettleDelayMs"])       cfg.navSettleDelayMs       = [dict[@"navSettleDelayMs"] integerValue];
+    if (dict[@"mapRelayEnabled"])        cfg.mapRelayEnabled        = [dict[@"mapRelayEnabled"] boolValue];
+    if ([dict[@"mapRelayTopic"] isKindOfClass:[NSString class]]) {
+        cfg.mapRelayTopic = sanitizeMapRelayTopic(dict[@"mapRelayTopic"]);
+    }
+    if (dict[@"mapRelayReturnToDriver"]) cfg.mapRelayReturnToDriver = [dict[@"mapRelayReturnToDriver"] boolValue];
+
+    BOOL generatedNewTopic = NO;
+    if (cfg.mapRelayTopic.length < 4) {
+        cfg.mapRelayTopic = generateRandomMapRelayTopic();
+        generatedNewTopic = YES;
+    }
 
     if (dict[@"coordMode"])              cfg.coordMode              = (CoordMode)[dict[@"coordMode"] integerValue];
     if (dict[@"closeXRatio"])            cfg.closeXRatio            = [dict[@"closeXRatio"] doubleValue];
@@ -352,8 +389,6 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (dict[@"acceptOffsetY"])          cfg.acceptOffsetY          = [dict[@"acceptOffsetY"] doubleValue];
     if (dict[@"onlineOffsetX"])          cfg.onlineOffsetX          = [dict[@"onlineOffsetX"] doubleValue];
     if (dict[@"onlineOffsetY"])          cfg.onlineOffsetY          = [dict[@"onlineOffsetY"] doubleValue];
-    if (dict[@"navOffsetX"])             cfg.navOffsetX             = [dict[@"navOffsetX"] doubleValue];
-    if (dict[@"navOffsetY"])             cfg.navOffsetY             = [dict[@"navOffsetY"] doubleValue];
 
     if (dict[@"manualCloseX"])           cfg.manualCloseX           = [dict[@"manualCloseX"] doubleValue];
     if (dict[@"manualCloseY"])           cfg.manualCloseY           = [dict[@"manualCloseY"] doubleValue];
@@ -363,8 +398,6 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (dict[@"manualOfflineY"])         cfg.manualOfflineY         = [dict[@"manualOfflineY"] doubleValue];
     if (dict[@"manualOnlineX"])          cfg.manualOnlineX          = [dict[@"manualOnlineX"] doubleValue];
     if (dict[@"manualOnlineY"])          cfg.manualOnlineY          = [dict[@"manualOnlineY"] doubleValue];
-    if (dict[@"manualNavX"])             cfg.manualNavX             = [dict[@"manualNavX"] doubleValue];
-    if (dict[@"manualNavY"])             cfg.manualNavY             = [dict[@"manualNavY"] doubleValue];
 
     if (dict[@"scanIntervalMs"])         cfg.scanIntervalMs         = [dict[@"scanIntervalMs"] integerValue];
     if (dict[@"acceptDelayMinMs"])       cfg.acceptDelayMinMs       = [dict[@"acceptDelayMinMs"] integerValue];
@@ -403,8 +436,6 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (cfg.holdMaxMs < cfg.holdMinMs) cfg.holdMaxMs = cfg.holdMinMs + 15;
     if (cfg.scanIntervalMs < 150) cfg.scanIntervalMs = 150;
     if (cfg.pauseDurationSec < 20) cfg.pauseDurationSec = 20;
-    if (cfg.navTapCount < 1) cfg.navTapCount = 1;
-    if (cfg.navTapCount > 5) cfg.navTapCount = 5;
     if (cfg.tapVerifyRetries < 0) cfg.tapVerifyRetries = 0;
     if (cfg.tapVerifyRetries > 4) cfg.tapVerifyRetries = 4;
     if (cfg.foodMaxMerchantOrders < 0) cfg.foodMaxMerchantOrders = 0;
@@ -412,15 +443,24 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (cfg.minFoodDistanceKm < 0.5) cfg.minFoodDistanceKm = 0.5;
     if (cfg.minFoodDistanceKm > 25.0) cfg.minFoodDistanceKm = 25.0;
 
+    if (generatedNewTopic && geteuid() != 0) {
+        [cfg saveToDiskAndNotify:NO];
+    }
+
     return cfg;
 }
 
 - (void)saveToDiskAndNotify:(BOOL)sendNotify {
+    NSString *cleanTopic = sanitizeMapRelayTopic(self.mapRelayTopic);
+    if (cleanTopic.length < 4) {
+        cleanTopic = generateRandomMapRelayTopic();
+        self.mapRelayTopic = cleanTopic;
+    }
     NSDictionary *dict = @{
-        @"masterEnabled":          @(self.masterEnabled),
-        @"autoAcceptBike":         @(self.autoAcceptBike),
-        @"rejectAllFood":          @(self.rejectAllFood),
-        @"minFoodPriceVND":        @(self.minFoodPriceVND),
+        @"masterEnabled":            @(self.masterEnabled),
+        @"autoAcceptBike":           @(self.autoAcceptBike),
+        @"rejectAllFood":            @(self.rejectAllFood),
+        @"minFoodPriceVND":          @(self.minFoodPriceVND),
         @"foodBlockMallAndBasement": @(self.foodBlockMallAndBasement),
         @"foodBlockCrowdedChains":   @(self.foodBlockCrowdedChains),
         @"foodMaxMerchantOrders":    @(self.foodMaxMerchantOrders),
@@ -428,56 +468,50 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
         @"foodChainKeywords":        self.foodChainKeywords ?: kDefaultFoodChainKeywords,
         @"foodAcceptLongDistance":   @(self.foodAcceptLongDistance),
         @"minFoodDistanceKm":        @(self.minFoodDistanceKm),
-        @"smartCoolMode":          @(self.smartCoolMode),
-        @"tapVerifyRetries":       @(self.tapVerifyRetries),
-        @"hapticEnabled":          @(self.hapticEnabled),
-        @"dryRunMode":             @(self.dryRunMode),
+        @"smartCoolMode":            @(self.smartCoolMode),
+        @"tapVerifyRetries":         @(self.tapVerifyRetries),
+        @"hapticEnabled":            @(self.hapticEnabled),
+        @"dryRunMode":               @(self.dryRunMode),
 
-        @"pauseAfterRejectFood":   @(self.pauseAfterRejectFood),
-        @"pauseDurationSec":       @(self.pauseDurationSec),
-        @"autoKillAndRelaunchApp": @(self.autoKillAndRelaunchApp),
-        @"relaunchLeadSec":        @(self.relaunchLeadSec),
-        @"driverAppBundleID":      self.driverAppBundleID ?: @"",
-        @"driverAppExecName":      self.driverAppExecName ?: @"",
-        @"driverAppDisplayName":   self.driverAppDisplayName ?: @"",
+        @"pauseAfterRejectFood":     @(self.pauseAfterRejectFood),
+        @"pauseDurationSec":         @(self.pauseDurationSec),
+        @"autoKillAndRelaunchApp":   @(self.autoKillAndRelaunchApp),
+        @"relaunchLeadSec":          @(self.relaunchLeadSec),
+        @"driverAppBundleID":        self.driverAppBundleID ?: @"",
+        @"driverAppExecName":        self.driverAppExecName ?: @"",
+        @"driverAppDisplayName":     self.driverAppDisplayName ?: @"",
 
-        @"autoNavPickup":          @(self.autoNavPickup),
-        @"autoNavDropoff":         @(self.autoNavDropoff),
-        @"navTapCount":            @(self.navTapCount),
-        @"navTapIntervalMs":       @(self.navTapIntervalMs),
-        @"navSettleDelayMs":       @(self.navSettleDelayMs),
+        @"mapRelayEnabled":          @(self.mapRelayEnabled),
+        @"mapRelayTopic":            cleanTopic,
+        @"mapRelayReturnToDriver":   @(self.mapRelayReturnToDriver),
 
-        @"coordMode":              @(self.coordMode),
-        @"closeXRatio":            @(self.closeXRatio),
-        @"closeOffsetX":           @(self.closeOffsetX),
-        @"closeOffsetY":           @(self.closeOffsetY),
-        @"acceptOffsetX":          @(self.acceptOffsetX),
-        @"acceptOffsetY":          @(self.acceptOffsetY),
-        @"onlineOffsetX":          @(self.onlineOffsetX),
-        @"onlineOffsetY":          @(self.onlineOffsetY),
-        @"navOffsetX":             @(self.navOffsetX),
-        @"navOffsetY":             @(self.navOffsetY),
+        @"coordMode":                @(self.coordMode),
+        @"closeXRatio":              @(self.closeXRatio),
+        @"closeOffsetX":             @(self.closeOffsetX),
+        @"closeOffsetY":             @(self.closeOffsetY),
+        @"acceptOffsetX":            @(self.acceptOffsetX),
+        @"acceptOffsetY":            @(self.acceptOffsetY),
+        @"onlineOffsetX":            @(self.onlineOffsetX),
+        @"onlineOffsetY":            @(self.onlineOffsetY),
 
-        @"manualCloseX":           @(self.manualCloseX),
-        @"manualCloseY":           @(self.manualCloseY),
-        @"manualAcceptX":          @(self.manualAcceptX),
-        @"manualAcceptY":          @(self.manualAcceptY),
-        @"manualOfflineX":         @(self.manualOfflineX),
-        @"manualOfflineY":         @(self.manualOfflineY),
-        @"manualOnlineX":          @(self.manualOnlineX),
-        @"manualOnlineY":          @(self.manualOnlineY),
-        @"manualNavX":             @(self.manualNavX),
-        @"manualNavY":             @(self.manualNavY),
+        @"manualCloseX":             @(self.manualCloseX),
+        @"manualCloseY":             @(self.manualCloseY),
+        @"manualAcceptX":            @(self.manualAcceptX),
+        @"manualAcceptY":            @(self.manualAcceptY),
+        @"manualOfflineX":           @(self.manualOfflineX),
+        @"manualOfflineY":           @(self.manualOfflineY),
+        @"manualOnlineX":            @(self.manualOnlineX),
+        @"manualOnlineY":            @(self.manualOnlineY),
 
-        @"scanIntervalMs":         @(self.scanIntervalMs),
-        @"acceptDelayMinMs":       @(self.acceptDelayMinMs),
-        @"acceptDelayMaxMs":       @(self.acceptDelayMaxMs),
-        @"rejectDelayMinMs":       @(self.rejectDelayMinMs),
-        @"rejectDelayMaxMs":       @(self.rejectDelayMaxMs),
-        @"jitterRadiusPt":         @(self.jitterRadiusPt),
-        @"holdMinMs":              @(self.holdMinMs),
-        @"holdMaxMs":              @(self.holdMaxMs),
-        @"cooldownMs":             @(self.cooldownMs)
+        @"scanIntervalMs":           @(self.scanIntervalMs),
+        @"acceptDelayMinMs":         @(self.acceptDelayMinMs),
+        @"acceptDelayMaxMs":         @(self.acceptDelayMaxMs),
+        @"rejectDelayMinMs":         @(self.rejectDelayMinMs),
+        @"rejectDelayMaxMs":         @(self.rejectDelayMaxMs),
+        @"jitterRadiusPt":           @(self.jitterRadiusPt),
+        @"holdMinMs":                @(self.holdMinMs),
+        @"holdMaxMs":                @(self.holdMaxMs),
+        @"cooldownMs":               @(self.cooldownMs)
     };
 
     writeDictUnprotectedAtomically(dict, kConfigPlistPath);
@@ -656,8 +690,8 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
 
     [lk lock];
     @try {
-        // 1. Refresh BKSApplicationStateMonitor every 12s so cached XPC states never go stale across hours of sleep
-        if (!gAppStateMonitor || (nowUp - gLastBKSInitUp) > 12.0) {
+        // 1. Refresh BKSApplicationStateMonitor every 45s (reduces BackBoard XPC load >73% on iPhone 8 A11)
+        if (!gAppStateMonitor || (nowUp - gLastBKSInitUp) > 45.0) {
             invalidateMonitorSafely(gAppStateMonitor);
             gAppStateMonitor = nil;
             Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
@@ -696,8 +730,8 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
             }
         }
 
-        // 2. Periodically recycle FBSDisplayLayoutMonitor every 25s so FrontBoard XPC layout can NEVER stick on stale SpringBoard!
-        if (gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 25.0) {
+        // 2. Periodically recycle FBSDisplayLayoutMonitor every 90s (cuts SpringBoard XPC churn on 2GB devices while gNilLayoutStreak self-heals instantly)
+        if (gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 90.0) {
             invalidateMonitorSafely(gLayoutMonitor);
             gLayoutMonitor = nil;
         }
@@ -815,6 +849,17 @@ BOOL isDeviceScreenLocked(void) {
         return (state64 != 0);
     }
     return NO;
+}
+
+BOOL isLowRAMDevice(void) {
+    static BOOL sIsLow = NO;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        unsigned long long mem = [NSProcessInfo processInfo].physicalMemory;
+        // iPhone 8 / SE2 / X <= 2.75 GB RAM -> aggressive proactive RAM trim & safe Jetsam priority
+        sIsLow = (mem > 0 && mem <= (2800ULL * 1024ULL * 1024ULL));
+    });
+    return sIsLow;
 }
 
 uint64_t currentProcessFootprintMB(void) {
@@ -1535,7 +1580,7 @@ BOOL startFilterDaemonIfNeeded(void) {
             return finalResult;
         }
 
-        appendDaemonLog(@"[LỖI] Không kích được pind v4.9 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
+        appendDaemonLog(@"[LỖI] Không kích được pind v5.0 (mã: %d). Hãy kiểm tra đã cài qua TrollStore chưa.", res);
         finalResult = NO;
     } @finally {
         releaseCrossProcessCtlLock(lockFd);
@@ -1628,4 +1673,473 @@ void triggerHapticFeedback(BOOL isAccept) {
         AudioServicesPlaySystemSound(1519);
         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
     }
+}
+
+#pragma mark - Navigation URL Interceptor & Dual-Path Peer Relay (ntfy.sh + Anti-DNS-Poison IP Fallback)
+
+BOOL isGoogleMapsInstalledOnDevice(void) {
+    Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+    if (wsCls) {
+        @try {
+            SEL defSel = NSSelectorFromString(@"defaultWorkspace");
+            id ws = [wsCls respondsToSelector:defSel] ? ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel) : nil;
+            SEL instSel = NSSelectorFromString(@"applicationIsInstalled:");
+            if (ws && [ws respondsToSelector:instSel]) {
+                return ((BOOL (*)(id, SEL, NSString *))objc_msgSend)(ws, instSel, @"com.google.Maps");
+            }
+        } @catch (NSException *ex) {}
+    }
+    return NO;
+}
+
+static BOOL extractFirstLatLngPairFromString(NSString *str, double *outLat, double *outLng) {
+    if (!str || str.length < 7) return NO;
+    static NSRegularExpression *sCoordRx = nil;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        sCoordRx = [NSRegularExpression regularExpressionWithPattern:
+            @"(-?\\d{1,2}\\.\\d{3,12})\\s*,\\s*(-?\\d{1,3}\\.\\d{3,12})"
+            options:0 error:nil];
+    });
+    if (!sCoordRx) return NO;
+    NSTextCheckingResult *m = [sCoordRx firstMatchInString:str options:0 range:NSMakeRange(0, str.length)];
+    if (!m || m.numberOfRanges < 3) return NO;
+
+    double lat = [[str substringWithRange:[m rangeAtIndex:1]] doubleValue];
+    double lng = [[str substringWithRange:[m rangeAtIndex:2]] doubleValue];
+    if (fabs(lat) > 90.0 || fabs(lng) > 180.0) return NO;
+    if (fabs(lat) < 0.001 && fabs(lng) < 0.001) return NO;
+
+    if (outLat) *outLat = lat;
+    if (outLng) *outLng = lng;
+    return YES;
+}
+
+static NSString *decodeURLQueryComponent(NSString *raw) {
+    if (!raw || raw.length == 0) return @"";
+    NSString *plusFixed = [raw stringByReplacingOccurrencesOfString:@"+" withString:@" "];
+    NSString *decoded = [plusFixed stringByRemovingPercentEncoding];
+    return [(decoded ?: plusFixed) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+BOOL parseNavigationTargetFromString(NSString *rawInput,
+                                     BOOL *outHasCoords,
+                                     double *outLat,
+                                     double *outLng,
+                                     NSString * __strong *outQueryLabel) {
+    if (outHasCoords)  *outHasCoords  = NO;
+    if (outLat)        *outLat        = 0.0;
+    if (outLng)        *outLng        = 0.0;
+    if (outQueryLabel) *outQueryLabel = @"";
+
+    if (!rawInput) return NO;
+    NSString *trimmed = [rawInput stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length < 4) return NO;
+
+    // 1. Handle Android-style google.navigation:q=... if ever pasted/tested
+    if ([trimmed.lowercaseString hasPrefix:@"google.navigation:"]) {
+        NSRange qRange = [trimmed rangeOfString:@"q=" options:NSCaseInsensitiveSearch];
+        if (qRange.location != NSNotFound) {
+            NSString *rest = [trimmed substringFromIndex:qRange.location + 2];
+            NSRange amp = [rest rangeOfString:@"&"];
+            if (amp.location != NSNotFound) rest = [rest substringToIndex:amp.location];
+            NSString *dec = decodeURLQueryComponent(rest);
+            double lat = 0.0, lng = 0.0;
+            if (extractFirstLatLngPairFromString(dec, &lat, &lng)) {
+                if (outHasCoords)  *outHasCoords  = YES;
+                if (outLat)        *outLat        = lat;
+                if (outLng)        *outLng        = lng;
+                if (outQueryLabel) *outQueryLabel = [NSString stringWithFormat:@"%.6f, %.6f", lat, lng];
+                return YES;
+            } else if (dec.length >= 3) {
+                if (outQueryLabel) *outQueryLabel = dec;
+                return YES;
+            }
+        }
+    }
+
+    // 2. Parse URL query parameters with strict destination priority (daddr > destination > to > q > query > ll > center)
+    NSURLComponents *comp = [NSURLComponents componentsWithString:trimmed];
+    if (comp) {
+        NSMutableDictionary<NSString *, NSString *> *qMap = [NSMutableDictionary dictionary];
+        for (NSURLQueryItem *item in comp.queryItems) {
+            if (item.name.length > 0 && item.value.length > 0) {
+                qMap[item.name.lowercaseString] = [item.value stringByReplacingOccurrencesOfString:@"+" withString:@" "];
+            }
+        }
+        // Fallback manual query parse if raw URL had unescaped '+' or nested params
+        if (qMap.count == 0 && comp.percentEncodedQuery.length > 0) {
+            NSArray<NSString *> *pairs = [comp.percentEncodedQuery componentsSeparatedByString:@"&"];
+            for (NSString *pair in pairs) {
+                NSRange eq = [pair rangeOfString:@"="];
+                if (eq.location != NSNotFound && eq.location > 0 && eq.location + 1 < pair.length) {
+                    NSString *k = [[pair substringToIndex:eq.location] lowercaseString];
+                    NSString *v = decodeURLQueryComponent([pair substringFromIndex:eq.location + 1]);
+                    if (v.length > 0) qMap[k] = v;
+                }
+            }
+        }
+
+        NSArray<NSString *> *destKeys = @[@"daddr", @"destination", @"to", @"q", @"query", @"ll", @"sll", @"center", @"coord", @"target"];
+        for (NSString *dk in destKeys) {
+            NSString *val = qMap[dk];
+            if (!val || val.length == 0) continue;
+            NSString *cleanVal = [val stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if ([cleanVal.lowercaseString hasPrefix:@"loc:"]) {
+                cleanVal = [[cleanVal substringFromIndex:4] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            }
+            double lat = 0.0, lng = 0.0;
+            if (extractFirstLatLngPairFromString(cleanVal, &lat, &lng)) {
+                if (outHasCoords)  *outHasCoords  = YES;
+                if (outLat)        *outLat        = lat;
+                if (outLng)        *outLng        = lng;
+                if (outQueryLabel) *outQueryLabel = [NSString stringWithFormat:@"%.6f, %.6f", lat, lng];
+                return YES;
+            }
+            if (cleanVal.length >= 3) {
+                if (outQueryLabel) *outQueryLabel = cleanVal;
+                return YES;
+            }
+        }
+
+        // Check URL path for /maps/dir/<origin>/<dest> or /@lat,lng
+        NSString *path = comp.path ?: @"";
+        if (path.length > 0) {
+            NSRange atRange = [path rangeOfString:@"@"];
+            if (atRange.location != NSNotFound) {
+                NSString *afterAt = [path substringFromIndex:atRange.location + 1];
+                double lat = 0.0, lng = 0.0;
+                if (extractFirstLatLngPairFromString(afterAt, &lat, &lng)) {
+                    if (outHasCoords)  *outHasCoords  = YES;
+                    if (outLat)        *outLat        = lat;
+                    if (outLng)        *outLng        = lng;
+                    if (outQueryLabel) *outQueryLabel = [NSString stringWithFormat:@"%.6f, %.6f", lat, lng];
+                    return YES;
+                }
+            }
+            if ([path.lowercaseString containsString:@"/dir/"]) {
+                NSArray<NSString *> *segs = [path componentsSeparatedByString:@"/"];
+                if (segs.count >= 2) {
+                    NSString *lastSeg = decodeURLQueryComponent(segs.lastObject);
+                    double lat = 0.0, lng = 0.0;
+                    if (extractFirstLatLngPairFromString(lastSeg, &lat, &lng)) {
+                        if (outHasCoords)  *outHasCoords  = YES;
+                        if (outLat)        *outLat        = lat;
+                        if (outLng)        *outLng        = lng;
+                        if (outQueryLabel) *outQueryLabel = [NSString stringWithFormat:@"%.6f, %.6f", lat, lng];
+                        return YES;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Direct coordinate pair or plain address text (excluding saddr=... if raw malformed URL)
+    NSString *scrubbed = trimmed;
+    NSRange daddrPos = [scrubbed rangeOfString:@"daddr=" options:NSCaseInsensitiveSearch];
+    if (daddrPos.location != NSNotFound) {
+        scrubbed = [scrubbed substringFromIndex:daddrPos.location + 6];
+        NSRange amp = [scrubbed rangeOfString:@"&"];
+        if (amp.location != NSNotFound) scrubbed = [scrubbed substringToIndex:amp.location];
+        scrubbed = decodeURLQueryComponent(scrubbed);
+    }
+
+    double directLat = 0.0, directLng = 0.0;
+    if (extractFirstLatLngPairFromString(scrubbed, &directLat, &directLng)) {
+        if (outHasCoords)  *outHasCoords  = YES;
+        if (outLat)        *outLat        = directLat;
+        if (outLng)        *outLng        = directLng;
+        if (outQueryLabel) *outQueryLabel = [NSString stringWithFormat:@"%.6f, %.6f", directLat, directLng];
+        return YES;
+    }
+
+    if (![trimmed containsString:@"://"] && trimmed.length >= 5) {
+        if (outQueryLabel) *outQueryLabel = trimmed;
+        return YES;
+    }
+
+    return NO;
+}
+
+static NSURLSession *sharedMapRelayURLSession(void) {
+    static NSURLSession *sSess = nil;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        NSURLSessionConfiguration *sc = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        sc.timeoutIntervalForRequest  = 3.2;
+        sc.timeoutIntervalForResource = 4.2;
+        sc.waitsForConnectivity       = NO;
+        sc.HTTPMaximumConnectionsPerHost = 2;
+        sSess = [NSURLSession sessionWithConfiguration:sc];
+    });
+    return sSess;
+}
+
+static NSString *resolveNtfyIPv4ViaCloudflareDoH(void) {
+    // Queries literal 1.1.1.1 over HTTPS (zero local DNS lookup!) when iOS 16 mDNSResponder is poisoned on Android Hotspot
+    NSURL *dohURL = [NSURL URLWithString:@"https://1.1.1.1/dns-query?name=ntfy.sh&type=A"];
+    if (!dohURL) return @"159.203.148.75";
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:dohURL
+                                                       cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                   timeoutInterval:1.5];
+    [req setValue:@"application/dns-json" forHTTPHeaderField:@"Accept"];
+
+    __block NSString *resolvedIP = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        if (data && !err) {
+            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            NSArray *ans = [json isKindOfClass:[NSDictionary class]] ? json[@"Answer"] : nil;
+            if ([ans isKindOfClass:[NSArray class]]) {
+                for (NSDictionary *rec in ans) {
+                    if ([rec isKindOfClass:[NSDictionary class]] && [rec[@"type"] intValue] == 1) {
+                        NSString *ip = rec[@"data"];
+                        if ([ip isKindOfClass:[NSString class]] && ip.length >= 7) {
+                            resolvedIP = ip;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        dispatch_semaphore_signal(sem);
+    }] resume];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)));
+    return resolvedIP.length >= 7 ? resolvedIP : @"159.203.148.75";
+}
+
+static BOOL postNtfyPayloadSynchronously(NSString *urlString,
+                                         NSString *hostHeaderOverride,
+                                         NSString *clickURL,
+                                         NSData *jsonBody,
+                                         NSError * __strong *outError) {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url || !jsonBody) return NO;
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
+                                                       cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                   timeoutInterval:3.2];
+    req.HTTPMethod = @"POST";
+    req.HTTPBody   = jsonBody;
+    [req setValue:@"application/json; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+    [req setValue:@"Xanh SM -> Mo Google Maps"       forHTTPHeaderField:@"Title"];
+    [req setValue:@"5"                               forHTTPHeaderField:@"Priority"];
+    [req setValue:@"motorcycle,round_pushpin"        forHTTPHeaderField:@"Tags"];
+    if (clickURL.length > 0) {
+        [req setValue:clickURL forHTTPHeaderField:@"Click"];
+    }
+    if (hostHeaderOverride.length > 0) {
+        [req setValue:hostHeaderOverride forHTTPHeaderField:@"Host"];
+    }
+
+    __block BOOL success = NO;
+    __block NSError *reqErr = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        NSHTTPURLResponse *http = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)resp : nil;
+        if (!err && http && http.statusCode >= 200 && http.statusCode < 300) {
+            success = YES;
+        } else {
+            reqErr = err;
+        }
+        dispatch_semaphore_signal(sem);
+    }] resume];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)));
+    if (outError) *outError = reqErr;
+    return success;
+}
+
+void dispatchMapRelayPayloadAsync(double lat,
+                                  double lng,
+                                  BOOL hasCoords,
+                                  NSString *queryLabel,
+                                  NSString *sourceTag,
+                                  FilterConfig *config,
+                                  void (^completion)(BOOL ok, NSString *detail)) {
+    FilterConfig *cfg = config ?: [FilterConfig loadFromDisk];
+    NSString *topic = sanitizeMapRelayTopic(cfg.mapRelayTopic);
+    if (topic.length < 4) {
+        topic = generateRandomMapRelayTopic();
+        cfg.mapRelayTopic = topic;
+        [cfg saveToDiskAndNotify:NO];
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        NSString *destParam = hasCoords
+            ? [NSString stringWithFormat:@"%.6f,%.6f", lat, lng]
+            : ([queryLabel stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]] ?: @"");
+        NSString *humanLabel = hasCoords
+            ? [NSString stringWithFormat:@"%.6f, %.6f", lat, lng]
+            : (queryLabel ?: @"Điểm đến");
+
+        NSString *gmapsWebURL = [NSString stringWithFormat:
+            @"https://www.google.com/maps/dir/?api=1&destination=%@&travelmode=two-wheeler", destParam];
+        NSString *androidNavURI = [NSString stringWithFormat:
+            @"google.navigation:q=%@&mode=l", destParam];
+        NSString *iosNavURI = [NSString stringWithFormat:
+            @"comgooglemaps://?daddr=%@&directionsmode=driving", destParam];
+
+        uint64_t tsMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+        NSString *nonce = [NSString stringWithFormat:@"%llu-%u", tsMs, arc4random_uniform(999999)];
+
+        NSDictionary *payload = @{
+            @"v":          @(1),
+            @"id":         nonce,
+            @"hasCoords":  @(hasCoords),
+            @"lat":        @(hasCoords ? lat : 0.0),
+            @"lng":        @(hasCoords ? lng : 0.0),
+            @"label":      humanLabel,
+            @"source":     sourceTag ?: @"XanhSM",
+            @"gmapsUrl":   gmapsWebURL,
+            @"androidUri": androidNavURI,
+            @"iosUri":     iosNavURI,
+            @"ts":         @(tsMs)
+        };
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+
+        NSString *primaryURL = [NSString stringWithFormat:@"https://ntfy.sh/%@", topic];
+        NSError *netErr = nil;
+        BOOL usedDirectIP = NO;
+        BOOL sentOK = postNtfyPayloadSynchronously(primaryURL, nil, gmapsWebURL, jsonData, &netErr);
+
+        if (!sentOK) {
+            // Instant Anti-DNS-Poison Bypass for iPhone 8 on Android Hotspot:
+            // Resolve ntfy.sh via literal 1.1.1.1 DoH (or hardcoded 159.203.148.75) and push directly by IP!
+            NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
+            NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", directIP, topic];
+            sentOK = postNtfyPayloadSynchronously(fallbackURL, @"ntfy.sh", gmapsWebURL, jsonData, &netErr);
+            if (sentOK) {
+                usedDirectIP = YES;
+            }
+        }
+
+        double doneEpoch = [[NSDate date] timeIntervalSince1970];
+        RuntimeDaemonState *st = [RuntimeDaemonState loadState];
+        if (sentOK) {
+            st.lastRelayedSummary = [NSString stringWithFormat:@"%@ (%@)", humanLabel, usedDirectIP ? @"Xuyên DNS" : @"OK"];
+            st.lastRelayedEpoch   = doneEpoch;
+            [st saveStateAndNotify:YES];
+            appendDaemonLog(@"[BẮN MAP %@] %@ -> Kênh '%@'%@",
+                            sourceTag ?: @"XanhSM",
+                            humanLabel,
+                            topic,
+                            usedDirectIP ? @" [Đã vượt rào lỗi DNS Hotspot!]" : @"");
+        } else {
+            appendDaemonLog(@"[LỖI BẮN MAP] Chưa gửi được '%@' (Kiểm tra Wi-Fi/4G trên iPhone 8: %@)",
+                            humanLabel,
+                            netErr.localizedDescription ?: @"Mất kết nối");
+            notify_post(kNotifyStatsUpdated);
+        }
+
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(sentOK, humanLabel);
+            });
+        }
+    });
+}
+
+void processPendingMapRelayQueueIfAny(FilterConfig *config) {
+    const char *cPath = [kMapRelayQueuePath fileSystemRepresentation];
+    if (!cPath || access(cPath, F_OK) != 0) return;
+
+    NSDictionary *q = readDictSafelyWithRetry(kMapRelayQueuePath);
+    unlink(cPath);
+    if (!q || ![q isKindOfClass:[NSDictionary class]]) return;
+
+    double qEpoch = [q[@"epoch"] doubleValue];
+    double now = [[NSDate date] timeIntervalSince1970];
+    if (qEpoch > 0.0 && fabs(now - qEpoch) > 25.0) {
+        return; // Expired stale item
+    }
+
+    BOOL hasCoords  = [q[@"hasCoords"] boolValue];
+    double lat      = [q[@"lat"] doubleValue];
+    double lng      = [q[@"lng"] doubleValue];
+    NSString *label = [q[@"label"] isKindOfClass:[NSString class]] ? q[@"label"] : @"";
+    NSString *src   = [q[@"source"] isKindOfClass:[NSString class]] ? q[@"source"] : @"XanhSM";
+
+    if (!hasCoords && label.length == 0) return;
+    dispatchMapRelayPayloadAsync(lat, lng, hasCoords, label, src, config, nil);
+}
+
+BOOL enqueueAndTriggerMapRelayFromURLString(NSString *rawInput,
+                                            NSString *sourceTag,
+                                            BOOL allowReturnToDriver,
+                                            void (^completion)(BOOL ok, NSString *detail)) {
+    static NSString *sLastRawURL = nil;
+    static double sLastRawEpoch  = 0.0;
+
+    if (!rawInput || rawInput.length == 0) return NO;
+    double now = [[NSDate date] timeIntervalSince1970];
+    if (!completion && sLastRawURL && [sLastRawURL isEqualToString:rawInput] && fabs(now - sLastRawEpoch) < 1.2) {
+        return YES; // Deduplicate double launch callback from iOS UIKit
+    }
+    sLastRawURL   = [rawInput copy];
+    sLastRawEpoch = now;
+
+    FilterConfig *cfg = [FilterConfig loadFromDisk];
+    if (!cfg.mapRelayEnabled && allowReturnToDriver) {
+        appendDaemonLog(@"[BẮN MAP] Nhận link Điều hướng nhưng công tắc Bắn Map đang TẮT.");
+        notify_post(kNotifyStatsUpdated);
+        return NO;
+    }
+
+    BOOL hasCoords = NO;
+    double lat = 0.0, lng = 0.0;
+    NSString *label = nil;
+    if (!parseNavigationTargetFromString(rawInput, &hasCoords, &lat, &lng, &label)) {
+        appendDaemonLog(@"[BẮN MAP] Không tách được tọa độ từ URL: %@", rawInput);
+        notify_post(kNotifyStatsUpdated);
+        if (completion) completion(NO, rawInput);
+        return NO;
+    }
+
+    if (cfg.hapticEnabled) {
+        triggerHapticFeedback(NO);
+    }
+
+    NSString *nonce = [NSString stringWithFormat:@"%llu-%u", (uint64_t)(now * 1000.0), arc4random_uniform(999999)];
+    pid_t daemonPid = getRunningDaemonPID();
+
+    if (daemonPid > 0 && !completion) {
+        // Hand off to background pind worker so PinNhietDo UI app can jump back to Xanh SM in 0.06s with zero suspension risk!
+        NSDictionary *qDict = @{
+            @"nonce":     nonce,
+            @"hasCoords": @(hasCoords),
+            @"lat":       @(lat),
+            @"lng":       @(lng),
+            @"label":     label ?: @"",
+            @"source":    sourceTag ?: @"XanhSM",
+            @"epoch":     @(now)
+        };
+        writeDictUnprotectedAtomically(qDict, kMapRelayQueuePath);
+        notify_post(kNotifySendMapRelay);
+
+        // Safety net: if pind worker was sleeping/recycling and didn't consume kMapRelayQueuePath within 0.45s, send directly!
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+            const char *cPath = [kMapRelayQueuePath fileSystemRepresentation];
+            if (cPath && access(cPath, F_OK) == 0) {
+                NSDictionary *rem = readDictSafelyWithRetry(kMapRelayQueuePath);
+                if ([rem isKindOfClass:[NSDictionary class]] && [rem[@"nonce"] isEqual:nonce]) {
+                    unlink(cPath);
+                    dispatchMapRelayPayloadAsync(lat, lng, hasCoords, label, sourceTag, cfg, nil);
+                }
+            }
+        });
+    } else {
+        // Master daemon is OFF or interactive UI test requested -> send directly!
+        dispatchMapRelayPayloadAsync(lat, lng, hasCoords, label, sourceTag, cfg, completion);
+    }
+
+    if (allowReturnToDriver && cfg.mapRelayReturnToDriver) {
+        NSString *driverBid = cfg.driverAppBundleID;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+            launchAppByBundleID(driverBid);
+        });
+    }
+
+    return YES;
 }

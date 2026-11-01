@@ -46,12 +46,8 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) CGPoint confirmPopupPoint;
 @property (nonatomic, assign) CGPoint rejectConfirmPoint;
 
-// 3. Active Trip Navigation States
-@property (nonatomic, assign) BOOL hasPassengerAndNav;     // Thấy cả 'Hành khách' + 'Điều hướng'
+// 3. Active Trip State (protects against killing Driver App when rejecting chained Food mid-trip!)
 @property (nonatomic, assign) BOOL isAnyActiveTripScreen;  // Đang trong bất kỳ cuốc Bike / Express / Food nào
-@property (nonatomic, assign) BOOL isPickupStage;          // Nút đáy 'Đã đến điểm đón'
-@property (nonatomic, assign) BOOL isDropoffStage;         // Nút đáy 'Hoàn thành chuyến'
-@property (nonatomic, assign) CGPoint navBluePoint;        // Nút tròn xanh dương [Map] (323, 278)
 
 // 4. Live Diagnostic Info
 @property (nonatomic, assign) NSInteger ocrBlockCount;

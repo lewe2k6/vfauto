@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.9-ts
-          name: "Pin & Nhiệt Độ v4.9 Tự Chữa Lành Lõi Ngầm & Chống Sót Đơn Tuyệt Đối"
-          body: "Bản vá trọng điểm v4.9: (1) Sửa triệt để lỗi cài đè TrollStore đổi thư mục UUID làm Watchdog gọi nhầm đường dẫn cũ gây đơ quét/chạm (Watchdog nay tự phát hiện đổi UUID và chuyển giao sang binary mới tức thì, không bao giờ phải gỡ cài lại); (2) Khắc phục hiện tượng tự hủy làm mới RAM liên tục mỗi 90s sau khi nạp DB 3 Sàn 74.496 quán; (3) Sửa lỗi thanh đếm ngược 2 màu cắt đôi chữ 'Nhận | chuyến' trong Vision OCR + bổ sung nhận diện đủ dịch vụ (Bike Tiết kiệm/Ưu tiên, Express 2H/Đơn ghép/Đồng giá) + quét 4 hàng pixel đáy + chống khóa 4.2s khi chạm trượt nút Nhận; (4) Gỡ toàn bộ phụ thuộc UIKit khỏi pind chạy ngầm, tự làm mới FrontBoard monitor định kỳ 25s và hủy ngủ nghỉ 2 phút ngay khi phát hiện vẫn đang Trực tuyến."
+          tag_name: v5.0-ts
+          name: "Pin & Nhiệt Độ v5.0 — Chống Đơ Wi-Fi iPhone 8 2GB & Cầu Nối Bắn Map Sang Máy Thứ 2"
+          body: "Bản nâng cấp v5.0: (1) Xóa bỏ hoàn toàn tính năng Tự ấn nút Điều hướng (giữ nguyên nhận diện đang trong cuốc để hủy đơn Food nổ chồng chỉ bấm X); (2) Khắc phục triệt để bệnh iPhone 8 (2GB RAM) bắt Wi-Fi Hotspot mất mạng & kẹt icon thanh trạng thái: hạ Jetsam Worker xuống band 12 dưới mDNSResponder/wifid/SpringBoard, tự gọt RAM thông minh 128-135MB trên máy 2GB, cắt bỏ 15s quét AI thừa sau khi nhận Bike và giảm >73% tải XPC; (3) Tích hợp Cầu Nối Bắn Định Vị Map 0.2s: gỡ Google Maps trên iPhone 8, bấm 'Điều hướng' trong Xanh SM là tọa độ vệ tinh bắn thẳng sang máy thứ 2 (Android/iPhone 16) tự bung Google Maps dẫn đường xe máy kèm cơ chế xuyên lỗi DNS Hotspot qua Cloudflare 1.1.1.1."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

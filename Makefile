@@ -23,7 +23,7 @@ DAEMON_SRCS := Sources/Daemon/pind_main.m \
                Shared/TSUtil.m
 
 APP_FRAMEWORKS    := -framework Foundation -framework UIKit -framework CoreGraphics \
-                     -framework QuartzCore -framework AudioToolbox
+                     -framework CoreImage -framework QuartzCore -framework AudioToolbox
 
 DAEMON_FRAMEWORKS := -framework Foundation -framework CoreGraphics \
                      -framework CoreImage -framework QuartzCore \

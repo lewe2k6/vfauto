@@ -37,6 +37,7 @@ typedef int (*memorystatus_control_f)(uint32_t command, int32_t pid, uint32_t fl
 #define MEMSTAT_CMD_SET_IS_FREEZABLE     18
 #define JETSAM_PRIO_CRITICAL             19
 #define JETSAM_PRIO_IMPORTANT            18
+#define JETSAM_PRIO_WORKER_SAFE          12
 
 #define kExitCodeProactiveRAMTrim        42
 
@@ -62,17 +63,30 @@ static void unlinkPidFileIfOwnedByMe(NSString *path) {
     }
 }
 
-static void applyCriticalJetsamToPid(pid_t targetPid, int32_t limitMB) {
+static void applyWatchdogJetsamToPid(pid_t targetPid) {
     memorystatus_control_f fnMemCtl = (memorystatus_control_f)dlsym(RTLD_DEFAULT, "memorystatus_control");
     if (fnMemCtl) {
-        jetsam_priority_props_t props = { JETSAM_PRIO_CRITICAL, 0 };
-        if (fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props)) != 0) {
-            props.priority = JETSAM_PRIO_IMPORTANT;
-            fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props));
-        }
-        int32_t safeLimitMB = (limitMB < 1024) ? 1024 : limitMB;
+        // Watchdog is only ~0.8 MB pure C supervisor -> safe to keep at band 18 so it never dies
+        jetsam_priority_props_t props = { JETSAM_PRIO_IMPORTANT, 0 };
+        fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props));
         fnMemCtl(MEMSTAT_CMD_SET_HIGH_WATER_MARK, targetPid, (uint32_t)-1, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      targetPid, (uint32_t)safeLimitMB, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      targetPid, (uint32_t)512, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED,      targetPid, 0, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE,    targetPid, 0, NULL, 0);
+    }
+}
+
+static void applyWorkerJetsamToPid(pid_t targetPid) {
+    memorystatus_control_f fnMemCtl = (memorystatus_control_f)dlsym(RTLD_DEFAULT, "memorystatus_control");
+    if (fnMemCtl) {
+        // CRITICAL FOR IPHONE 8 (2GB RAM):
+        // Keep Worker at band 12 (strictly BELOW mDNSResponder, wifid, symptomsd, configd, SpringBoard at 14-17)
+        // so Apple networking & UI daemons are NEVER Jetsam-reaped under 2GB RAM pressure!
+        jetsam_priority_props_t props = { JETSAM_PRIO_WORKER_SAFE, 0 };
+        fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props));
+        int32_t workerLimitMB = isLowRAMDevice() ? 340 : 768;
+        fnMemCtl(MEMSTAT_CMD_SET_HIGH_WATER_MARK, targetPid, (uint32_t)-1, NULL, 0);
+        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      targetPid, (uint32_t)workerLimitMB, NULL, 0);
         fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED,      targetPid, 0, NULL, 0);
         fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE,    targetPid, 0, NULL, 0);
     }
@@ -83,6 +97,7 @@ static void ensureSharedFilesPermissions(void) {
     NSArray<NSString *> *paths = @[
         kConfigPlistPath,
         kRuntimeStatePath,
+        kMapRelayQueuePath,
         kDaemonLogPath,
         kDaemonPidPath,
         kWatchdogPidPath
@@ -243,8 +258,8 @@ static int runWatchdogMain(const char *execPath) {
         // Terminate any previous watchdog or worker instance cleanly while uid=0
         killAllOtherPindProcesses();
 
-        // 1024 MB ceiling (never 64 MB!) so linked frameworks can NEVER trigger per-process-limit Jetsam kill
-        applyCriticalJetsamToPid(me, 1024);
+        // Watchdog (~0.8 MB) keeps band 18; Worker runs at band 12 below iOS network daemons
+        applyWatchdogJetsamToPid(me);
         ensureSharedFilesPermissions();
 
         NSString *wdPidStr = [NSString stringWithFormat:@"%d", me];
@@ -318,7 +333,7 @@ static int runWatchdogMain(const char *execPath) {
                     continue;
                 }
 
-                applyCriticalJetsamToPid(workerPid, 1024);
+                applyWorkerJetsamToPid(workerPid);
 
                 int status = 0;
                 int tickCount = 0;
@@ -428,7 +443,6 @@ static int runWatchdogMain(const char *execPath) {
 static volatile BOOL gShouldExit         = NO;
 static volatile BOOL gNeedsReload        = YES;
 static volatile BOOL gSkipPauseRequested = NO;
-static volatile BOOL gResetNavRequested  = NO;
 static volatile BOOL gResetCntRequested  = NO;
 static volatile BOOL gDiagRequested      = NO;
 
@@ -438,7 +452,7 @@ static void handleWorkerSignal(int sig) {
 
 static void prepareWorkerSession(void) {
     pid_t me = getpid();
-    applyCriticalJetsamToPid(me, 1024);
+    applyWorkerJetsamToPid(me);
     ensureSharedFilesPermissions();
 
     if (getgid() != 501) {
@@ -455,19 +469,6 @@ static BOOL isFrontmostAppAllowedForScan(NSString *frontBid, FilterConfig *confi
         return YES;
     }
     return bundleIDMatchesDriverApp(frontBid, config);
-}
-
-static void resetBothNavLocks(RuntimeDaemonState *state, NSString *reasonLog) {
-    if (state.navPickupLocked || state.navDropoffLocked) {
-        state.navPickupLocked  = NO;
-        state.navDropoffLocked = NO;
-        state.phaseDescription = @"Đang rảnh / Đã mở khóa chốt Map";
-        state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
-        [state saveStateAndNotify:YES];
-        if (reasonLog.length > 0) {
-            appendDaemonLog(@"%@", reasonLog);
-        }
-    }
 }
 
 static BOOL extractFingerprintParts(NSString *fp, NSString **outType, NSInteger *outPrice, NSString **outPickupPrefix) {
@@ -572,14 +573,10 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
     if (ana.hasOrderPopup) {
         matched = [NSString stringWithFormat:@"BẢNG NỔ ĐƠN -> %@ tại (%.0f, %.0f)",
                    ana.orderReason ?: @"", ana.orderTargetPoint.x, ana.orderTargetPoint.y];
-    } else if (ana.hasPassengerAndNav && ana.isPickupStage) {
-        matched = [NSString stringWithFormat:@"PHA 1 ĐÓN KHÁCH -> Tap nút xanh Điều hướng (%.0f, %.0f)",
-                   ana.navBluePoint.x, ana.navBluePoint.y];
-    } else if (ana.hasPassengerAndNav && ana.isDropoffStage) {
-        matched = [NSString stringWithFormat:@"PHA 2 TRẢ KHÁCH -> Tap nút xanh Điều hướng (%.0f, %.0f)",
-                   ana.navBluePoint.x, ana.navBluePoint.y];
+    } else if (ana.isAnyActiveTripScreen) {
+        matched = @"ĐANG TRONG CHUYẾN XE (Chống tắt app khi từ chối Food nối chuyến)";
     } else if (ana.isPaymentConfirmScreen) {
-        matched = @"MÀN THANH TOÁN ('Xác nhận hoàn thành') -> Xóa sạch 2 chốt Map!";
+        matched = @"MÀN THANH TOÁN ('Xác nhận hoàn thành')";
     } else if (ana.hasBlockingBottomSheet) {
         matched = @"BẢNG PHỤ CHE SẢNH ('0.0/8 lái xe liên tục') -> Tự vuốt/chạm đóng ngay!";
     } else if (ana.isLobbyOnline) {
@@ -842,14 +839,6 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
             if (!config.masterEnabled || !config.pauseAfterRejectFood) {
                 break;
             }
-            if (gResetNavRequested) {
-                gResetNavRequested = NO;
-                state.navPickupLocked  = NO;
-                state.navDropoffLocked = NO;
-                state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
-                [state saveStateAndNotify:YES];
-                appendDaemonLog(@"Đã Reset thủ công cả 2 chốt khóa Điều hướng về FALSE.");
-            }
             if (gResetCntRequested) {
                 gResetCntRequested = NO;
                 state.statAcceptedCount = 0;
@@ -996,7 +985,7 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                 return YES;
             }
 
-            if (ana.isLobbyOnline || ana.hasPassengerAndNav) {
+            if (ana.isLobbyOnline || ana.isAnyActiveTripScreen) {
                 backOnline = YES;
                 break;
             }
@@ -1088,19 +1077,23 @@ static int runWorkerMain(void) {
         writeStringUnprotectedAtomically(myPidStr, kDaemonPidPath);
 
         dispatch_queue_t bgQ = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-        int reloadTok = 0, stopTok = 0, skipTok = 0, resetNavTok = 0, resetCntTok = 0, diagTok = 0;
+        int reloadTok = 0, stopTok = 0, skipTok = 0, resetCntTok = 0, diagTok = 0, mapRelayTok = 0;
 
         notify_register_dispatch(kNotifyReloadConfig,  &reloadTok,   bgQ, ^(int t) { gNeedsReload = YES; });
         notify_register_dispatch(kNotifyStopDaemon,    &stopTok,     bgQ, ^(int t) { gShouldExit = YES; });
         notify_register_dispatch(kNotifySkipPause,     &skipTok,     bgQ, ^(int t) { gSkipPauseRequested = YES; });
-        notify_register_dispatch(kNotifyResetNavLocks, &resetNavTok, bgQ, ^(int t) { gResetNavRequested = YES; });
         notify_register_dispatch(kNotifyResetCounters, &resetCntTok, bgQ, ^(int t) { gResetCntRequested = YES; });
         notify_register_dispatch(kNotifyDiagCapture,   &diagTok,     bgQ, ^(int t) { gDiagRequested = YES; });
+        notify_register_dispatch(kNotifySendMapRelay,  &mapRelayTok, bgQ, ^(int t) {
+            processPendingMapRelayQueueIfAny(nil);
+        });
 
         FilterConfig *config      = [FilterConfig loadFromDisk];
         if (!config.masterEnabled && readMasterEnabledSafely(YES)) {
             config.masterEnabled = YES;
         }
+        processPendingMapRelayQueueIfAny(config);
+
         RuntimeDaemonState *state = [RuntimeDaemonState loadState];
         double bootEpoch          = [[NSDate date] timeIntervalSince1970];
         NSString *myLiveBinPath   = resolveLiveAppPindBinaryPath() ?: @"";
@@ -1123,10 +1116,15 @@ static int runWorkerMain(void) {
         OrderScanner *scanner     = [OrderScanner sharedScanner];
         HanoiFoodFilterEngine *foodEngine = [HanoiFoodFilterEngine sharedEngine];
 
+        BOOL lowRAMMode           = isLowRAMDevice();
+        uint64_t sleepTrimMB      = lowRAMMode ? 128 : 175;
+        uint64_t idleActiveTrimMB = lowRAMMode ? 135 : 220;
+
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.9 Bất Tử + Tự Chữa Lành + DB 3 Sàn (%ld quán + %ld ghim HN) chạy (WD:%d WK:%d, Quét:%@)",
+            appendDaemonLog(@"pind v5.0 Siêu Nhẹ RAM%@ + Bắn Map + DB 3 Sàn (%ld quán + %ld ghim) chạy (WD:%d WK:%d, Quét:%@)",
+                            lowRAMMode ? @" (2GB)" : @"",
                             (long)foodEngine.loadedMerchantCount,
                             (long)foodEngine.loadedStreetPinCount,
                             getRunningWatchdogPID(), myPid,
@@ -1134,7 +1132,7 @@ static int runWorkerMain(void) {
             notify_post(kNotifyStatsUpdated);
         }
 
-        BOOL inActiveTripSession = (state.navPickupLocked || state.navDropoffLocked);
+        BOOL inActiveTripSession = NO;
         int consecutiveOfflineInterrupts = 0;
 
         // Seamlessly finish an in-progress Food Pause if revived mid-countdown
@@ -1149,8 +1147,6 @@ static int runWorkerMain(void) {
         double lastHandledOrderEpoch          = 0.0;
         BOOL lastHandledWasAccept             = NO;
         BOOL wasInCoolSleep                   = NO;
-        BOOL prevFrameHadBlueNav              = NO;
-        BOOL activeTripConfirmedNonBike       = NO;
         double lockedSinceEpoch               = 0.0;
         int coolSleepTickCounter              = 0;
         double turboUntilEpoch                = bootEpoch + 6.0;
@@ -1183,15 +1179,6 @@ static int runWorkerMain(void) {
                     resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
                 }
-                if (gResetNavRequested) {
-                    gResetNavRequested = NO;
-                    inActiveTripSession    = NO;
-                    activeTripConfirmedNonBike = NO;
-                    state.navPickupLocked  = NO;
-                    state.navDropoffLocked = NO;
-                    [state saveStateAndNotify:YES];
-                    appendDaemonLog(@"Đã Reset thủ công cả 2 chốt khóa Điều hướng về FALSE.");
-                }
                 if (gResetCntRequested) {
                     gResetCntRequested = NO;
                     state.statAcceptedCount = 0;
@@ -1221,7 +1208,6 @@ static int runWorkerMain(void) {
                     }
                     if (!wasInCoolSleep) {
                         wasInCoolSleep = YES;
-                        prevFrameHadBlueNav = NO;
                         retryCount = 0;
                         bannerSwipeCountForPopup = 0;
                         [engine invalidateAnalyzedBaseline];
@@ -1229,7 +1215,7 @@ static int runWorkerMain(void) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
                     }
-                    if ((now - bootEpoch) > 1800.0 || currentProcessFootprintMB() > 175) {
+                    if ((now - bootEpoch) > 1800.0 || currentProcessFootprintMB() > sleepTrimMB) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
@@ -1250,7 +1236,7 @@ static int runWorkerMain(void) {
 
                 CIImage *preCapturedImg = nil;
 
-                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG MỞ GOOGLE MAPS / APP NGOÀI (CÓ CẢM BIẾN PIXEL TỰ ĐÁNH THỨC) ---
+                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG Ở NGOÀI APP TÀI XẾ (CÓ CẢM BIẾN PIXEL TỰ ĐÁNH THỨC) ---
                 if (config.smartCoolMode) {
                     NSString *frontBid = currentFrontmostAppBundleIDForConfig(config);
                     BOOL canScan = isFrontmostAppAllowedForScan(frontBid, config);
@@ -1258,15 +1244,12 @@ static int runWorkerMain(void) {
                     if (!canScan) {
                         coolSleepTickCounter++;
                         BOOL isGoogleMaps = [frontBid isEqualToString:@"com.google.Maps"];
-                        int probeInterval = isGoogleMaps ? 4 : 2; // ~2.0s in Google Maps, ~1.0s in other/unknown state (0% Vision OCR!)
+                        int probeInterval = isGoogleMaps ? 4 : 2;
 
                         if ((coolSleepTickCounter % probeInterval) == 0) {
                             CIImage *probe = [engine captureScreenCIImage];
-                            BOOL pixelLooksLikeDriverUI = (!isGoogleMaps &&
-                                                           (engine.lastFrameLikelyHasBlueNavButton ||
-                                                            engine.lastFrameLikelyHasLobbyPowerButton));
+                            BOOL pixelLooksLikeDriverUI = (!isGoogleMaps && engine.lastFrameLikelyHasLobbyPowerButton);
                             if (probe && (engine.lastFrameLikelyHasOrderPopup || pixelLooksLikeDriverUI)) {
-                                // Self-healing override: Xanh SM order popup or Driver UI is on screen right now!
                                 canScan = YES;
                                 preCapturedImg = probe;
                                 resetFrontmostAppMonitors();
@@ -1277,7 +1260,6 @@ static int runWorkerMain(void) {
                     if (!canScan) {
                         if (!wasInCoolSleep) {
                             wasInCoolSleep = YES;
-                            prevFrameHadBlueNav = NO;
                             retryCount = 0;
                             bannerSwipeCountForPopup = 0;
                             [engine invalidateAnalyzedBaseline];
@@ -1288,7 +1270,7 @@ static int runWorkerMain(void) {
                             [state saveStateAndNotify:YES];
                         }
 
-                        if (((now - bootEpoch) > 180.0 && currentProcessFootprintMB() > 180) ||
+                        if (((now - bootEpoch) > 150.0 && currentProcessFootprintMB() > sleepTrimMB) ||
                             (now - bootEpoch) > 3600.0) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:NO];
@@ -1298,10 +1280,10 @@ static int runWorkerMain(void) {
                         usleep(500000);
                         continue;
                     } else if (wasInCoolSleep) {
-                        // Switched back into Xanh SM -> Instant 6.5s Turbo!
+                        // Switched back into Xanh SM -> Instant 5.0s Turbo!
                         wasInCoolSleep = NO;
                         coolSleepTickCounter = 0;
-                        turboUntilEpoch = now + 6.5;
+                        turboUntilEpoch = now + 5.0;
                         [engine invalidateAnalyzedBaseline];
                         state.phaseDescription = @"Đang trực tuyến / Canh đơn (Turbo)";
                         state.workerHeartbeatEpoch = now;
@@ -1326,24 +1308,14 @@ static int runWorkerMain(void) {
                 if (config.smartCoolMode &&
                     engine.lastFrameLooksLikeGoogleMapsNav &&
                     !engine.lastFrameLikelyHasOrderPopup) {
-                    // Pixel backup shield: Google Maps green turn-by-turn banner is active -> 0% Vision OCR!
                     usleep(450000);
                     continue;
                 }
 
                 NSInteger frameChangedBeforeMark = engine.lastFrameChangedSamples;
-                BOOL hasUnlockedNavPhase = ((config.autoNavPickup && !state.navPickupLocked) ||
-                                            (config.autoNavDropoff && !state.navDropoffLocked));
-                BOOL blueNavJustAppeared = (engine.lastFrameLikelyHasBlueNavButton && !prevFrameHadBlueNav);
-                prevFrameHadBlueNav = engine.lastFrameLikelyHasBlueNavButton;
-                BOOL blueNavDueForOCR = (engine.lastFrameLikelyHasBlueNavButton &&
-                                         hasUnlockedNavPhase &&
-                                         (blueNavJustAppeared || (!activeTripConfirmedNonBike && (now - lastFullOCREpoch) >= 0.70)));
-
                 BOOL inTurbo = (now < turboUntilEpoch) ||
                                (now < postTransitionUntilEpoch) ||
                                engine.lastFrameLikelyHasOrderPopup ||
-                               blueNavDueForOCR ||
                                (retryCount > 0);
 
                 if (config.smartCoolMode &&
@@ -1351,8 +1323,7 @@ static int runWorkerMain(void) {
                     frameChangedBeforeMark <= 3 &&
                     (now - lastFullOCREpoch) < 2.2) {
                     // Static screen inside Xanh SM with no order popup -> skip heavy Vision ANE OCR!
-                    // Emergency RAM ceiling only (>220 MB): normal steady state with DB 3 Sàn + Vision is ~108-120 MB
-                    if ((now - bootEpoch) > 300.0 && currentProcessFootprintMB() > 220) {
+                    if ((now - bootEpoch) > 180.0 && currentProcessFootprintMB() > idleActiveTrimMB) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
@@ -1381,28 +1352,15 @@ static int runWorkerMain(void) {
                     postTransitionUntilEpoch = now + 0.85;
                 }
 
-                // 1. KIỂM TRA 3 ĐIỀU KIỆN MỞ KHÓA CHỐT ĐIỀU HƯỚNG & TRẠNG THÁI ĐANG TRONG CHUYẾN (NỐI CHUYẾN)
+                // 1. CẬP NHẬT TRẠNG THÁI ĐANG TRONG CHUYẾN (CHỐNG TẮT APP KHI TỪ CHỐI ĐƠN FOOD NỐI CHUYẾN)
                 if (ana.isPaymentConfirmScreen) {
                     inActiveTripSession = NO;
-                    activeTripConfirmedNonBike = NO;
-                    resetBothNavLocks(state, @"Thấy màn 'Xác nhận hoàn thành' -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.isLobbyOnline || ana.isLobbyOffline) {
                     inActiveTripSession = NO;
-                    activeTripConfirmedNonBike = NO;
                     consecutiveOfflineInterrupts = 0;
-                    resetBothNavLocks(state, @"Về màn hình sảnh chờ -> Xóa sạch 2 chốt Điều hướng!");
                 } else if (ana.isAnyActiveTripScreen) {
                     inActiveTripSession = YES;
                     consecutiveOfflineInterrupts = 0;
-                    if (ana.hasPassengerAndNav) {
-                        activeTripConfirmedNonBike = NO;
-                        if (ana.isPickupStage && state.navDropoffLocked) {
-                            resetBothNavLocks(state, @"Phát hiện cuốc Bike nối chuyến mới -> Xóa chốt cũ đón khách mới!");
-                        }
-                    } else if (engine.lastFrameLikelyHasBlueNavButton) {
-                        // Đang chạy đơn giao hàng Express / Express 2H / Food -> Không auto tap Điều hướng, ngắt hỏi OCR lặp!
-                        activeTripConfirmedNonBike = YES;
-                    }
                 }
 
                 // 2. XỬ LÝ BẢNG NỔ ĐƠN ('Bike' / 'Express' / 'Express 2H' vs 'Green Food')
@@ -1654,7 +1612,6 @@ static int runWorkerMain(void) {
                                 }
                             }
 
-                            BOOL acceptedBikeOrder = NO;
                             if (tapsSent > 0) {
                                 double doneNow = [[NSDate date] timeIntervalSince1970];
                                 // CRITICAL: Only lock out Accept if the card actually closed (confirmedGone)!
@@ -1669,17 +1626,7 @@ static int runWorkerMain(void) {
                                         inActiveTripSession = YES;
                                         consecutiveOfflineInterrupts = 0;
                                         state.statAcceptedCount += 1;
-                                    }
-                                    NSString *svcLow = (ana.detectedServiceTitle ?: @"").lowercaseString;
-                                    acceptedBikeOrder = (!ana.isGreenFood && ![svcLow containsString:@"express"] && ![svcLow containsString:@"food"]);
-                                    if (acceptedBikeOrder) {
-                                        activeTripConfirmedNonBike = NO;
-                                        state.phaseDescription = @"Vừa nhận Bike -> Đang canh nút Điều hướng";
-                                        // Kích hoạt Turbo 15 giây liên tục để vồ nút xanh 'Điều hướng' ngay khi Xanh SM dựng xong thẻ khách Bike!
-                                        turboUntilEpoch = doneNow + 15.0;
-                                    } else if (confirmedGone) {
-                                        activeTripConfirmedNonBike = YES;
-                                        state.phaseDescription = @"Đang chạy đơn giao hàng (Không auto bấm Map)";
+                                        state.phaseDescription = @"Đang trong chuyến xe / Canh nối chuyến";
                                     }
                                 } else {
                                     state.statRejectedCount += 1;
@@ -1707,8 +1654,7 @@ static int runWorkerMain(void) {
                         }
 
                         // CASE 2: Đơn Food nổ kiểu NỐI CHUYẾN khi đang dở cuốc xe -> CHỈ TỪ CHỐI [X], TUYỆT ĐỐI KHÔNG TẮT APP!
-                        if (!isAccept && ana.isGreenFood &&
-                            (inActiveTripSession || state.navPickupLocked || state.navDropoffLocked)) {
+                        if (!isAccept && ana.isGreenFood && inActiveTripSession) {
                             appendDaemonLog(@"Đã từ chối Food nối chuyến — Đang trong chuyến xe nên giữ nguyên cuốc, KHÔNG tắt app!");
                             state.phaseDescription = @"Đang trong chuyến xe / Canh nối chuyến";
                             state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
@@ -1730,10 +1676,7 @@ static int runWorkerMain(void) {
                             continue;
                         }
 
-                        // Khi vừa bấm [Nhận chuyến] Bike chở khách: chỉ nghỉ 180ms (nếu chưa đóng hẳn) hoặc 320ms rồi quét ngay thẻ khách để tap 'Điều hướng' tức thì!
-                        NSString *svcLowCd = (ana.detectedServiceTitle ?: @"").lowercaseString;
-                        BOOL isBikeAcceptCd = (isAccept && !ana.isGreenFood && ![svcLowCd containsString:@"express"] && ![svcLowCd containsString:@"food"]);
-                        NSInteger cdMs = isAccept ? (isBikeAcceptCd ? 300 : 420) : MAX(600, config.cooldownMs - 380);
+                        NSInteger cdMs = isAccept ? 420 : MAX(600, config.cooldownMs - 380);
                         usleep((useconds_t)(cdMs * 1000));
                         continue;
                     }
@@ -1760,101 +1703,6 @@ static int runWorkerMain(void) {
                     }
                 }
 
-                // 3. XỬ LÝ AUTO TAP NÚT TRÒN XANH 'ĐIỀU HƯỚNG' (NHẠY TỨC THÌ KỂ CẢ KHI MÀN ĐỨNG YÊN + CHỐNG LẶP 100%)
-                if (ana.hasPassengerAndNav) {
-                    BOOL needPickupTap  = (ana.isPickupStage  && config.autoNavPickup  && !state.navPickupLocked);
-                    BOOL needDropoffTap = (ana.isDropoffStage && config.autoNavDropoff && !state.navDropoffLocked);
-
-                    if (needPickupTap || needDropoffTap) {
-                        NSInteger settleMs = (config.navSettleDelayMs == 650) ? 320 : MAX(180, config.navSettleDelayMs);
-                        usleep((useconds_t)(settleMs * 1000));
-                        if (gShouldExit) break;
-
-                        CIImage *settledImg = [engine captureScreenCIImage];
-                        ScreenAnalysis *settledAna = settledImg
-                            ? [scanner analyzeScreenImage:settledImg
-                                               screenSize:engine.logicalScreenSize
-                                               yellowDotY:engine.lastOrderYellowDotY
-                                         hasBottomTealBar:engine.lastFrameHasBottomTealButton
-                                        hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
-                                       headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
-                                       headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
-                                                   config:config
-                                          priceRetryCount:0]
-                            : nil;
-
-                        BOOL stillValid = settledAna && settledAna.hasPassengerAndNav &&
-                                          ((needPickupTap && settledAna.isPickupStage) ||
-                                           (needDropoffTap && settledAna.isDropoffStage));
-
-                        if (stillValid) {
-                            [engine markCurrentFrameAnalyzed];
-                            if (needPickupTap) {
-                                state.navPickupLocked  = YES;
-                                state.phaseDescription = @"Đã mở Map Đón khách (Khóa Pha 1)";
-                            } else {
-                                state.navDropoffLocked = YES;
-                                state.phaseDescription = @"Đã mở Map Trả khách (Khóa Pha 2)";
-                            }
-                            state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
-                            [state saveStateAndNotify:YES];
-
-                            CGPoint targetNav = settledAna.navBluePoint;
-                            if (config.dryRunMode) {
-                                appendDaemonLog(@"[THỬ] %@ -> Sẽ tap %ld lần nút xanh Điều hướng (%.0f, %.0f)",
-                                                needPickupTap ? @"Pha Đón khách" : @"Pha Trả khách",
-                                                (long)config.navTapCount, targetNav.x, targetNav.y);
-                                if (config.hapticEnabled) triggerHapticFeedback(NO);
-                                notify_post(kNotifyStatsUpdated);
-                                usleep(1500000);
-                            } else {
-                                CGPoint lastPt = targetNav;
-                                [engine performMultiTapAtPoint:targetNav
-                                                      tapCount:config.navTapCount
-                                                    intervalMs:config.navTapIntervalMs
-                                                  jitterRadius:MIN(4.0, config.jitterRadiusPt)
-                                                     holdMinMs:config.holdMinMs
-                                                     holdMaxMs:config.holdMaxMs
-                                                  outLastPoint:&lastPt];
-
-                                appendDaemonLog(@"%@ -> Đã tap %ld lần nút xanh Điều hướng (%.0f, %.0f) [KHÓA CHỐT]",
-                                                needPickupTap ? @"Pha 1 (Đã đến điểm đón)" : @"Pha 2 (Hoàn thành chuyến)",
-                                                (long)config.navTapCount, lastPt.x, lastPt.y);
-                                if (config.hapticEnabled) triggerHapticFeedback(NO);
-                                notify_post(kNotifyStatsUpdated);
-
-                                // Closed-loop 850ms verification: if Xanh SM stayed frontmost with blue Nav button untouched (4G/UI lag swallowed tap), fire 1 clean recovery tap!
-                                usleep(850000);
-                                if (!gShouldExit) {
-                                    NSString *afterNavBid = currentFrontmostAppBundleIDForConfig(config);
-                                    if (isFrontmostAppAllowedForScan(afterNavBid, config)) {
-                                        CIImage *chkNavImg = [engine captureScreenCIImage];
-                                        if (chkNavImg && engine.lastFrameLikelyHasBlueNavButton && !engine.lastFrameLooksLikeGoogleMapsNav) {
-                                            [engine refreshHIDClient];
-                                            CGPoint recPt = targetNav;
-                                            [engine performMultiTapAtPoint:targetNav
-                                                                  tapCount:1
-                                                                intervalMs:config.navTapIntervalMs
-                                                              jitterRadius:2.0
-                                                                 holdMinMs:config.holdMinMs
-                                                                 holdMaxMs:config.holdMaxMs
-                                                              outLastPoint:&recPt];
-                                            appendDaemonLog(@"[BỒI MAP] Nút Điều hướng chưa mở Map -> Bồi thêm 1 chạm tại (%.0f, %.0f)!", recPt.x, recPt.y);
-                                            notify_post(kNotifyStatsUpdated);
-                                        }
-                                    }
-                                }
-                                usleep(1150000);
-                            }
-                            continue;
-                        } else {
-                            // Màn hình đang chuyển cảnh chưa ổn định -> Xóa baseline & giữ Turbo để 150ms sau quét bấm lại ngay (không cần người dùng vuốt màn)!
-                            [engine invalidateAnalyzedBaseline];
-                            turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 5.0;
-                        }
-                    }
-                }
-
                 // Turbo 180ms right after switching into Xanh SM or seeing an order card / transition; normal scanIntervalMs otherwise
                 NSInteger sleepMs = (now < turboUntilEpoch || now < postTransitionUntilEpoch || engine.lastFrameLikelyHasOrderPopup)
                     ? MIN(180, MAX(140, config.scanIntervalMs))
@@ -1873,9 +1721,9 @@ static int runWorkerMain(void) {
         notify_cancel(reloadTok);
         notify_cancel(stopTok);
         notify_cancel(skipTok);
-        notify_cancel(resetNavTok);
         notify_cancel(resetCntTok);
         notify_cancel(diagTok);
+        notify_cancel(mapRelayTok);
     }
     return 0;
 }

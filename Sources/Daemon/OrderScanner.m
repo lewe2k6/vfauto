@@ -315,7 +315,6 @@
     ScreenAnalysis *res = [[ScreenAnalysis alloc] init];
     res.offlinePowerPoint = CGPointMake(config.manualOfflineX, config.manualOfflineY);
     res.onlineStartPoint  = CGPointMake(config.manualOnlineX, config.manualOnlineY);
-    res.navBluePoint      = CGPointMake(config.manualNavX, config.manualNavY);
 
     if (!ciImage) return res;
 
@@ -634,23 +633,9 @@
         }
     }
 
-    // 2. Populate Active Trip states first so Lobby check never conflicts with an Active Trip
-    // CHỈ BẬT hasPassengerAndNav CHO CHUYẾN BIKE CHỞ KHÁCH ('Hành khách' + 'Điều hướng' + không phải đơn giao hàng Express/Food)
-    if (hanhKhachBlk && dieuHuongBlk && !acceptBlock && !hasDeliveryTripOnly) {
-        res.hasPassengerAndNav = YES;
-        res.isPickupStage      = (daDenDiemDonBlk != nil);
-        res.isDropoffStage     = (hoanThanhChuyenBlk != nil);
-
-        if (config.coordMode == CoordModeAutoOCRWithOffset) {
-            res.navBluePoint = CGPointMake(dieuHuongBlk.uiCenter.x + config.navOffsetX,
-                                           dieuHuongBlk.uiCenter.y + config.navOffsetY);
-        } else {
-            res.navBluePoint = CGPointMake(config.manualNavX, config.manualNavY);
-        }
-    }
-
+    // 2. Populate Active Trip state first so Lobby check never conflicts with an Active Trip (chained-order safety!)
     res.isAnyActiveTripScreen = (!acceptBlock &&
-                                 (res.hasPassengerAndNav ||
+                                 (hanhKhachBlk != nil ||
                                   dieuHuongBlk != nil ||
                                   daDenDiemDonBlk != nil ||
                                   hoanThanhChuyenBlk != nil ||

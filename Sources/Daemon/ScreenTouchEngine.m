@@ -131,7 +131,6 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHasOrderHeaderAtTop       = NO;
         _lastFrameHeaderIconWarmFood        = NO;
         _lastFrameHeaderIconCoolRide        = NO;
-        _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
         _lastOrderYellowDotY                = 0.0;
@@ -492,28 +491,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
             _lastOrderYellowDotY = 0.0;
         }
 
-        // 4. Blue Navigation Circle Sensor (0.01ms): Detects blue [Map] circle around x ~ 323pt (y = 185..475pt)
-        //    Wakes OCR immediately even when the map & sheet are 100% motionless after accepting an order!
-        int blueNavHits = 0;
-        int xNavCols[3] = {
-            (int)((315.0 / 375.0) * (double)(_pixelW - 1)),
-            (int)((323.0 / 375.0) * (double)(_pixelW - 1)),
-            (int)((331.0 / 375.0) * (double)(_pixelW - 1))
-        };
-        for (int ly = 188; ly <= 472; ly += 6) {
-            int py = (int)(((double)ly / 667.0) * (double)(_pixelH - 1));
-            const uint8_t *rowNav = base + (size_t)py * _bytesPerRow;
-            for (int c = 0; c < 3; c++) {
-                uint32_t pN = *((const uint32_t *)(rowNav + (size_t)xNavCols[c] * 4));
-                uint8_t bN = pN & 0xFF, gN = (pN >> 8) & 0xFF, rN = (pN >> 16) & 0xFF;
-                if (bN >= 165 && rN <= 48 && gN >= 85 && gN <= 170 && ((int)bN - (int)rN >= 125)) {
-                    blueNavHits++;
-                }
-            }
-        }
-        _lastFrameLikelyHasBlueNavButton = (!_lastFrameLikelyHasOrderPopup && blueNavHits >= 6);
-
-        // 5. Uncovered Lobby Teal [Power] Circle Sensor around (40, 455) (0.01ms):
+        // 4. Uncovered Lobby Teal [Power] Circle Sensor around (40, 455) (0.01ms):
         //    Hits ONLY when Online [Power] button is bright uncovered teal (not dimmed by 0.0/8 modal backdrop!)
         static const double kPwrRingX[6] = { 28.0/375.0, 52.0/375.0, 40.0/375.0, 40.0/375.0, 31.0/375.0, 49.0/375.0 };
         static const double kPwrRingY[6] = { 455.0/667.0, 455.0/667.0, 441.0/667.0, 469.0/667.0, 445.0/667.0, 465.0/667.0 };
@@ -554,7 +532,6 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHasOrderHeaderAtTop       = NO;
         _lastFrameHeaderIconWarmFood        = NO;
         _lastFrameHeaderIconCoolRide        = NO;
-        _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastOrderYellowDotY                = 0.0;
         return nil;
@@ -593,7 +570,6 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHasOrderHeaderAtTop       = NO;
         _lastFrameHeaderIconWarmFood        = NO;
         _lastFrameHeaderIconCoolRide        = NO;
-        _lastFrameLikelyHasBlueNavButton    = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
         _lastOrderYellowDotY                = 0.0;
@@ -711,31 +687,6 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     [self dispatchTouchMode:TouchPhaseUp normX:nx normY:ny];
 
     return YES;
-}
-
-- (BOOL)performMultiTapAtPoint:(CGPoint)logicalPoint
-                      tapCount:(NSInteger)tapCount
-                    intervalMs:(NSInteger)intervalMs
-                  jitterRadius:(double)jitterRadiusPt
-                     holdMinMs:(NSInteger)holdMinMs
-                     holdMaxMs:(NSInteger)holdMaxMs
-                  outLastPoint:(CGPoint *)outLastPoint {
-    NSInteger count = MAX(1, MIN(5, tapCount));
-    NSInteger gapMs = MAX(80, intervalMs);
-    BOOL anyOk = NO;
-    for (NSInteger i = 0; i < count; i++) {
-        BOOL ok = [self performHumanTapAtPoint:logicalPoint
-                                  jitterRadius:jitterRadiusPt
-                                     holdMinMs:holdMinMs
-                                     holdMaxMs:holdMaxMs
-                                outActualPoint:outLastPoint];
-        if (ok) anyOk = YES;
-        if (i + 1 < count) {
-            uint32_t jitterGap = (uint32_t)(gapMs + arc4random_uniform(35));
-            usleep(jitterGap * 1000);
-        }
-    }
-    return anyOk;
 }
 
 - (BOOL)performQuickSwipeFromPoint:(CGPoint)startPt

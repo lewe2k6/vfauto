@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#061118" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Trạm Nhận Map Xanh SM — Màn Phụ</title>
+  <style>
+    :root {
+      --bg: #060d14;
+      --card: #0f1b27;
+      --card-border: rgba(56, 189, 248, 0.18);
+      --emerald: #10b981;
+      --emerald-bright: #34d399;
+      --cyan: #22d3ee;
+      --amber: #f59e0b;
+      --danger: #ef4444;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 540px;
+      margin: 0 auto;
+      padding: calc(env(safe-area-inset-top, 8px) + 10px) 14px calc(env(safe-area-inset-bottom, 16px) + 24px);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: -0.2px;
+      color: #fff;
+    }
+    .brand span {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(148, 163, 184, 0.14);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .status-pill.live {
+      background: rgba(16, 185, 129, 0.18);
+      color: var(--emerald-bright);
+      border: 1px solid rgba(52, 211, 153, 0.35);
+    }
+    .status-pill.warn {
+      background: rgba(245, 158, 11, 0.18);
+      color: #fbbf24;
+      border: 1px solid rgba(251, 191, 36, 0.35);
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .status-pill.live .dot {
+      box-shadow: 0 0 8px var(--emerald-bright);
+      animation: pulseDot 1.6s infinite;
+    }
+    @keyframes pulseDot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.82); }
+    }
+
+    /* Giant Hero Launch Card */
+    .hero-launch {
+      background: linear-gradient(145deg, #064e3b 0%, #047857 55%, #059669 100%);
+      border: 2px solid #34d399;
+      border-radius: 18px;
+      padding: 18px 16px;
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+      box-shadow: 0 10px 30px rgba(16, 185, 129, 0.28);
+      transition: transform 0.08s ease;
+    }
+    .hero-launch:active {
+      transform: scale(0.985);
+    }
+    .hero-launch.idle {
+      background: var(--card);
+      border: 1px dashed rgba(148, 163, 184, 0.3);
+      box-shadow: none;
+    }
+    .hero-tag {
+      display: inline-block;
+      font-size: 11.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.28);
+      color: #a7f3d0;
+      margin-bottom: 8px;
+    }
+    .hero-launch.idle .hero-tag {
+      background: rgba(34, 211, 238, 0.12);
+      color: var(--cyan);
+    }
+    .hero-coords {
+      font-size: 21px;
+      font-weight: 800;
+      color: #fff;
+      word-break: break-word;
+      margin: 4px 0 6px;
+      font-variant-numeric: tabular-nums;
+    }
+    .hero-sub {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.88);
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    .hero-launch.idle .hero-sub {
+      color: var(--muted);
+      margin-bottom: 0;
+    }
+    .hero-cta {
+      display: block;
+      width: 100%;
+      padding: 14px 12px;
+      border-radius: 12px;
+      background: #ffffff;
+      color: #064e3b;
+      font-size: 16px;
+      font-weight: 900;
+      letter-spacing: 0.2px;
+      border: none;
+      cursor: pointer;
+    }
+    .hero-launch.idle .hero-cta {
+      display: none;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 15px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--cyan);
+      margin: 0;
+    }
+
+    .wake-btn {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 11px;
+      border: 1px solid rgba(34, 211, 238, 0.4);
+      background: rgba(34, 211, 238, 0.13);
+      color: #e0f2fe;
+      font-size: 13.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .wake-btn.active {
+      border-color: rgba(52, 211, 153, 0.5);
+      background: rgba(16, 185, 129, 0.18);
+      color: #6ee7b7;
+    }
+
+    .row-input {
+      display: flex;
+      gap: 8px;
+    }
+    .row-input input {
+      flex: 1;
+      min-width: 0;
+      padding: 11px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: #071019;
+      color: #fff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .btn {
+      padding: 11px 14px;
+      border-radius: 10px;
+      border: none;
+      font-size: 13.5px;
+      font-weight: 700;
+      cursor: pointer;
+      background: #0284c7;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .btn.secondary {
+      background: rgba(148, 163, 184, 0.18);
+      color: #e2e8f0;
+    }
+
+    .opt-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 4px 0;
+    }
+    .opt-label {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+    .opt-sub {
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: #071019;
+      color: #fff;
+      font-size: 13.5px;
+      font-weight: 600;
+    }
+    input[type="checkbox"] {
+      width: 22px;
+      height: 22px;
+      accent-color: var(--emerald);
+      cursor: pointer;
+    }
+
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .hist-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 11px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      cursor: pointer;
+    }
+    .hist-item:active {
+      background: rgba(16, 185, 129, 0.16);
+    }
+    .hist-main {
+      min-width: 0;
+      flex: 1;
+    }
+    .hist-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #f8fafc;
+      font-variant-numeric: tabular-nums;
+      word-break: break-word;
+    }
+    .hist-meta {
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .hist-open {
+      padding: 7px 11px;
+      border-radius: 8px;
+      background: rgba(16, 185, 129, 0.2);
+      color: var(--emerald-bright);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .hint-box {
+      font-size: 12px;
+      line-height: 1.48;
+      color: var(--muted);
+    }
+    .hint-box code {
+      color: #67e8f9;
+      background: rgba(34, 211, 238, 0.12);
+      padding: 2px 6px;
+      border-radius: 5px;
+      font-weight: 700;
+    }
+    .nav-footer {
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      padding-top: 4px;
+    }
+    .nav-footer a {
+      color: var(--cyan);
+      text-decoration: none;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="brand">
+        <h1>Trạm Nhận Map Xanh SM</h1>
+        <span id="osDetectedText">Đang nhận diện thiết bị...</span>
+      </div>
+      <div id="connBadge" class="status-pill">
+        <span class="dot"></span>
+        <span id="connText">Chưa kết nối</span>
+      </div>
+    </div>
+
+    <!-- Giant Tap Target & Live Incoming Pin -->
+    <div id="heroCard" class="hero-launch idle" role="button" tabindex="0">
+      <div id="heroTag" class="hero-tag">ĐANG CHỜ LỆNH TỪ IPHONE 8</div>
+      <div id="heroCoords" class="hero-coords">Bấm "Điều hướng" trên iPhone 8</div>
+      <div id="heroSub" class="hero-sub">Tọa độ vệ tinh sẽ nổ thẳng sang đây trong 0.2 giây và tự bung Google Maps dẫn đường.</div>
+      <button id="heroBtn" type="button" class="hero-cta">MỞ GOOGLE MAPS DẪN ĐƯỜNG NGAY</button>
+    </div>
+
+    <button id="wakeAudioBtn" type="button" class="wake-btn">
+      CHẠM 1 LẦN ĐỂ GIỮ SÁNG MÀN + BẬT CHUÔNG BÁO MAP
+    </button>
+
+    <!-- Channel & Routing Config -->
+    <div class="card">
+      <p class="card-title">1. Kênh Kết Nối Với iPhone 8</p>
+      <div class="row-input">
+        <input id="topicInput" type="text" placeholder="Nhập mã kênh (vd: vf-map-8a92k1)" autocomplete="off" autocapitalize="none" spellcheck="false" />
+        <button id="connectBtn" type="button" class="btn">Kết Nối</button>
+      </div>
+
+      <div class="opt-row">
+        <div>
+          <div class="opt-label">Tự bung Google Maps ngay khi nhận</div>
+          <div class="opt-sub">Tự chuyển thẳng sang app bản đồ không cần chạm</div>
+        </div>
+        <input id="autoOpenChk" type="checkbox" checked />
+      </div>
+
+      <div>
+        <div class="opt-sub" style="margin-bottom: 5px;">Kiểu mở bản đồ trên máy này:</div>
+        <select id="navModeSelect">
+          <option value="auto">Tự động chuẩn theo máy (Khuyên dùng)</option>
+          <option value="android_moto">Android: Vào thẳng dẫn đường Xe máy (2 bánh)</option>
+          <option value="gmaps_universal">Google Maps chuẩn (Android &amp; iPhone)</option>
+          <option value="ios_gmaps">iPhone: App Google Maps (comgooglemaps://)</option>
+          <option value="apple_maps">iPhone: Apple Maps</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Recent History -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <p class="card-title">2. Lịch Sử Điểm Đến Gần Nhất</p>
+        <button id="clearHistBtn" type="button" class="btn secondary" style="padding:5px 10px;font-size:11.5px;">Xóa</button>
+      </div>
+      <div id="historyList" class="history-list">
+        <div class="hint-box">Chưa có điểm đến nào trong phiên này.</div>
+      </div>
+    </div>
+
+    <!-- Background ntfy App Tip -->
+    <div class="card">
+      <p class="card-title">Mẹo Nhận Map Kể Cả Khi Tắt Màn Hình</p>
+      <div class="hint-box">
+        Nếu muốn khóa màn hình hoặc vừa lướt TikTok/Zalo trên máy này mà vẫn nổ thông báo mở Map: tải app miễn phí <strong>ntfy</strong> trên CH Play / App Store, bấm dấu <strong>(+)</strong> và nhập đúng mã kênh <code id="ntfyTopicCode">chưa có</code>.
+        <div style="margin-top:8px;">
+          <button id="copyTopicBtn" type="button" class="btn secondary" style="padding:7px 12px;font-size:12px;">Copy Mã Kênh Cho App ntfy</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="nav-footer">
+      <a href="./index.html">Chuyển sang Cứu Hộ Mã QR Trạm Pin Liệt Cảm Ứng</a>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var STORAGE_TOPIC_KEY   = 'vf_map_relay_topic_v1';
+      var STORAGE_MODE_KEY    = 'vf_map_relay_mode_v1';
+      var STORAGE_AUTO_KEY    = 'vf_map_relay_auto_v1';
+      var STORAGE_SEEN_KEY    = 'vf_map_relay_seen_v1';
+      var STORAGE_HIST_KEY    = 'vf_map_relay_hist_v1';
+
+      var ua = navigator.userAgent || '';
+      var isAndroid = /Android/i.test(ua);
+      var isIOS = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+      var osDetectedText = document.getElementById('osDetectedText');
+      osDetectedText.textContent = isAndroid
+        ? 'Máy nhận: Android (Ưu tiên dẫn đường Xe máy 2 bánh)'
+        : (isIOS ? 'Máy nhận: iPhone / iOS (Ưu tiên Google Maps App)' : 'Máy nhận: Trình duyệt Web');
+
+      var connBadge      = document.getElementById('connBadge');
+      var connText       = document.getElementById('connText');
+      var heroCard       = document.getElementById('heroCard');
+      var heroTag        = document.getElementById('heroTag');
+      var heroCoords     = document.getElementById('heroCoords');
+      var heroSub        = document.getElementById('heroSub');
+      var heroBtn        = document.getElementById('heroBtn');
+      var wakeAudioBtn   = document.getElementById('wakeAudioBtn');
+      var topicInput     = document.getElementById('topicInput');
+      var connectBtn     = document.getElementById('connectBtn');
+      var autoOpenChk    = document.getElementById('autoOpenChk');
+      var navModeSelect  = document.getElementById('navModeSelect');
+      var historyList    = document.getElementById('historyList');
+      var clearHistBtn   = document.getElementById('clearHistBtn');
+      var ntfyTopicCode  = document.getElementById('ntfyTopicCode');
+      var copyTopicBtn   = document.getElementById('copyTopicBtn');
+
+      var activeTopic    = '';
+      var wsConn         = null;
+      var sseConn        = null;
+      var reconnectTimer = null;
+      var wsFailCount    = 0;
+      var wakeLockSentinel = null;
+      var audioCtx       = null;
+      var latestItem     = null;
+
+      function sanitizeTopic(raw) {
+        if (!raw) return '';
+        return String(raw).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 48);
+      }
+
+      function loadJSON(key, fallback) {
+        try {
+          var v = localStorage.getItem(key);
+          return v ? JSON.parse(v) : fallback;
+        } catch (_) {
+          return fallback;
+        }
+      }
+
+      function saveJSON(key, val) {
+        try {
+          localStorage.setItem(key, JSON.stringify(val));
+        } catch (_) {}
+      }
+
+      var seenIds = loadJSON(STORAGE_SEEN_KEY, []);
+      var historyItems = loadJSON(STORAGE_HIST_KEY, []);
+
+      function markSeen(id) {
+        if (!id) return;
+        if (seenIds.indexOf(id) === -1) {
+          seenIds.push(id);
+          if (seenIds.length > 50) {
+            seenIds = seenIds.slice(seenIds.length - 50);
+          }
+          saveJSON(STORAGE_SEEN_KEY, seenIds);
+        }
+      }
+
+      function hasSeen(id) {
+        return id && seenIds.indexOf(id) !== -1;
+      }
+
+      function setConnState(mode, label) {
+        connBadge.className = 'status-pill' + (mode ? ' ' + mode : '');
+        connText.textContent = label;
+      }
+
+      function buildTargetURI(item) {
+        if (!item) return '';
+        var mode = navModeSelect.value || 'auto';
+        var hasCoords = !!item.hasCoords && typeof item.lat === 'number' && typeof item.lng === 'number';
+        var destRaw = hasCoords
+          ? (item.lat.toFixed(6) + ',' + item.lng.toFixed(6))
+          : encodeURIComponent(item.label || '');
+
+        if (mode === 'android_moto' || (mode === 'auto' && isAndroid)) {
+          return item.androidUri || ('google.navigation:q=' + destRaw + '&mode=l');
+        }
+        if (mode === 'ios_gmaps' || (mode === 'auto' && isIOS)) {
+          return item.iosUri || ('comgooglemaps://?daddr=' + destRaw + '&directionsmode=driving');
+        }
+        if (mode === 'apple_maps') {
+          return 'http://maps.apple.com/?daddr=' + destRaw + '&dirflg=d';
+        }
+        return item.gmapsUrl || ('https://www.google.com/maps/dir/?api=1&destination=' + destRaw + '&travelmode=two-wheeler');
+      }
+
+      function playAlertChime() {
+        try {
+          if (navigator.vibrate) {
+            navigator.vibrate([220, 80, 220]);
+          }
+        } catch (_) {}
+        try {
+          var Ctx = window.AudioContext || window.webkitAudioContext;
+          if (!Ctx) return;
+          if (!audioCtx) audioCtx = new Ctx();
+          if (audioCtx.state === 'suspended') audioCtx.resume();
+          var now = audioCtx.currentTime;
+          [880, 1174.66].forEach(function (freq, idx) {
+            var osc = audioCtx.createOscillator();
+            var gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, now + idx * 0.13);
+            gain.gain.setValueAtTime(0.001, now + idx * 0.13);
+            gain.gain.exponentialRampToValueAtTime(0.22, now + idx * 0.13 + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.13 + 0.12);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now + idx * 0.13);
+            osc.stop(now + idx * 0.13 + 0.13);
+          });
+        } catch (_) {}
+      }
+
+      function requestScreenWakeLock() {
+        if (!('wakeLock' in navigator)) return;
+        navigator.wakeLock.request('screen').then(function (sentinel) {
+          wakeLockSentinel = sentinel;
+          wakeAudioBtn.classList.add('active');
+          wakeAudioBtn.textContent = 'ĐÃ GIỮ SÁNG MÀN HÌNH + BẬT CHUÔNG SẴN SÀNG';
+          sentinel.addEventListener('release', function () {
+            wakeAudioBtn.classList.remove('active');
+            wakeAudioBtn.textContent = 'CHẠM LẠI ĐỂ GIỮ SÁNG MÀN + BẬT CHUÔNG';
+          });
+        }).catch(function () {});
+      }
+
+      wakeAudioBtn.addEventListener('click', function () {
+        try {
+          var Ctx = window.AudioContext || window.webkitAudioContext;
+          if (Ctx) {
+            if (!audioCtx) audioCtx = new Ctx();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+          }
+        } catch (_) {}
+        requestScreenWakeLock();
+        playAlertChime();
+      });
+
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') {
+          if (wakeLockSentinel) requestScreenWakeLock();
+          pollRecentMessages(false);
+        }
+      });
+
+      function formatTimeStr(tsMs) {
+        var d = new Date(tsMs || Date.now());
+        var hh = String(d.getHours()).padStart(2, '0');
+        var mm = String(d.getMinutes()).padStart(2, '0');
+        var ss = String(d.getSeconds()).padStart(2, '0');
+        return hh + ':' + mm + ':' + ss;
+      }
+
+      function openMapForItem(item) {
+        if (!item) return;
+        var uri = buildTargetURI(item);
+        if (!uri) return;
+        window.location.href = uri;
+      }
+
+      function renderHero(item) {
+        if (!item) {
+          heroCard.className = 'hero-launch idle';
+          heroTag.textContent = activeTopic ? ('ĐANG CANH KÊNH: ' + activeTopic) : 'CHƯA NHẬP MÃ KÊNH';
+          heroCoords.textContent = 'Bấm "Điều hướng" trên iPhone 8';
+          heroSub.textContent = 'Tọa độ vệ tinh sẽ nổ thẳng sang đây trong 0.2 giây và tự bung Google Maps dẫn đường.';
+          return;
+        }
+        heroCard.className = 'hero-launch';
+        heroTag.textContent = 'ĐIỂM ĐẾN MỚI LÚC ' + formatTimeStr(item.ts) + ' (' + (item.source || 'XanhSM') + ')';
+        heroCoords.textContent = item.label || (item.lat + ', ' + item.lng);
+        heroSub.textContent = 'Chạm bất kỳ đâu vào ô xanh này để mở lại Google Maps ngay lập tức';
+      }
+
+      function renderHistory() {
+        if (!historyItems.length) {
+          historyList.innerHTML = '<div class="hint-box">Chưa có điểm đến nào trong phiên này.</div>';
+          return;
+        }
+        historyList.innerHTML = '';
+        historyItems.slice(0, 12).forEach(function (it) {
+          var row = document.createElement('div');
+          row.className = 'hist-item';
+          var main = document.createElement('div');
+          main.className = 'hist-main';
+          var t = document.createElement('div');
+          t.className = 'hist-title';
+          t.textContent = it.label || '';
+          var m = document.createElement('div');
+          m.className = 'hist-meta';
+          m.textContent = formatTimeStr(it.ts) + ' • Nguồn: ' + (it.source || 'XanhSM');
+          main.appendChild(t);
+          main.appendChild(m);
+
+          var badge = document.createElement('div');
+          badge.className = 'hist-open';
+          badge.textContent = 'Mở Map';
+
+          row.appendChild(main);
+          row.appendChild(badge);
+          row.addEventListener('click', function () {
+            openMapForItem(it);
+          });
+          historyList.appendChild(row);
+        });
+      }
+
+      heroCard.addEventListener('click', function () {
+        if (latestItem) {
+          openMapForItem(latestItem);
+        }
+      });
+
+      function handleNtfyEnvelope(env, isLiveStream) {
+        if (!env || env.event !== 'message') return;
+        var msgId = env.id || '';
+        var parsed = null;
+        if (typeof env.message === 'string' && env.message.trim().charAt(0) === '{') {
+          try {
+            parsed = JSON.parse(env.message);
+          } catch (_) {}
+        }
+        var dedupKey = (parsed && parsed.id) ? parsed.id : msgId;
+        if (!dedupKey || hasSeen(dedupKey)) return;
+        markSeen(dedupKey);
+
+        var item = parsed || {
+          id: dedupKey,
+          hasCoords: false,
+          lat: 0,
+          lng: 0,
+          label: String(env.message || '').trim(),
+          source: 'ntfy',
+          gmapsUrl: env.click || '',
+          ts: (env.time ? env.time * 1000 : Date.now())
+        };
+        if (!item.label && !item.hasCoords) return;
+        if (!item.ts) item.ts = env.time ? env.time * 1000 : Date.now();
+
+        latestItem = item;
+        historyItems.unshift(item);
+        if (historyItems.length > 20) historyItems = historyItems.slice(0, 20);
+        saveJSON(STORAGE_HIST_KEY, historyItems);
+
+        renderHero(item);
+        renderHistory();
+
+        var ageSec = Math.abs(Date.now() - item.ts) / 1000;
+        var shouldLaunchNow = isLiveStream || ageSec <= 20;
+        if (shouldLaunchNow) {
+          playAlertChime();
+          if (autoOpenChk.checked) {
+            openMapForItem(item);
+          }
+        }
+      }
+
+      function pollRecentMessages(isInitialBoot) {
+        if (!activeTopic) return;
+        var pollUrl = 'https://ntfy.sh/' + encodeURIComponent(activeTopic) + '/json?poll=1&since=45s';
+        fetch(pollUrl, { cache: 'no-store' }).then(function (r) {
+          return r.ok ? r.text() : '';
+        }).then(function (txt) {
+          if (!txt) return;
+          var lines = txt.trim().split('\n');
+          lines.forEach(function (line) {
+            if (!line.trim()) return;
+            try {
+              var env = JSON.parse(line);
+              handleNtfyEnvelope(env, !isInitialBoot);
+            } catch (_) {}
+          });
+        }).catch(function () {});
+      }
+
+      function closeStreams() {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (wsConn) {
+          try { wsConn.onclose = null; wsConn.close(); } catch (_) {}
+          wsConn = null;
+        }
+        if (sseConn) {
+          try { sseConn.onerror = null; sseConn.close(); } catch (_) {}
+          sseConn = null;
+        }
+      }
+
+      function startSSEFallback() {
+        if (!activeTopic) return;
+        closeStreams();
+        setConnState('warn', 'Đang nối SSE...');
+        try {
+          var es = new EventSource('https://ntfy.sh/' + encodeURIComponent(activeTopic) + '/sse');
+          sseConn = es;
+          es.onopen = function () {
+            setConnState('live', 'Trực tuyến (SSE)');
+          };
+          es.onmessage = function (ev) {
+            try {
+              handleNtfyEnvelope(JSON.parse(ev.data), true);
+            } catch (_) {}
+          };
+          es.onerror = function () {
+            setConnState('warn', 'Tự nối lại...');
+            closeStreams();
+            reconnectTimer = setTimeout(connectLiveStream, 2200);
+          };
+        } catch (_) {
+          reconnectTimer = setTimeout(connectLiveStream, 2500);
+        }
+      }
+
+      function connectLiveStream() {
+        closeStreams();
+        if (!activeTopic) {
+          setConnState('', 'Chưa nhập mã');
+          return;
+        }
+        ntfyTopicCode.textContent = activeTopic;
+        if (!latestItem) renderHero(null);
+        setConnState('warn', 'Đang kết nối...');
+
+        if (!('WebSocket' in window) || wsFailCount >= 2) {
+          startSSEFallback();
+          return;
+        }
+
+        try {
+          var ws = new WebSocket('wss://ntfy.sh/' + encodeURIComponent(activeTopic) + '/ws');
+          wsConn = ws;
+          ws.onopen = function () {
+            wsFailCount = 0;
+            setConnState('live', 'Đang canh Map');
+          };
+          ws.onmessage = function (ev) {
+            try {
+              var env = JSON.parse(ev.data);
+              handleNtfyEnvelope(env, true);
+            } catch (_) {}
+          };
+          ws.onerror = function () {
+            wsFailCount++;
+          };
+          ws.onclose = function () {
+            wsConn = null;
+            setConnState('warn', 'Đang nối lại...');
+            reconnectTimer = setTimeout(function () {
+              if (wsFailCount >= 2) startSSEFallback();
+              else connectLiveStream();
+            }, 1500);
+          };
+        } catch (_) {
+          wsFailCount = 2;
+          startSSEFallback();
+        }
+      }
+
+      function applyTopicAndConnect(rawTopic, isBoot) {
+        var clean = sanitizeTopic(rawTopic);
+        activeTopic = clean;
+        topicInput.value = clean;
+        ntfyTopicCode.textContent = clean || 'chưa có';
+        if (clean) {
+          try { localStorage.setItem(STORAGE_TOPIC_KEY, clean); } catch (_) {}
+          try {
+            var nextUrl = new URL(window.location.href);
+            nextUrl.searchParams.set('k', clean);
+            window.history.replaceState(null, '', nextUrl.toString());
+          } catch (_) {}
+          wsFailCount = 0;
+          connectLiveStream();
+          pollRecentMessages(!!isBoot);
+        } else {
+          closeStreams();
+          setConnState('', 'Chưa nhập mã');
+          renderHero(null);
+        }
+      }
+
+      connectBtn.addEventListener('click', function () {
+        applyTopicAndConnect(topicInput.value, false);
+      });
+      topicInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          applyTopicAndConnect(topicInput.value, false);
+        }
+      });
+
+      autoOpenChk.addEventListener('change', function () {
+        try { localStorage.setItem(STORAGE_AUTO_KEY, autoOpenChk.checked ? '1' : '0'); } catch (_) {}
+      });
+      navModeSelect.addEventListener('change', function () {
+        try { localStorage.setItem(STORAGE_MODE_KEY, navModeSelect.value); } catch (_) {}
+      });
+
+      clearHistBtn.addEventListener('click', function () {
+        historyItems = [];
+        latestItem = null;
+        saveJSON(STORAGE_HIST_KEY, []);
+        renderHero(null);
+        renderHistory();
+      });
+
+      copyTopicBtn.addEventListener('click', function () {
+        if (!activeTopic) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(activeTopic).then(function () {
+            copyTopicBtn.textContent = 'Đã Copy: ' + activeTopic;
+            setTimeout(function () {
+              copyTopicBtn.textContent = 'Copy Mã Kênh Cho App ntfy';
+            }, 1800);
+          });
+        }
+      });
+
+      // Restore preferences & URL ?k=<topic>
+      try {
+        var savedAuto = localStorage.getItem(STORAGE_AUTO_KEY);
+        if (savedAuto === '0') autoOpenChk.checked = false;
+        var savedMode = localStorage.getItem(STORAGE_MODE_KEY);
+        if (savedMode) navModeSelect.value = savedMode;
+      } catch (_) {}
+
+      if (historyItems.length > 0) {
+        latestItem = historyItems[0];
+      }
+      renderHistory();
+
+      var params = new URLSearchParams(window.location.search);
+      var urlTopic = sanitizeTopic(params.get('k') || params.get('topic') || '');
+      var savedTopic = '';
+      try { savedTopic = sanitizeTopic(localStorage.getItem(STORAGE_TOPIC_KEY) || ''); } catch (_) {}
+      var initialTopic = urlTopic || savedTopic;
+      if (latestItem) renderHero(latestItem);
+      if (initialTopic) {
+        applyTopicAndConnect(initialTopic, true);
+      } else {
+        renderHero(null);
+      }
+    })();
+  </script>
+</body>
+</html>
