@@ -38,9 +38,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.7-ts
-          name: "Pin & Nhiệt Độ v4.7 Lọc TTTM/Quán Đông Hà Nội, Đo Đường >3km & Khiên Chống Lag 4G (TrollStore)"
-          body: "Bản cập nhật lớn v4.7: (1) Tích hợp trực tiếp cơ sở dữ liệu Offline 17.014 quán Green Food Hà Nội (0.3ms) kết hợp danh sách từ khóa tùy chỉnh — chặn cứng 100% đơn Food có Điểm nhận tại Trung tâm thương mại (TTTM), tầng hầm B1-B2, gian hàng/kiosk và các chuỗi quán đông xếp hàng lâu (Phê La, Chú Long, Katinat, Phúc Long, Lotteria, KFC, Cơm Thố Anh Nguyễn...); (2) Quy tắc Một Trong Hai cho Quán Sạch: Nhận đơn nếu Giá >= Mức tối thiểu HOẶC Quãng đường xe máy Điểm nhận -> Điểm giao > 3.0 km (đo thực tế qua Valhalla motor_scooter né Vành đai 3 trên cao + Nội suy đường phố Hà Nội Offline); (3) Khiên Chống Lag 4G toàn diện: chờ load đủ chữ khung trắng, khóa dấu vân tay đơn hàng 4.2s chống bấm lặp [X]/[Nhận] khi mạng xoay vòng, và cầu chì cắt mạng 650ms nhường băng thông cho app Xanh SM Bác Tài."
+          tag_name: v4.8-ts
+          name: "Pin & Nhiệt Độ v4.8 Hợp Nhất Dữ Liệu 3 Sàn (74.496 Quán Xanh-Shopee-Grab & 49.261 Ghim HN)"
+          body: "Bản nâng cấp dữ liệu lớn v4.8: (1) Hợp nhất dữ liệu liên sàn 74.496 quán ăn Hà Nội (17.014 Xanh SM + 53.602 ShopeeFood + 3.880 GrabFood) vào lõi nhị phân HANOI_FOOD_INDEX_V2 (1.17MB, tra cứu 0.2ms) — vạch trần các quán TTTM/Tầng hầm ẩn tên trên Xanh SM và chuẩn hóa Điểm Đông Liên Sàn (max[Đơn Xanh, Vote Grab x3.2, Điểm Shopee x3.0]); (2) Chống phạt oan thông minh: tự động miễn trừ cụm chỉ hướng 'Đối diện / Cạnh / Gần TTTM' và kiot tầng trệt chung cư cũ; (3) Nâng mật độ ghim tọa độ đường/ngõ/số nhà Hà Nội Offline lên 49.261 điểm giúp đo khoảng cách >3.0km tức thì, bỏ qua gọi mạng ArcGIS khi trúng ghim nhà/ngõ chính xác."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

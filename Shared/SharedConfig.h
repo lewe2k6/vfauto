@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"4.7"
+#define kCurrentDaemonVersion   @"4.8"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
@@ -24,9 +24,9 @@
 #define kDefaultScreenW         375.0
 #define kDefaultScreenH         667.0
 
-#define kDefaultFoodMallKeywords @"vincom, aeon, lotte mall, lotte center, lotte mart, royal city, times city, park hill, big c, bigc, go! thang long, tops market, mega market, the garden, indochina, iph, the loop, keangnam, landmark 72, tasco mall, savico, artemis, discovery complex, trang tien plaza, ho guom plaza, mac plaza, machinco, mipec, the zei, tnr tower, sun plaza, cho dong xuan, trung tam thuong mai, tttm, tang ham, ham b1, ham b2, ham b3, gian hang, kiosk, food court, goods court, tang l1, tang l2, tang l3, tang l4, tang l5, 72a nguyen trai, 458 minh khai, 191 ba trieu, 54a nguyen chi thanh, 119 tran duy hung, 222 tran duy hung, 272 vo chi cong, 54 lieu giai, 241 xuan thuy, 27 co linh, 302 cau giay"
+#define kDefaultFoodMallKeywords @"vincom, vincommall, aeon, aeonmall, lotte mall, lottemall, lotte center, lotte centre, lotte dao tan, lotte mart, lottemart, royal city, times city, park hill, big c, bigc, go! thang long, go mall, tops market, top market, topmarket, mega market, the garden, indochina, iph, the loop, keangnam, landmark 72, tasco mall, tascomall, savico, artemis, discovery complex, trang tien plaza, ho guom plaza, mac plaza, machinco, mipec, the zei, tnr tower, sun plaza, cho dong xuan, rox center, ha noi centre, ebest, trung tam thuong mai, tttm, tang ham, ham b1, ham b2, ham b3, gian hang, kiosk, food court, goods court, tang l1, tang l2, tang l3, tang l4, tang l5, 72a nguyen trai, 458 minh khai, 191 ba trieu, 54a nguyen chi thanh, 119 tran duy hung, 222 tran duy hung, 272 vo chi cong, 54 lieu giai, 29 lieu giai, 241 xuan thuy, 27 co linh, 302 cau giay, 236 pham van dong"
 
-#define kDefaultFoodChainKeywords @"phe la, katinat, ca phe muoi chu long, phuc long, koi the, the alley, gong cha, chagee, starbucks, lotteria, kfc, jollibee, mcdonald, popeyes, texas chicken, burger king, pizza 4p, pizza hut, domino, al fresco, com tho anh nguyen, com suon cay himc, bami king, haidilao, dookki, manwah, gogi house, kichi kichi, marukame"
+#define kDefaultFoodChainKeywords @"phe la, katinat, ca phe muoi chu long, phuc long, koi the, the alley, gong cha, chagee, starbucks, lotteria, kfc, jollibee, mcdonald, popeyes, texas chicken, burger king, pizza 4p, pizza hut, domino, al fresco, the pizza company, pizza home, don chicken, com tho anh nguyen, com suon cay himc, com suon dao duy tu, bami king, kaoya, yu tang, haidilao, dookki, manwah, gogi house, kichi kichi, marukame"
 
 typedef NS_ENUM(NSInteger, CoordMode) {
     CoordModeAutoOCRWithOffset = 0,

@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, FoodFilterDecisionType) {
 @interface HanoiFoodFilterEngine : NSObject
 
 @property (nonatomic, readonly) NSInteger loadedMerchantCount;
+@property (nonatomic, readonly) NSInteger loadedStreetPinCount;
 @property (nonatomic, readonly) BOOL isIndexReady;
 
 + (instancetype)sharedEngine;

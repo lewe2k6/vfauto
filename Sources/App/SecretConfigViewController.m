@@ -96,7 +96,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v4.7";
+    self.title = @"Tinh Chỉnh Lọc Đơn v4.8";
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -431,17 +431,17 @@
 
     // --- CARD 1B: HANOI GREEN FOOD TTTM/CHAIN BLACKLIST & >3KM DISTANCE ---
     UIStackView *sec1B = nil;
-    [self makeCardWithTitle:@"1B. Chặn TTTM/Quán Đông & Đo Km Food (>3km)" addTo:_stackView outBody:&sec1B];
+    [self makeCardWithTitle:@"1B. Chặn TTTM/Quán Đông 3 Sàn & Đo Km Food (>3km)" addTo:_stackView outBody:&sec1B];
     _foodSmartFilterCardBody = sec1B;
 
     _swBlockMall = [self addSwitchRowTo:sec1B
                                   title:@"Chặn cứng TTTM, Tầng Hầm & Gian Hàng"
-                               subtitle:@"Điểm nhận trúng TTTM / Hầm B1-B2 / Kiosk (DB 17.014 quán HN + Từ khóa) -> Bấm [X] 100% mọi giá, mọi km"
+                               subtitle:@"Điểm nhận trúng TTTM / Hầm B1-B2 / Kiosk (DB 74.496 quán Xanh-Shopee-Grab + Từ khóa, tự miễn trừ 'Đối diện/Cạnh') -> Bấm [X] 100%"
                                  action:@selector(generalControlChanged)];
 
     _swBlockChains = [self addSwitchRowTo:sec1B
                                     title:@"Chặn cứng Chuỗi Quán Đông Chờ Lâu"
-                                 subtitle:@"Phê La, Chú Long, Katinat, Phúc Long, Lotteria, KFC, Cơm Thố Anh Nguyễn... -> Bấm [X] 100%"
+                                 subtitle:@"Phê La, Chú Long, Katinat, Phúc Long, Lotteria, KFC, Pizza Home, Kaoya, Yu Tang, Cơm Sườn Đào Duy Từ... -> Bấm [X] 100%"
                                    action:@selector(generalControlChanged)];
 
     _slMaxMerchantOrders = [self addSliderRowTo:sec1B min:0.0f max:20000.0f outLabel:&_lblMaxMerchantOrders action:@selector(sliderChanged)];
@@ -685,15 +685,18 @@
                              [self formatVND:_cfg.minFoodPriceVND]];
 
     if (_cfg.foodMaxMerchantOrders <= 0) {
-        _lblMaxMerchantOrders.text = @"Lọc theo tổng số đơn quán (DB Hà Nội): ĐANG TẮT (0)";
+        _lblMaxMerchantOrders.text = @"Lọc Điểm Đông Liên Sàn (Xanh + Grab + Shopee): ĐANG TẮT (0)";
     } else {
-        _lblMaxMerchantOrders.text = [NSString stringWithFormat:@"Chặn cứng quán quá đông trong DB Hà Nội: >= %ld đơn",
-                                      (long)_cfg.foodMaxMerchantOrders];
+        NSInteger v = _cfg.foodMaxMerchantOrders;
+        NSInteger grabEq   = (NSInteger)llround((double)v / 3.2);
+        NSInteger shopeeEq = (NSInteger)llround((double)v / 3.0);
+        _lblMaxMerchantOrders.text = [NSString stringWithFormat:@"Chặn quán quá tải liên sàn: >= %ld điểm đông\n(~%ld đơn Xanh | ~%ld vote Grab | ~%ld điểm Shopee)",
+                                      (long)v, (long)v, (long)grabEq, (long)shopeeEq];
     }
 
     _distSliderWrap.alpha = _cfg.foodAcceptLongDistance ? 1.0 : 0.35;
     _distSliderWrap.userInteractionEnabled = _cfg.foodAcceptLongDistance;
-    _lblMinFoodDistKm.text = [NSString stringWithFormat:@"Ngưỡng khoảng cách Điểm nhận -> Điểm giao: > %.1f km\n(Đo xe máy Valhalla + DB Hà Nội Offline chống lag 4G)",
+    _lblMinFoodDistKm.text = [NSString stringWithFormat:@"Ngưỡng khoảng cách Điểm nhận -> Điểm giao: > %.1f km\n(Đo xe máy Valhalla + 49.261 ghim Hà Nội Offline chống lag 4G)",
                               _cfg.minFoodDistanceKm];
 
     _lblPauseSec.text    = [NSString stringWithFormat:@"Thời gian tắt nhận chuyến: %ld giây (%.1f phút)",
@@ -1088,7 +1091,7 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.7!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v4.8!");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
@@ -1135,13 +1138,13 @@
     }
 
     if ((wkPid > 0 || wdPid > 0) && _cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.7 (WD:%d | WK:%d)%@%@",
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v4.8 (WD:%d | WK:%d)%@%@",
                                    wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.7...";
+        _daemonStatusLabel.text = @"● ĐANG HỒI SINH LÕI NGẦM v4.8...";
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";

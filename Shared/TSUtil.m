@@ -311,10 +311,14 @@ BOOL readMasterEnabledSafely(BOOL defaultIfUnreadable) {
     if (dict[@"foodBlockCrowdedChains"])   cfg.foodBlockCrowdedChains   = [dict[@"foodBlockCrowdedChains"] boolValue];
     if (dict[@"foodMaxMerchantOrders"])    cfg.foodMaxMerchantOrders    = [dict[@"foodMaxMerchantOrders"] integerValue];
     if ([dict[@"foodMallKeywords"] isKindOfClass:[NSString class]]) {
-        cfg.foodMallKeywords = dict[@"foodMallKeywords"];
+        NSString *savedMall = dict[@"foodMallKeywords"];
+        NSString *v47DefaultMall = @"vincom, aeon, lotte mall, lotte center, lotte mart, royal city, times city, park hill, big c, bigc, go! thang long, tops market, mega market, the garden, indochina, iph, the loop, keangnam, landmark 72, tasco mall, savico, artemis, discovery complex, trang tien plaza, ho guom plaza, mac plaza, machinco, mipec, the zei, tnr tower, sun plaza, cho dong xuan, trung tam thuong mai, tttm, tang ham, ham b1, ham b2, ham b3, gian hang, kiosk, food court, goods court, tang l1, tang l2, tang l3, tang l4, tang l5, 72a nguyen trai, 458 minh khai, 191 ba trieu, 54a nguyen chi thanh, 119 tran duy hung, 222 tran duy hung, 272 vo chi cong, 54 lieu giai, 241 xuan thuy, 27 co linh, 302 cau giay";
+        cfg.foodMallKeywords = [savedMall isEqualToString:v47DefaultMall] ? kDefaultFoodMallKeywords : savedMall;
     }
     if ([dict[@"foodChainKeywords"] isKindOfClass:[NSString class]]) {
-        cfg.foodChainKeywords = dict[@"foodChainKeywords"];
+        NSString *savedChain = dict[@"foodChainKeywords"];
+        NSString *v47DefaultChain = @"phe la, katinat, ca phe muoi chu long, phuc long, koi the, the alley, gong cha, chagee, starbucks, lotteria, kfc, jollibee, mcdonald, popeyes, texas chicken, burger king, pizza 4p, pizza hut, domino, al fresco, com tho anh nguyen, com suon cay himc, bami king, haidilao, dookki, manwah, gogi house, kichi kichi, marukame";
+        cfg.foodChainKeywords = [savedChain isEqualToString:v47DefaultChain] ? kDefaultFoodChainKeywords : savedChain;
     }
     if (dict[@"foodAcceptLongDistance"])   cfg.foodAcceptLongDistance   = [dict[@"foodAcceptLongDistance"] boolValue];
     if (dict[@"minFoodDistanceKm"])        cfg.minFoodDistanceKm        = [dict[@"minFoodDistanceKm"] doubleValue];

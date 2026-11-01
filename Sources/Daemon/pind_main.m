@@ -1012,8 +1012,9 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v4.7 Bất Tử + Lọc TTTM/Quán Đông (%ld quán HN) & Đo >%.1fkm chạy (WD:%d WK:%d, Quét:%@)",
+            appendDaemonLog(@"pind v4.8 Bất Tử + DB 3 Sàn (%ld quán + %ld ghim HN) & Đo >%.1fkm chạy (WD:%d WK:%d, Quét:%@)",
                             (long)foodEngine.loadedMerchantCount,
+                            (long)foodEngine.loadedStreetPinCount,
                             config.minFoodDistanceKm,
                             getRunningWatchdogPID(), myPid,
                             screenOk ? @"OK" : @"LỖI");
@@ -1113,7 +1114,7 @@ static int runWorkerMain(void) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
                     }
-                    if ((now - bootEpoch) > 1200.0 || currentProcessFootprintMB() > 92) {
+                    if ((now - bootEpoch) > 1200.0 || currentProcessFootprintMB() > 96) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
@@ -1169,7 +1170,7 @@ static int runWorkerMain(void) {
                             [state saveStateAndNotify:YES];
                         }
 
-                        if (((now - bootEpoch) > 60.0 && currentProcessFootprintMB() > 96) ||
+                        if (((now - bootEpoch) > 60.0 && currentProcessFootprintMB() > 100) ||
                             (now - bootEpoch) > 2400.0) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:NO];
@@ -1230,7 +1231,7 @@ static int runWorkerMain(void) {
                     engine.lastFrameChangedSamples <= 3 &&
                     (now - lastFullOCREpoch) < 2.2) {
                     // Static screen inside Xanh SM with no order popup -> skip heavy Vision ANE OCR!
-                    if ((now - bootEpoch) > 90.0 && currentProcessFootprintMB() > 102) {
+                    if ((now - bootEpoch) > 90.0 && currentProcessFootprintMB() > 106) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);

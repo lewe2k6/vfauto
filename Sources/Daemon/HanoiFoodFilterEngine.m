@@ -27,6 +27,15 @@ typedef struct {
 typedef struct {
     float lat;
     float lng;
+    int16_t ngoNum;
+    int16_t houseNum;
+    const char *streetKey;
+    const char *adminHint;
+} HanoiStreetPinRow;
+
+typedef struct {
+    float lat;
+    float lng;
     const char *wardName;
 } HanoiWardRow;
 
@@ -120,6 +129,8 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     size_t _arenaSize;
     HanoiMerchantRow *_merchants;
     int32_t _merchantCount;
+    HanoiStreetPinRow *_pins;
+    int32_t _pinCount;
     HanoiWardRow *_wards;
     int32_t _wardCount;
 
@@ -131,14 +142,19 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     int32_t *_labelNextNL;
     int32_t *_labelNextAD;
 
-    // Hash table 2: Street key lookup (streetKey -> merchant idx chain)
+    // Hash table 2: Street key lookup (streetKey -> merchant idx chain + ShopeeFood pin idx chain)
     int32_t *_streetBuckets;
     int32_t *_streetNext;
+    int32_t *_pinStreetBuckets;
+    int32_t *_pinNext;
 
+    NSRegularExpression *_directionalLandmarkRegex;
     NSRegularExpression *_structuralMallRegex;
+    NSRegularExpression *_exactMallAddressRegex;
     NSRegularExpression *_ngoStreetRegex;
     NSRegularExpression *_numStreetRegex;
     NSRegularExpression *_plainStreetRegex;
+    NSRegularExpression *_bareNumStreetRegex;
     NSRegularExpression *_firstNumberRegex;
     NSRegularExpression *_leadingDotNoiseRegex;
 
@@ -173,6 +189,10 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     return (NSInteger)_merchantCount;
 }
 
+- (NSInteger)loadedStreetPinCount {
+    return (NSInteger)_pinCount;
+}
+
 - (BOOL)isIndexReady {
     return (_merchantCount > 0 && _merchants != NULL);
 }
@@ -184,6 +204,8 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         _arenaSize     = 0;
         _merchants     = NULL;
         _merchantCount = 0;
+        _pins          = NULL;
+        _pinCount      = 0;
         _wards         = NULL;
         _wardCount     = 0;
 
@@ -197,20 +219,33 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         _netCooldownUntilEpoch  = 0.0;
         _consecutiveNetTimeouts = 0;
 
+        // Scrub "Đối diện / Cạnh / Gần / Sau lưng <Mall>" before Gate 1 Mall check so street-front shops across from malls are never blocked!
+        _directionalLandmarkRegex = [NSRegularExpression regularExpressionWithPattern:
+            @"\\b(?:doi\\s+dien|canh|ben\\s+canh|ngay\\s+canh|gan|sau|sau\\s+lung|dang\\s+sau|cach|huong|chech)\\s+(?:cong\\s+[a-z0-9]*\\s*|sanh\\s+[a-z0-9]*\\s*)?(?:tttm\\s+|trung\\s+tam\\s+thuong\\s+mai\\s+|sieu\\s+thi\\s+|toa\\s+nha\\s+)?(?:vincom[a-z]*|aeon[a-z]*|lotte[a-z]*|big\\s*c|bigc|tops?\\s*market|topmarket|mega\\s*market|go|royal\\s*city|times\\s*city|park\\s*hill|keangnam|the\\s*garden|indochina|iph|the\\s*loop|tasco[a-z]*|savico|artemis|discovery|trang\\s*tien|ho\\s*guom|mac\\s*plaza|machinco|mipec|the\\s*zei|tnr|sun\\s*plaza|rox\\s*center|ebest)(?:\\s+(?:mall|center|centre|plaza|tower|city|mart|market|complex|loop|garden|thang\\s+long|ba\\s+trieu|pham\\s+ngoc\\s+thach|nguyen\\s+chi\\s+thanh|tran\\s+duy\\s+hung|lieu\\s+giai|xuan\\s+thuy|long\\s+bien|ha\\s+dong|tay\\s+son|royal|times|mega))*"
+            options:0 error:nil];
+
         _structuralMallRegex = [NSRegularExpression regularExpressionWithPattern:
-            @"\\b(tang\\s*ham|ham\\s*b[1-4]|b[1-3]\\s*-\\s*[a-z0-9]|l[1-6]\\s*-\\s*[0-9a-z]|lo\\s*l[1-6]|lo\\s*b[1-3]|tang\\s*l[1-6]|gian\\s*hang|kiosk|food\\s*court|goods\\s*court)\\b"
+            @"\\b(tang\\s*ham|ham\\s*b[1-4]|b[1-3]\\s*-\\s*[a-z0-9]|l[1-6]\\s*-\\s*[0-9a-z]|f[1-6]\\s*-\\s*[0-9a-z]|lo\\s*l[1-6]|lo\\s*f[1-6]|lo\\s*b[1-3]|tang\\s*l[1-6]|gian\\s*hang|kiosk|food\\s*court|goods\\s*court)\\b"
+            options:0 error:nil];
+
+        _exactMallAddressRegex = [NSRegularExpression regularExpressionWithPattern:
+            @"\\b(72a\\s+(?:duong\\s+|d\\s+)?nguyen\\s+trai|458\\s+(?:pho\\s+|duong\\s+|d\\s+)?minh\\s+khai|191\\s+(?:pho\\s+)?ba\\s+trieu|54a\\s+(?:duong\\s+|d\\s+)?nguyen\\s+chi\\s+thanh|119\\s+(?:duong\\s+|d\\s+)?tran\\s+duy\\s+hung|222\\s+(?:duong\\s+|d\\s+)?tran\\s+duy\\s+hung|272\\s+(?:duong\\s+|d\\s+)?vo\\s+chi\\s+cong|54\\s+(?:pho\\s+)?lieu\\s+giai|29\\s+(?:pho\\s+)?lieu\\s+giai|0?2\\s+(?:pho\\s+)?pham\\s+ngoc\\s+thach|241\\s+(?:duong\\s+|d\\s+)?xuan\\s+thuy|27\\s+(?:duong\\s+|d\\s+)?co\\s+linh|302\\s+(?:duong\\s+|d\\s+)?cau\\s+giay|0?3\\s+(?:pho\\s+)?le\\s+trong\\s+tan|229\\s+(?:pho\\s+)?tay\\s+son|234\\s+(?:duong\\s+|d\\s+)?pham\\s+van\\s+dong|236\\s+(?:duong\\s+|d\\s+)?pham\\s+van\\s+dong|24\\s+(?:pho\\s+)?hai\\s+ba\\s+trung)\\b"
             options:0 error:nil];
 
         _ngoStreetRegex = [NSRegularExpression regularExpressionWithPattern:
-            @"\\b(?:ngo|ng)\\s+(\\d+)[a-z]?\\s+(?:duong\\s+|pho\\s+|p\\s+)?([a-z][a-z0-9\\s]{2,32})$"
+            @"\\b(?:ngo|ng)\\s+(\\d+)[a-z]?\\s+(?:duong\\s+|pho\\s+|p\\s+|d\\s+)?([a-z][a-z0-9\\s]{2,32})$"
             options:0 error:nil];
 
         _numStreetRegex = [NSRegularExpression regularExpressionWithPattern:
-            @"^(?:so\\s+|sn\\s+)?(\\d+)[a-z]?(?:/\\d+[a-z]?)?\\s+(?:duong\\s+|pho\\s+|p\\s+)?([a-z][a-z0-9\\s]{2,32})$"
+            @"^(?:so\\s+|sn\\s+)?(\\d+)[a-z]?(?:/\\d+[a-z]?)?\\s+(?:duong\\s+|pho\\s+|p\\s+|d\\s+)?([a-z][a-z0-9\\s]{2,32})$"
             options:0 error:nil];
 
         _plainStreetRegex = [NSRegularExpression regularExpressionWithPattern:
             @"\\b(?:duong|pho)\\s+([a-z][a-z0-9\\s]{2,32})$"
+            options:0 error:nil];
+
+        _bareNumStreetRegex = [NSRegularExpression regularExpressionWithPattern:
+            @"^(?:so\\s+|sn\\s+)?(\\d{1,4})[a-z]?(?:/\\d+[a-z]?)?\\s+([a-z][a-z\\s]{2,28})$"
             options:0 error:nil];
 
         _firstNumberRegex = [NSRegularExpression regularExpressionWithPattern:
@@ -236,6 +271,7 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
 - (void)dealloc {
     if (_arena) free(_arena);
     if (_merchants) free(_merchants);
+    if (_pins) free(_pins);
     if (_wards) free(_wards);
     if (_flBuckets) free(_flBuckets);
     if (_nlBuckets) free(_nlBuckets);
@@ -245,6 +281,8 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     if (_labelNextAD) free(_labelNextAD);
     if (_streetBuckets) free(_streetBuckets);
     if (_streetNext) free(_streetNext);
+    if (_pinStreetBuckets) free(_pinStreetBuckets);
+    if (_pinNext) free(_pinNext);
 }
 
 #pragma mark - Embedded Zlib Index Loader (17,014 Hanoi Merchants)
@@ -323,42 +361,55 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     _arena[outLen] = '\0';
     _arenaSize = outLen;
 
-    // Parse header: HANOI_FOOD_INDEX_V1 \t <merchantCount> \t <wardCount>
+    // Parse header:
+    //   V2: HANOI_FOOD_INDEX_V2 \t <merchantCount> \t <pinCount> \t <wardCount>
+    //   V1: HANOI_FOOD_INDEX_V1 \t <merchantCount> \t <wardCount>
     char *cursor = _arena;
     char *firstNL = strchr(cursor, '\n');
     if (!firstNL) return;
     *firstNL = '\0';
 
-    if (strncmp(cursor, "HANOI_FOOD_INDEX_V1\t", 20) != 0) return;
-    int expectedMerchants = 0, expectedWards = 0;
-    sscanf(cursor + 20, "%d\t%d", &expectedMerchants, &expectedWards);
-    if (expectedMerchants <= 0 || expectedMerchants > 200000) return;
+    int expectedMerchants = 0, expectedPins = 0, expectedWards = 0;
+    if (strncmp(cursor, "HANOI_FOOD_INDEX_V2\t", 20) == 0) {
+        sscanf(cursor + 20, "%d\t%d\t%d", &expectedMerchants, &expectedPins, &expectedWards);
+    } else if (strncmp(cursor, "HANOI_FOOD_INDEX_V1\t", 20) == 0) {
+        sscanf(cursor + 20, "%d\t%d", &expectedMerchants, &expectedWards);
+    } else {
+        return;
+    }
+    if (expectedMerchants <= 0 || expectedMerchants > 250000) return;
+    if (expectedPins < 0 || expectedPins > 250000) expectedPins = 0;
 
-    _merchants     = (HanoiMerchantRow *)calloc((size_t)expectedMerchants, sizeof(HanoiMerchantRow));
-    _wards         = expectedWards > 0 ? (HanoiWardRow *)calloc((size_t)expectedWards, sizeof(HanoiWardRow)) : NULL;
-    _flBuckets     = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
-    _nlBuckets     = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
-    _adBuckets     = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
-    _streetBuckets = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
-    _labelNextFL   = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
-    _labelNextNL   = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
-    _labelNextAD   = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
-    _streetNext    = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
+    _merchants        = (HanoiMerchantRow *)calloc((size_t)expectedMerchants, sizeof(HanoiMerchantRow));
+    _pins             = expectedPins > 0 ? (HanoiStreetPinRow *)calloc((size_t)expectedPins, sizeof(HanoiStreetPinRow)) : NULL;
+    _wards            = expectedWards > 0 ? (HanoiWardRow *)calloc((size_t)expectedWards, sizeof(HanoiWardRow)) : NULL;
+    _flBuckets        = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
+    _nlBuckets        = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
+    _adBuckets        = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
+    _streetBuckets    = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
+    _pinStreetBuckets = (int32_t *)malloc(kHashTableBuckets * sizeof(int32_t));
+    _labelNextFL      = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
+    _labelNextNL      = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
+    _labelNextAD      = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
+    _streetNext       = (int32_t *)malloc((size_t)expectedMerchants * sizeof(int32_t));
+    _pinNext          = expectedPins > 0 ? (int32_t *)malloc((size_t)expectedPins * sizeof(int32_t)) : NULL;
 
-    if (!_merchants || !_flBuckets || !_nlBuckets || !_adBuckets || !_streetBuckets ||
+    if (!_merchants || !_flBuckets || !_nlBuckets || !_adBuckets || !_streetBuckets || !_pinStreetBuckets ||
         !_labelNextFL || !_labelNextNL || !_labelNextAD || !_streetNext) {
         return;
     }
 
     for (uint32_t b = 0; b < kHashTableBuckets; b++) {
-        _flBuckets[b]     = -1;
-        _nlBuckets[b]     = -1;
-        _adBuckets[b]     = -1;
-        _streetBuckets[b] = -1;
+        _flBuckets[b]        = -1;
+        _nlBuckets[b]        = -1;
+        _adBuckets[b]        = -1;
+        _streetBuckets[b]    = -1;
+        _pinStreetBuckets[b] = -1;
     }
 
     cursor = firstNL + 1;
     int32_t mIdx = 0;
+    int32_t pIdx = 0;
     int32_t wIdx = 0;
 
     while (*cursor != '\0') {
@@ -368,7 +419,38 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
             *nl = '\0';
         }
 
-        if (cursor[0] == '@' && cursor[1] == 'W' && cursor[2] == '\t') {
+        if (cursor[0] == '@' && cursor[1] == 'P' && cursor[2] == '\t') {
+            if (_pins && _pinNext && pIdx < expectedPins) {
+                // @P \t lat \t lng \t streetKey \t ngoNum \t houseNum \t adminHint
+                char *pcols[6];
+                int pcnt = 0;
+                char *pseg = cursor + 3;
+                while (pcnt < 6) {
+                    pcols[pcnt++] = pseg;
+                    if (pcnt == 6) break;
+                    char *ptab = strchr(pseg, '\t');
+                    if (!ptab) break;
+                    *ptab = '\0';
+                    pseg = ptab + 1;
+                }
+                if (pcnt == 6) {
+                    HanoiStreetPinRow *pr = &_pins[pIdx];
+                    pr->lat       = strtof(pcols[0], NULL);
+                    pr->lng       = strtof(pcols[1], NULL);
+                    pr->streetKey = pcols[2];
+                    pr->ngoNum    = (int16_t)atoi(pcols[3]);
+                    pr->houseNum  = (int16_t)atoi(pcols[4]);
+                    pr->adminHint = pcols[5];
+                    _pinNext[pIdx] = -1;
+                    if (pr->streetKey[0] != '\0') {
+                        uint32_t b = (uint32_t)(fnv1aHashCString(pr->streetKey) & kHashTableMask);
+                        _pinNext[pIdx]       = _pinStreetBuckets[b];
+                        _pinStreetBuckets[b] = pIdx;
+                    }
+                    pIdx++;
+                }
+            }
+        } else if (cursor[0] == '@' && cursor[1] == 'W' && cursor[2] == '\t') {
             if (_wards && wIdx < expectedWards) {
                 char *p1 = cursor + 3;
                 char *t1 = strchr(p1, '\t');
@@ -451,6 +533,7 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     }
 
     _merchantCount = mIdx;
+    _pinCount      = pIdx;
     _wardCount     = wIdx;
 }
 
@@ -594,7 +677,13 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     NSString *rl = [[self stripLeadingDotArtifact:rawSeg] lowercaseString];
     if ([rl hasPrefix:@"ngõ "] || [rl hasPrefix:@"ngách "] || [rl hasPrefix:@"hẻm "] ||
         [rl hasPrefix:@"đường "] || [rl hasPrefix:@"phố "] || [rl hasPrefix:@"số "] ||
-        [cleanSeg hasPrefix:@"ngo "] || [cleanSeg hasPrefix:@"duong "]) {
+        [cleanSeg hasPrefix:@"ngo "] || [cleanSeg hasPrefix:@"duong "] ||
+        [cleanSeg hasPrefix:@"chung cu "] || [cleanSeg hasPrefix:@"toa "] ||
+        [cleanSeg hasPrefix:@"tap the "] || [cleanSeg hasPrefix:@"ktt "] ||
+        [cleanSeg hasPrefix:@"khu do thi "] || [cleanSeg hasPrefix:@"kdt "] ||
+        [cleanSeg hasPrefix:@"sanh "] || [cleanSeg hasPrefix:@"cong "] ||
+        [cleanSeg hasPrefix:@"lo "] || [cleanSeg hasPrefix:@"tang "] ||
+        [cleanSeg hasPrefix:@"thon "] || [cleanSeg hasPrefix:@"xom "] || [cleanSeg hasPrefix:@"to "]) {
         return YES;
     }
     if ([_firstNumberRegex firstMatchInString:cleanSeg options:0 range:NSMakeRange(0, MIN((NSUInteger)5, cleanSeg.length))] != nil) {
@@ -622,6 +711,171 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     return nil;
 }
 
+- (NSString *)stripGenericShopLeadWords:(NSString *)cleanName {
+    if (!cleanName || cleanName.length == 0) return @"";
+    NSString *res = cleanName;
+    NSArray<NSString *> *leads = @[@"nha hang ", @"cua hang ", @"tiem banh ", @"tiem tra ", @"quan an ", @"quan ", @"tiem ", @"bep "];
+    for (NSString *ld in leads) {
+        if ([res hasPrefix:ld] && res.length > ld.length + 3) {
+            res = [res substringFromIndex:ld.length];
+            break;
+        }
+    }
+    return [res stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+}
+
+- (BOOL)isGenericTwoWordFoodPrefix:(NSString *)twoWords {
+    static NSSet<NSString *> *sGeneric2 = nil;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        sGeneric2 = [NSSet setWithArray:@[
+            @"com ga", @"com rang", @"com tam", @"com suon", @"com tho", @"com binh", @"com van", @"com chay", @"com nieu",
+            @"bun bo", @"bun cha", @"bun dau", @"bun ca", @"bun rieu", @"bun ngan", @"bun moc", @"bun tron", @"bun hai", @"bun thai",
+            @"pho bo", @"pho ga", @"pho cuon", @"pho tron", @"banh mi", @"banh cuon", @"banh da", @"banh canh", @"banh xeo", @"banh trang",
+            @"mien ngan", @"mien luon", @"mien ga", @"mien tron", @"tra sua", @"tra chanh", @"tra trai", @"ca phe", @"an vat",
+            @"chao long", @"chao suon", @"chao dinh", @"xoi xeo", @"xoi man", @"lau nuong", @"lau ech", @"ga ran", @"ga nuong", @"my cay", @"mi cay", @"mi van", @"nem nuong", @"nem chua"
+        ]];
+    });
+    return [sGeneric2 containsObject:twoWords];
+}
+
+- (BOOL)merchantCName:(const char *)cMcName matchesVisibleTitle:(NSString *)cleanTitle {
+    if (!cMcName || cMcName[0] == '\0' || !cleanTitle || cleanTitle.length < 3) return NO;
+    NSString *mcRaw = [NSString stringWithUTF8String:cMcName];
+    if (!mcRaw || mcRaw.length < 3) return NO;
+
+    NSString *mcCore  = [self stripGenericShopLeadWords:mcRaw];
+    NSString *titCore = [self stripGenericShopLeadWords:cleanTitle];
+    if (mcCore.length < 3 || titCore.length < 3) return NO;
+
+    if (titCore.length >= 4 && containsNormalizedPhraseOnWordBoundary(mcCore, titCore)) return YES;
+    if (mcCore.length >= 4 && containsNormalizedPhraseOnWordBoundary(titCore, mcCore)) return YES;
+
+    NSArray<NSString *> *words = [mcCore componentsSeparatedByString:@" "];
+    if (words.count >= 2) {
+        NSString *b2 = [NSString stringWithFormat:@"%@ %@", words[0], words[1]];
+        if (![self isGenericTwoWordFoodPrefix:b2]) {
+            if (b2.length >= 5 && containsNormalizedPhraseOnWordBoundary(titCore, b2)) return YES;
+        } else if (words.count >= 3) {
+            NSString *b3 = [NSString stringWithFormat:@"%@ %@ %@", words[0], words[1], words[2]];
+            if (containsNormalizedPhraseOnWordBoundary(titCore, b3)) return YES;
+        }
+    } else if (words.count == 1 && [words[0] length] >= 4) {
+        if (containsNormalizedPhraseOnWordBoundary(titCore, words[0])) return YES;
+    }
+    return NO;
+}
+
+- (void)extractAddressStructureFromRaw:(NSString *)rawAddress
+                               outStKey:(NSString * __strong *)outStKey
+                                 outNgo:(int *)outNgo
+                               outHouse:(int *)outHouse
+                          outAdminHints:(NSMutableArray<NSString *> *)adminHints
+                       outWardFullHints:(NSMutableArray<NSString *> *)wardFullHints {
+    if (outStKey) *outStKey = nil;
+    if (outNgo)   *outNgo   = 0;
+    if (outHouse) *outHouse = 0;
+    if (!rawAddress || rawAddress.length < 4) return;
+
+    NSArray<NSString *> *rawSegs = [rawAddress componentsSeparatedByString:@","];
+    NSMutableArray<NSString *> *normSegs = [NSMutableArray arrayWithCapacity:rawSegs.count];
+    for (NSString *sg in rawSegs) {
+        NSString *ns = [self cleanLookupKeyFromString:sg];
+        if (ns.length > 0) [normSegs addObject:ns];
+    }
+    if (normSegs.count == 0) return;
+
+    for (NSUInteger i = 1; i < normSegs.count; i++) {
+        NSString *sg = normSegs[i];
+        if (wardFullHints && ([sg hasPrefix:@"phuong "] || [sg hasPrefix:@"xa "] || [sg hasPrefix:@"thi tran "] ||
+                              [sg hasPrefix:@"khu do thi "] || [sg hasPrefix:@"vinhomes "])) {
+            [wardFullHints addObject:sg];
+        }
+        NSString *stripped = sg;
+        for (NSString *pfx in @[@"phuong ", @"quan ", @"huyen ", @"thi tran ", @"xa ", @"p ", @"q "]) {
+            if ([stripped hasPrefix:pfx]) {
+                stripped = [stripped substringFromIndex:pfx.length];
+                break;
+            }
+        }
+        if (adminHints && stripped.length >= 2) {
+            [adminHints addObject:stripped];
+        }
+    }
+
+    NSString *streetName = nil;
+    int targetNgo   = 0;
+    int targetHouse = 0;
+
+    NSUInteger maxSegCheck = MIN((NSUInteger)3, normSegs.count);
+    for (NSUInteger sIdx = 0; sIdx < maxSegCheck; sIdx++) {
+        NSString *cand = normSegs[sIdx];
+        if ([cand hasPrefix:@"phuong "] || [cand hasPrefix:@"quan "] || [cand hasPrefix:@"huyen "] ||
+            [cand hasPrefix:@"thi tran "] || [cand hasPrefix:@"xa "] || [cand hasPrefix:@"thanh pho "] || [cand hasPrefix:@"tp "]) {
+            continue;
+        }
+
+        NSTextCheckingResult *mNgo = [_ngoStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
+        if (mNgo && mNgo.numberOfRanges >= 3) {
+            targetNgo  = [[cand substringWithRange:[mNgo rangeAtIndex:1]] intValue];
+            streetName = [cand substringWithRange:[mNgo rangeAtIndex:2]];
+            NSString *prefix = [cand substringToIndex:mNgo.range.location];
+            NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
+            if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
+            break;
+        }
+
+        NSTextCheckingResult *mNum = [_numStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
+        if (mNum && mNum.numberOfRanges >= 3) {
+            NSString *stCand = [[cand substringWithRange:[mNum rangeAtIndex:2]] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (![stCand hasPrefix:@"tang "] && ![stCand hasPrefix:@"lo "] && ![stCand hasPrefix:@"kiot "] &&
+                ![stCand hasPrefix:@"toa "] && ![stCand hasPrefix:@"sanh "] && ![stCand hasPrefix:@"khu "] &&
+                ![stCand hasPrefix:@"cau thang "] && ![stCand hasPrefix:@"nha "]) {
+                targetHouse = [[cand substringWithRange:[mNum rangeAtIndex:1]] intValue];
+                streetName  = stCand;
+                break;
+            }
+        }
+
+        NSTextCheckingResult *mPl = [_plainStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
+        if (mPl && mPl.numberOfRanges >= 2) {
+            streetName = [cand substringWithRange:[mPl rangeAtIndex:1]];
+            NSString *prefix = [cand substringToIndex:mPl.range.location];
+            NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
+            if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
+            break;
+        }
+
+        if (_bareNumStreetRegex) {
+            NSTextCheckingResult *mBare = [_bareNumStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
+            if (mBare && mBare.numberOfRanges >= 3) {
+                NSString *stCand = [[cand substringWithRange:[mBare rangeAtIndex:2]] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                if (![stCand hasPrefix:@"tang "] && ![stCand hasPrefix:@"lo "] && ![stCand hasPrefix:@"kiot "] &&
+                    ![stCand hasPrefix:@"toa "] && ![stCand hasPrefix:@"sanh "] && ![stCand hasPrefix:@"khu "] &&
+                    ![stCand hasPrefix:@"cau thang "] && ![stCand hasPrefix:@"nha "]) {
+                    targetHouse = [[cand substringWithRange:[mBare rangeAtIndex:1]] intValue];
+                    streetName  = stCand;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (streetName.length >= 2) {
+        for (NSString *pfx in @[@"duong ", @"pho ", @"p ", @"d "]) {
+            if ([streetName hasPrefix:pfx]) {
+                streetName = [streetName substringFromIndex:pfx.length];
+                break;
+            }
+        }
+        streetName = [streetName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    }
+
+    if (outStKey) *outStKey = streetName;
+    if (outNgo)   *outNgo   = targetNgo;
+    if (outHouse) *outHouse = targetHouse;
+}
+
 - (NSIndexSet *)lookupCandidateMerchantsForTitle:(NSString *)titleKey
                                         subtitle:(NSString *)subKey
                                         rawTitle:(NSString *)rawTitle
@@ -639,6 +893,54 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         if (matches.count == 0) {
             NSString *titTail = [self stripShopPrefixBeforeFirstCommaIfNeeded:rawTitle];
             if (titTail) [self collectExactLabelMatchesForKey:titTail into:matches];
+        }
+    }
+
+    // O(1) Street + Exact Number / Brand Lookup (catches preemptive Grab/Shopee rows & variant Phường/Quận formatting in 0.03ms!)
+    if (matches.count == 0 && _streetBuckets) {
+        NSString *primaryAddr = (rawSubtitle.length >= 6) ? rawSubtitle : rawTitle;
+        NSString *stName = nil;
+        int tNgo = 0, tHouse = 0;
+        NSMutableArray<NSString *> *admHints = [NSMutableArray array];
+        [self extractAddressStructureFromRaw:primaryAddr
+                                    outStKey:&stName
+                                      outNgo:&tNgo
+                                    outHouse:&tHouse
+                               outAdminHints:admHints
+                            outWardFullHints:nil];
+        if (stName.length >= 2) {
+            const char *cSt = [stName UTF8String];
+            uint32_t b = (uint32_t)(fnv1aHashCString(cSt) & kHashTableMask);
+            int32_t cur = _streetBuckets[b];
+            int guard = 0;
+            while (cur >= 0 && cur < _merchantCount && guard < 8192) {
+                guard++;
+                const HanoiMerchantRow *r = &_merchants[cur];
+                if (strcmp(r->streetKey, cSt) == 0) {
+                    BOOL admOk = YES;
+                    if (admHints.count > 0 && r->adminKey[0] != '\0') {
+                        admOk = NO;
+                        NSString *rAdm = [NSString stringWithUTF8String:r->adminKey];
+                        for (NSString *ah in admHints) {
+                            if ([rAdm containsString:ah] || [ah containsString:rAdm]) { admOk = YES; break; }
+                        }
+                    }
+                    if (admOk) {
+                        BOOL locExact = NO;
+                        if (tNgo > 0) {
+                            locExact = (r->ngoNum == tNgo && (tHouse == 0 || r->houseNum == 0 || r->houseNum == tHouse));
+                        } else if (tHouse > 0) {
+                            locExact = (r->ngoNum == 0 && r->houseNum == tHouse);
+                        } else if (titleKey.length >= 4 && [self merchantCName:r->mcName matchesVisibleTitle:titleKey]) {
+                            locExact = YES;
+                        }
+                        if (locExact) {
+                            [matches addIndex:(NSUInteger)cur];
+                        }
+                    }
+                }
+                cur = _streetNext[cur];
+            }
         }
     }
 
@@ -672,18 +974,8 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     if (matches.count > 1 && titleKey.length >= 4) {
         NSMutableIndexSet *narrowed = [NSMutableIndexSet indexSet];
         [matches enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
-            const char *mn = self->_merchants[idx].mcName;
-            if (mn && mn[0] != '\0') {
-                NSString *mcStr = [NSString stringWithUTF8String:mn];
-                NSArray<NSString *> *words = [mcStr componentsSeparatedByString:@" "];
-                if (words.count >= 2) {
-                    NSString *brand2 = [NSString stringWithFormat:@"%@ %@", words[0], words[1]];
-                    if ([titleKey containsString:brand2] || [mcStr containsString:titleKey]) {
-                        [narrowed addIndex:idx];
-                    }
-                } else if (words.count == 1 && [words[0] length] >= 3 && containsNormalizedPhraseOnWordBoundary(titleKey, words[0])) {
-                    [narrowed addIndex:idx];
-                }
+            if ([self merchantCName:self->_merchants[idx].mcName matchesVisibleTitle:titleKey]) {
+                [narrowed addIndex:idx];
             }
         }];
         if (narrowed.count > 0) {
@@ -699,7 +991,9 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
 - (BOOL)offlineInterpolateHanoiAddress:(NSString *)rawAddress
                              titleHint:(NSString *)rawTitle
                                 outLat:(double *)outLat
-                                outLng:(double *)outLng {
+                                outLng:(double *)outLng
+                         outExactMatch:(BOOL *)outExactMatch {
+    if (outExactMatch) *outExactMatch = NO;
     if (!_merchants || _merchantCount <= 0) return NO;
 
     NSString *primary = (rawAddress.length >= 6) ? rawAddress : rawTitle;
@@ -717,73 +1011,23 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         NSUInteger firstIdx = exact.firstIndex;
         *outLat = (double)_merchants[firstIdx].lat;
         *outLng = (double)_merchants[firstIdx].lng;
+        if (outExactMatch) *outExactMatch = YES;
         return YES;
     }
 
-    // 2. Parse comma segments to extract streetKey, ngoNum, houseNum, and admin ward/district tokens
-    NSArray<NSString *> *rawSegs = [primary componentsSeparatedByString:@","];
-    NSMutableArray<NSString *> *normSegs = [NSMutableArray arrayWithCapacity:rawSegs.count];
-    for (NSString *sg in rawSegs) {
-        NSString *ns = [self cleanLookupKeyFromString:sg];
-        if (ns.length > 0) [normSegs addObject:ns];
-    }
-    if (normSegs.count == 0) return NO;
-
-    NSMutableArray<NSString *> *adminHints = [NSMutableArray array];
-    NSMutableArray<NSString *> *wardFullHints = [NSMutableArray array];
-    for (NSUInteger i = 1; i < normSegs.count; i++) {
-        NSString *sg = normSegs[i];
-        if ([sg hasPrefix:@"phuong "] || [sg hasPrefix:@"xa "] || [sg hasPrefix:@"thi tran "] ||
-            [sg hasPrefix:@"khu do thi "] || [sg hasPrefix:@"vinhomes "]) {
-            [wardFullHints addObject:sg];
-        }
-        NSString *stripped = sg;
-        for (NSString *pfx in @[@"phuong ", @"quan ", @"huyen ", @"thi tran ", @"xa ", @"p ", @"q "]) {
-            if ([stripped hasPrefix:pfx]) {
-                stripped = [stripped substringFromIndex:pfx.length];
-                break;
-            }
-        }
-        if (stripped.length >= 2) {
-            [adminHints addObject:stripped];
-        }
-    }
-
-    NSString *cand = normSegs[0];
-    if (normSegs.count >= 2 &&
-        ![cand containsString:@"duong "] &&
-        ![cand containsString:@"pho "] &&
-        ![cand containsString:@"ngo "] &&
-        [_firstNumberRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)] == nil) {
-        cand = normSegs[1];
-    }
-
+    // 2. Parse comma segments via unified multi-segment Hanoi address parser
     NSString *streetName = nil;
     int targetNgo   = 0;
     int targetHouse = 0;
-
-    NSTextCheckingResult *mNgo = [_ngoStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
-    if (mNgo && mNgo.numberOfRanges >= 3) {
-        targetNgo  = [[cand substringWithRange:[mNgo rangeAtIndex:1]] intValue];
-        streetName = [cand substringWithRange:[mNgo rangeAtIndex:2]];
-        NSString *prefix = [cand substringToIndex:mNgo.range.location];
-        NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
-        if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
-    } else {
-        NSTextCheckingResult *mNum = [_numStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
-        if (mNum && mNum.numberOfRanges >= 3) {
-            targetHouse = [[cand substringWithRange:[mNum rangeAtIndex:1]] intValue];
-            streetName  = [cand substringWithRange:[mNum rangeAtIndex:2]];
-        } else {
-            NSTextCheckingResult *mPl = [_plainStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
-            if (mPl && mPl.numberOfRanges >= 2) {
-                streetName = [cand substringWithRange:[mPl rangeAtIndex:1]];
-                NSString *prefix = [cand substringToIndex:mPl.range.location];
-                NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
-                if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
-            }
-        }
-    }
+    NSMutableArray<NSString *> *adminHints    = [NSMutableArray array];
+    NSMutableArray<NSString *> *wardFullHints = [NSMutableArray array];
+    [self extractAddressStructureFromRaw:primary
+                                outStKey:&streetName
+                                  outNgo:&targetNgo
+                                outHouse:&targetHouse
+                           outAdminHints:adminHints
+                        outWardFullHints:wardFullHints];
+    if (!streetName && wardFullHints.count == 0) return NO;
 
     // If Dropoff title had a leading house number (e.g. "59 Ngõ 123 Phố Trung Kính") while subtitle omitted "59", recover it!
     if (targetHouse == 0 && cleanTit.length > 0) {
@@ -796,70 +1040,81 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         }
     }
 
-    if (streetName.length >= 2) {
-        for (NSString *pfx in @[@"duong ", @"pho ", @"p "]) {
-            if ([streetName hasPrefix:pfx]) {
-                streetName = [streetName substringFromIndex:pfx.length];
-                break;
-            }
-        }
-        streetName = [streetName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    }
-
-    // 3. O(1) Street Hash Lookup + House/Alley Interpolation
+    // 3. O(1) Street Hash Lookup across BOTH 17,765 Merchants AND 31,223 ShopeeFood Pins (47,455 total Hanoi anchors!)
     if (streetName.length >= 2 && _streetBuckets) {
         const char *cSt = [streetName UTF8String];
         uint32_t b = (uint32_t)(fnv1aHashCString(cSt) & kHashTableMask);
-        int32_t cur = _streetBuckets[b];
 
-        int32_t allCands[256];
-        int32_t admCands[256];
+        typedef struct { float lat; float lng; int16_t ngo; int16_t house; BOOL admMatch; } CandPt;
+        CandPt allCands[384];
+        CandPt admCands[384];
         int allCnt = 0, admCnt = 0;
 
+        int32_t cur = _streetBuckets[b];
         int guard = 0;
         while (cur >= 0 && cur < _merchantCount && guard < 8192) {
             guard++;
             const HanoiMerchantRow *r = &_merchants[cur];
             if (strcmp(r->streetKey, cSt) == 0) {
-                if (allCnt < 256) allCands[allCnt++] = cur;
+                BOOL isAdm = NO;
                 if (adminHints.count > 0 && r->adminKey[0] != '\0') {
                     NSString *rAdm = [NSString stringWithUTF8String:r->adminKey];
                     for (NSString *ah in adminHints) {
-                        if ([rAdm containsString:ah]) {
-                            if (admCnt < 256) admCands[admCnt++] = cur;
-                            break;
-                        }
+                        if ([rAdm containsString:ah]) { isAdm = YES; break; }
                     }
                 }
+                CandPt cp = { r->lat, r->lng, r->ngoNum, r->houseNum, isAdm };
+                if (allCnt < 384) allCands[allCnt++] = cp;
+                if (isAdm && admCnt < 384) admCands[admCnt++] = cp;
             }
             cur = _streetNext[cur];
         }
 
-        int32_t *pool = (admCnt > 0) ? admCands : allCands;
-        int poolCnt   = (admCnt > 0) ? admCnt   : allCnt;
+        if (_pins && _pinStreetBuckets && _pinNext) {
+            int32_t pcur = _pinStreetBuckets[b];
+            int pguard = 0;
+            while (pcur >= 0 && pcur < _pinCount && pguard < 16384) {
+                pguard++;
+                const HanoiStreetPinRow *pr = &_pins[pcur];
+                if (strcmp(pr->streetKey, cSt) == 0) {
+                    BOOL isAdm = NO;
+                    if (adminHints.count > 0 && pr->adminHint[0] != '\0') {
+                        NSString *pAdm = [NSString stringWithUTF8String:pr->adminHint];
+                        for (NSString *ah in adminHints) {
+                            if ([pAdm containsString:ah] || [ah containsString:pAdm]) { isAdm = YES; break; }
+                        }
+                    }
+                    CandPt cp = { pr->lat, pr->lng, pr->ngoNum, pr->houseNum, isAdm };
+                    if (allCnt < 384) allCands[allCnt++] = cp;
+                    if (isAdm && admCnt < 384) admCands[admCnt++] = cp;
+                }
+                pcur = _pinNext[pcur];
+            }
+        }
+
+        CandPt *pool = (admCnt > 0) ? admCands : allCands;
+        int poolCnt  = (admCnt > 0) ? admCnt   : allCnt;
 
         if (poolCnt > 0) {
-            // Find up to 3 closest points by alley or house number
-            int32_t bestIdx[3]  = { pool[0], -1, -1 };
-            int bestDiff[3]     = { 999999, 999999, 999999 };
+            int bestIdx[3]  = { 0, -1, -1 };
+            int bestDiff[3] = { 999999, 999999, 999999 };
 
             for (int i = 0; i < poolCnt; i++) {
-                int32_t idx = pool[i];
-                const HanoiMerchantRow *r = &_merchants[idx];
+                const CandPt *r = &pool[i];
                 int diff = 50000;
 
                 if (targetNgo > 0) {
-                    if (r->ngoNum == targetNgo) {
-                        diff = (targetHouse > 0 && r->houseNum > 0) ? abs((int)r->houseNum - targetHouse) : 0;
-                    } else if (r->ngoNum > 0 || r->houseNum > 0) {
-                        int refNum = (r->ngoNum > 0) ? (int)r->ngoNum : (int)r->houseNum;
+                    if (r->ngo == targetNgo) {
+                        diff = (targetHouse > 0 && r->house > 0) ? abs((int)r->house - targetHouse) : 0;
+                    } else if (r->ngo > 0 || r->house > 0) {
+                        int refNum = (r->ngo > 0) ? (int)r->ngo : (int)r->house;
                         diff = 500 + abs(refNum - targetNgo);
                     }
                 } else if (targetHouse > 0) {
-                    if (r->ngoNum == 0 && r->houseNum > 0) {
-                        diff = abs((int)r->houseNum - targetHouse);
-                    } else if (r->ngoNum > 0) {
-                        diff = 400 + abs((int)r->ngoNum - targetHouse);
+                    if (r->ngo == 0 && r->house > 0) {
+                        diff = abs((int)r->house - targetHouse);
+                    } else if (r->ngo > 0) {
+                        diff = 400 + abs((int)r->ngo - targetHouse);
                     }
                 } else {
                     diff = i;
@@ -872,22 +1127,22 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
                             bestIdx[s]  = bestIdx[s - 1];
                         }
                         bestDiff[slot] = diff;
-                        bestIdx[slot]  = idx;
+                        bestIdx[slot]  = i;
                         break;
                     }
                 }
             }
 
-            double baseLat = (double)_merchants[bestIdx[0]].lat;
-            double baseLng = (double)_merchants[bestIdx[0]].lng;
+            double baseLat = (double)pool[bestIdx[0]].lat;
+            double baseLng = (double)pool[bestIdx[0]].lng;
             double sumLat  = baseLat;
             double sumLng  = baseLng;
             int used = 1;
 
             for (int slot = 1; slot < 3; slot++) {
                 if (bestIdx[slot] >= 0 && bestDiff[slot] <= bestDiff[0] + 45) {
-                    double cLat = (double)_merchants[bestIdx[slot]].lat;
-                    double cLng = (double)_merchants[bestIdx[slot]].lng;
+                    double cLat = (double)pool[bestIdx[slot]].lat;
+                    double cLng = (double)pool[bestIdx[slot]].lng;
                     if (haversineDistanceKm(baseLat, baseLng, cLat, cLng) <= 1.1) {
                         sumLat += cLat;
                         sumLng += cLng;
@@ -898,6 +1153,9 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
 
             *outLat = sumLat / (double)used;
             *outLng = sumLng / (double)used;
+            if (outExactMatch && admCnt > 0 && (targetNgo > 0 || targetHouse > 0) && bestDiff[0] <= 2) {
+                *outExactMatch = YES;
+            }
             return YES;
         }
     }
@@ -1190,7 +1448,8 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         hasPickupCoord = [self offlineInterpolateHanoiAddress:pickupSubtitle
                                                     titleHint:pickupTitle
                                                        outLat:&latA
-                                                       outLng:&lngA];
+                                                       outLng:&lngA
+                                                outExactMatch:NULL];
     }
     if (!hasPickupCoord) {
         NSString *pQuery = (pickupSubtitle.length >= 6) ? pickupSubtitle : pickupTitle;
@@ -1198,12 +1457,14 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     }
     if (!hasPickupCoord) return NO;
 
-    // 2. Resolve Offline Dropoff (offLatB, offLngB) first in 0.1ms!
+    // 2. Resolve Offline Dropoff (offLatB, offLngB) first in 0.1ms across 47,455 Hanoi GPS pins!
     double offLatB = 0.0, offLngB = 0.0;
+    BOOL exactOfflineDrop = NO;
     BOOL hasOfflineDrop = [self offlineInterpolateHanoiAddress:dropoffSubtitle
                                                      titleHint:dropoffTitle
                                                         outLat:&offLatB
-                                                        outLng:&offLngB];
+                                                        outLng:&offLngB
+                                                 outExactMatch:&exactOfflineDrop];
 
     // Zero-Network Fast Cutoffs when Offline DB already proves > threshold or << threshold!
     if (hasOfflineDrop) {
@@ -1228,23 +1489,28 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         }
     }
 
-    // 3. Borderline zone (~1.3km .. 3.5km air): Refine Dropoff via ArcGIS (<= 650ms) with instant Offline fallback
+    // 3. Borderline zone (~1.3km .. 3.5km air):
+    //    If 47,455-pin Hanoi DB ALREADY matched exact house/alley+ward (<=35m precision), SKIP ArcGIS network call (saves 300-650ms)!
     double latB = offLatB, lngB = offLngB;
-    BOOL hasOnlineDrop = [self geocodeHanoiAddressOnline:dQuery outLat:&latB outLng:&lngB];
-    if (!hasOnlineDrop && !hasOfflineDrop) {
-        return NO;
+    BOOL hasHighPrecisionDrop = exactOfflineDrop;
+    if (!exactOfflineDrop) {
+        BOOL hasOnlineDrop = [self geocodeHanoiAddressOnline:dQuery outLat:&latB outLng:&lngB];
+        if (!hasOnlineDrop && !hasOfflineDrop) {
+            return NO;
+        }
+        hasHighPrecisionDrop = hasOnlineDrop;
     }
 
-    // Re-check exact air-distance geometry after exact geocoding
+    // Re-check exact air-distance geometry after high-precision geocoding
     double exactAirKm = haversineDistanceKm(latA, lngA, latB, lngB);
-    if (hasOnlineDrop && exactAirKm >= thresholdKm * 1.02) {
+    if (hasHighPrecisionDrop && exactAirKm >= thresholdKm * 1.02) {
         double roadEst = estimateHanoiMotorbikeRoadKmOffline(latA, lngA, latB, lngB);
         *outKm = fmax(exactAirKm * 1.05, roadEst);
         if (outSource) *outSource = @"GeoAir+";
         [self cacheRouteDistance:*outKm source:@"GeoAir+" forKey:pairCacheKey];
         return YES;
     }
-    if (hasOnlineDrop && !crossesHanoiRedRiver(latA, lngA, latB, lngB) && exactAirKm <= thresholdKm * 0.54) {
+    if (hasHighPrecisionDrop && !crossesHanoiRedRiver(latA, lngA, latB, lngB) && exactAirKm <= thresholdKm * 0.54) {
         double roadEst = estimateHanoiMotorbikeRoadKmOffline(latA, lngA, latB, lngB);
         *outKm = roadEst;
         if (outSource) *outSource = @"GeoAir-";
@@ -1336,17 +1602,20 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         }
     }
 
-    // Lookup merchant in 17,014-store Hanoi offline DB (0.2ms)
+    // Lookup merchant in 17,765-store 3-platform Hanoi offline DB (0.2ms)
     NSIndexSet *matchedIdxs = [self lookupCandidateMerchantsForTitle:cleanPickupTitle
                                                             subtitle:cleanPickupSub
                                                             rawTitle:pickupTitle
                                                          rawSubtitle:pickupSubtitle];
-    BOOL singleExactMerchant = (matchedIdxs.count == 1);
+    BOOL singleExactMerchant    = (matchedIdxs.count == 1);
     BOOL hiddenNameAddressMatch = (!popupShowsExplicitShopName && matchedIdxs.count >= 1 && matchedIdxs.count <= 4);
-    BOOL allCandidatesMall   = (matchedIdxs.count > 0);
-    int32_t minCandOrders    = INT32_MAX;
-    int32_t maxCandOrders    = 0;
-    NSString *unmaskedName   = nil;
+    BOOL allCandidatesMall      = (matchedIdxs.count > 0);
+    BOOL dbMatchesVisibleShop   = NO;
+    BOOL matchedNamedIsMall     = NO;
+    int32_t minCandOrders       = INT32_MAX;
+    int32_t maxCandOrders       = 0;
+    int32_t matchedNamedOrders  = 0;
+    NSString *unmaskedName      = nil;
 
     if (matchedIdxs.count > 0 && _merchants) {
         NSUInteger cur = matchedIdxs.firstIndex;
@@ -1358,24 +1627,24 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
             if (!unmaskedName && r->mcName[0] != '\0') {
                 unmaskedName = [NSString stringWithUTF8String:r->mcName];
             }
+            if (popupShowsExplicitShopName && [self merchantCName:r->mcName matchesVisibleTitle:cleanPickupTitle]) {
+                dbMatchesVisibleShop = YES;
+                if (r->isMallFlag != 0) matchedNamedIsMall = YES;
+                if (r->orderCount > matchedNamedOrders) matchedNamedOrders = r->orderCount;
+                if (r->mcName[0] != '\0') {
+                    unmaskedName = [NSString stringWithUTF8String:r->mcName];
+                }
+            }
             cur = [matchedIdxs indexGreaterThanIndex:cur];
         }
         ev.matchedMerchantName = unmaskedName;
-        ev.matchedOrderCount   = (singleExactMerchant || hiddenNameAddressMatch) ? maxCandOrders : minCandOrders;
+        ev.matchedOrderCount   = dbMatchesVisibleShop
+            ? matchedNamedOrders
+            : ((singleExactMerchant || hiddenNameAddressMatch) ? maxCandOrders : minCandOrders);
     }
 
-    // Text corpus for Gate 1: OCR Pickup text + Unmasked DB merchant name (ONLY when popup hid merchant name behind bare street address, or DB mcName matches the visible shop prefix!)
+    // Text corpus for Gate 1: OCR Pickup text + Unmasked DB merchant name (ONLY when popup hid merchant name behind bare street address, or DB mcName matches the visible shop!)
     NSMutableString *gate1Corpus = [NSMutableString stringWithString:(combinedPickup ?: @"")];
-    BOOL dbMatchesVisibleShop = NO;
-    if (popupShowsExplicitShopName && singleExactMerchant && unmaskedName.length > 0) {
-        NSArray<NSString *> *mcWords = [unmaskedName componentsSeparatedByString:@" "];
-        if (mcWords.count >= 2) {
-            NSString *b2 = [NSString stringWithFormat:@"%@ %@", mcWords[0], mcWords[1]];
-            dbMatchesVisibleShop = [cleanPickupTitle containsString:b2];
-        } else if (mcWords.count == 1 && [mcWords[0] length] >= 3) {
-            dbMatchesVisibleShop = containsNormalizedPhraseOnWordBoundary(cleanPickupTitle, mcWords[0]);
-        }
-    }
     if (!popupShowsExplicitShopName && hiddenNameAddressMatch && _merchants) {
         NSUInteger cur = matchedIdxs.firstIndex;
         while (cur != NSNotFound) {
@@ -1394,10 +1663,24 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     // (Option A — Applies strictly to Điểm Nhận regardless of price or distance)
     // =========================================================================
     if (config.foodBlockMallAndBasement && gate1Corpus.length >= 3) {
+        // Scrub directional landmark phrases ("Đối diện Aeon", "Cạnh Vincom", "Gần Big C") so street-front shops across from malls are NEVER blocked!
+        NSString *mallCorpus = gate1Corpus;
+        NSString *mallPickupOnly = combinedPickup;
+        if (_directionalLandmarkRegex) {
+            mallCorpus = [_directionalLandmarkRegex stringByReplacingMatchesInString:mallCorpus
+                                                                             options:0
+                                                                               range:NSMakeRange(0, mallCorpus.length)
+                                                                        withTemplate:@" "];
+            mallPickupOnly = [_directionalLandmarkRegex stringByReplacingMatchesInString:mallPickupOnly
+                                                                                 options:0
+                                                                                   range:NSMakeRange(0, mallPickupOnly.length)
+                                                                            withTemplate:@" "];
+        }
+
         NSArray<NSString *> *mallKws = [self normalizedKeywordArrayFromCSV:(config.foodMallKeywords ?: kDefaultFoodMallKeywords)
                                                                  cachedRaw:&_cachedMallKwRaw
                                                                 cachedList:&_cachedMallKwNormList];
-        NSString *hitMallKw = [self firstMatchingKeywordInText:gate1Corpus fromKeywords:mallKws];
+        NSString *hitMallKw = [self firstMatchingKeywordInText:mallCorpus fromKeywords:mallKws];
         if (hitMallKw) {
             ev.decision = FoodFilterDecisionRejectHard;
             ev.reasonSummary = [NSString stringWithFormat:@"Green Food TTTM/Hầm ('%@') -> HỦY CỨNG [X]", hitMallKw];
@@ -1405,15 +1688,24 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         }
 
         if (_structuralMallRegex &&
-            [_structuralMallRegex firstMatchInString:combinedPickup options:0 range:NSMakeRange(0, combinedPickup.length)] != nil) {
+            [_structuralMallRegex firstMatchInString:mallPickupOnly options:0 range:NSMakeRange(0, mallPickupOnly.length)] != nil) {
             ev.decision = FoodFilterDecisionRejectHard;
             ev.reasonSummary = @"Green Food Hầm/Gian hàng TTTM -> HỦY CỨNG [X]";
             return ev;
         }
 
-        if (mallKws.count > 0 && matchedIdxs.count > 0 && allCandidatesMall) {
+        if (_exactMallAddressRegex &&
+            [_exactMallAddressRegex firstMatchInString:mallPickupOnly options:0 range:NSMakeRange(0, mallPickupOnly.length)] != nil) {
             ev.decision = FoodFilterDecisionRejectHard;
-            ev.reasonSummary = @"Green Food Điểm nhận thuộc TTTM/Tầng hầm (DB Hà Nội) -> HỦY CỨNG [X]";
+            ev.reasonSummary = @"Green Food Địa chỉ TTTM Hà Nội -> HỦY CỨNG [X]";
+            return ev;
+        }
+
+        BOOL dbProvesMall = (!popupShowsExplicitShopName && allCandidatesMall) ||
+                            (popupShowsExplicitShopName && dbMatchesVisibleShop && matchedNamedIsMall);
+        if (mallKws.count > 0 && matchedIdxs.count > 0 && dbProvesMall) {
+            ev.decision = FoodFilterDecisionRejectHard;
+            ev.reasonSummary = @"Green Food Điểm nhận thuộc TTTM/Tầng hầm (DB 3 Sàn HN) -> HỦY CỨNG [X]";
             return ev;
         }
     }
@@ -1454,10 +1746,12 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         BOOL canTrustOrderCount = (!popupShowsExplicitShopName && (singleExactMerchant || hiddenNameAddressMatch)) ||
                                   (popupShowsExplicitShopName && dbMatchesVisibleShop);
         if (canTrustOrderCount) {
-            NSInteger effectiveOrders = (singleExactMerchant || hiddenNameAddressMatch) ? (NSInteger)maxCandOrders : (NSInteger)minCandOrders;
+            NSInteger effectiveOrders = dbMatchesVisibleShop
+                ? (NSInteger)matchedNamedOrders
+                : ((singleExactMerchant || hiddenNameAddressMatch) ? (NSInteger)maxCandOrders : (NSInteger)minCandOrders);
             if (effectiveOrders >= config.foodMaxMerchantOrders) {
                 ev.decision = FoodFilterDecisionRejectHard;
-                ev.reasonSummary = [NSString stringWithFormat:@"Green Food Quán quá tải (%ld đơn >= %ld) -> HỦY CỨNG [X]",
+                ev.reasonSummary = [NSString stringWithFormat:@"Green Food Quán quá tải (%ld điểm đông >= %ld) -> HỦY CỨNG [X]",
                                     (long)effectiveOrders, (long)config.foodMaxMerchantOrders];
                 return ev;
             }
