@@ -167,8 +167,8 @@
         luma, integ, width, height,
         searchY0,
         Math.max(searchY0 + 16, searchY1),
-        Math.round(width * 0.20),
-        Math.round(width * 0.80),
+        Math.round(width * 0.02),
+        Math.round(width * 0.98),
         cardBgCeiling,
         'shelf-tight-island'
       );
@@ -281,9 +281,9 @@
       colSamples.push(v);
     }
     colSamples.sort(function (a, b) { return a - b; });
-    // In wide/shelf shots, text spans ~35% of [xMin..xMax] so p35 is pure background grain; in full-width close-ups, p12 is background
-    const colFloorPct = (modeName === 'shelf-tight-island') ? 0.38 : 0.12;
-    const colNoiseFloor = colSamples.length ? colSamples[Math.floor(colSamples.length * colFloorPct)] : 0;
+    // Use 8th percentile across [2%..98%] so even when close-up text spans 85% of image width,
+    // colNoiseFloor measures genuine dark background noise and NEVER subtracts away the digits!
+    const colNoiseFloor = colSamples.length ? colSamples[Math.floor(colSamples.length * 0.08)] : 0;
 
     let maxCol = 0.01;
     for (let x = Math.max(winX, xMin); x <= Math.min(width - winX - 1, xMax); x++) {
@@ -292,7 +292,7 @@
     }
 
     // Locate horizontal center using a word-scale window (~15% width) so tiny corner glare specks never beat a 22-char ID line!
-    const wordHalf = Math.max(18, Math.round(width * 0.075));
+    const wordHalf = Math.max(18, Math.round(width * 0.08));
     let bestWordSum = -1;
     let centerCol = Math.round((xMin + xMax) * 0.5);
     for (let x = Math.max(wordHalf, xMin); x <= Math.min(width - wordHalf - 1, xMax); x++) {
@@ -303,15 +303,18 @@
         centerCol = x;
       }
     }
-    // Re-measure local peak around the true word center so threshold scales to the text, not an edge artifact
-    let wordPeak = 0.01;
+    // Measure 85th-percentile stroke strength around word center (not single max pixel) so thinner digits aren't dwarfed by bold 'BSS'!
+    const wordVals = [];
     for (let dx = -wordHalf; dx <= wordHalf; dx++) {
       const xx = clamp(centerCol + dx, 0, width - 1);
-      if (colSm[xx] > wordPeak) wordPeak = colSm[xx];
+      if (colSm[xx] > 0) wordVals.push(colSm[xx]);
     }
+    wordVals.sort(function (a, b) { return a - b; });
+    const wordRef = wordVals.length ? wordVals[Math.floor(wordVals.length * 0.80)] : maxCol;
 
-    const thr = wordPeak * 0.24;
-    const maxGap = Math.max(10, Math.round(width * 0.032));
+    const thr = Math.max(0.8, wordRef * 0.18);
+    // Scale max horizontal bridge gap with BOTH character height (rawTextH * 2.8) and frame width!
+    const maxGap = Math.max(14, Math.round(rawTextH * 2.8), Math.round(width * 0.045));
     let ix0 = centerCol, gap = 0;
     for (let x = centerCol; x >= xMin; x--) {
       if (colSm[x] >= thr) { ix0 = x; gap = 0; }
@@ -323,7 +326,7 @@
       else { gap++; if (gap > maxGap) break; }
     }
 
-    const padX = Math.max(14, Math.round((ix1 - ix0 + 1) * 0.09));
+    const padX = Math.max(14, Math.round(rawTextH * 1.1), Math.round((ix1 - ix0 + 1) * 0.06));
     ix0 = clamp(ix0 - padX, 0, width - 20);
     ix1 = clamp(ix1 + padX, ix0 + 20, width - 1);
 

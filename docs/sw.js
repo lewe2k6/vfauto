@@ -1,11 +1,11 @@
-const CACHE_NAME = 'vf-bss-qr-rescue-v3';
+const CACHE_NAME = 'vf-bss-qr-rescue-v4';
 const CORE_ASSETS = [
   './',
   './index.html',
-  './styles.css',
-  './vision.js',
-  './ocr_qr.js',
-  './app.js',
+  './styles.css?v=4',
+  './vision.js?v=4',
+  './ocr_qr.js?v=4',
+  './app.js?v=4',
   './manifest.json',
   './vendor/qrcode.js',
   './vendor/jsQR.js',
@@ -40,22 +40,37 @@ self.addEventListener('activate', function (event) {
   );
 });
 
+// Network-first for HTML/CSS/App JS (never serves stale code when online!), Cache-first for heavy vendor libraries
 self.addEventListener('fetch', function (event) {
   if (event.request.method !== 'GET') return;
+  const url = event.request.url || '';
+  const isVendor = url.indexOf('/vendor/') >= 0;
+
+  if (isVendor) {
+    event.respondWith(
+      caches.match(event.request).then(function (cached) {
+        if (cached) return cached;
+        return fetch(event.request).then(function (resp) {
+          if (resp && resp.status === 200) {
+            const clone = resp.clone();
+            caches.open(CACHE_NAME).then(function (c) { c.put(event.request, clone).catch(function () {}); });
+          }
+          return resp;
+        });
+      })
+    );
+    return;
+  }
+
   event.respondWith(
-    caches.match(event.request).then(function (cached) {
-      if (cached) return cached;
-      return fetch(event.request).then(function (resp) {
-        if (resp && resp.status === 200) {
-          const clone = resp.clone();
-          caches.open(CACHE_NAME).then(function (c) {
-            c.put(event.request, clone).catch(function () {});
-          });
-        }
-        return resp;
-      }).catch(function () {
-        return cached;
-      });
+    fetch(event.request).then(function (resp) {
+      if (resp && resp.status === 200) {
+        const clone = resp.clone();
+        caches.open(CACHE_NAME).then(function (c) { c.put(event.request, clone).catch(function () {}); });
+      }
+      return resp;
+    }).catch(function () {
+      return caches.match(event.request);
     })
   );
 });
