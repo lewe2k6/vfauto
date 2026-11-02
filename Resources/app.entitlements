@@ -16,6 +16,14 @@
 	<true/>
 	<key>com.apple.private.coreservices.canmaplsdatabase</key>
 	<true/>
+	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
+	<true/>
+	<key>com.apple.private.mobileinstall.allowedSPI</key>
+	<true/>
+	<key>com.apple.springboard.opensensitiveurl</key>
+	<true/>
+	<key>com.apple.springboard.openurlswhenlocked</key>
+	<true/>
 	<key>com.apple.backboard.client</key>
 	<true/>
 	<key>com.apple.backboardd.launchapplications</key>

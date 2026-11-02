@@ -528,6 +528,10 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
 
     if (sendNotify) {
         notify_post(kNotifyReloadConfig);
+        FilterConfig *snapshotCfg = self;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            syncGoogleMapsSchemeInterceptionForConfig(snapshotCfg);
+        });
     }
 }
 
@@ -811,7 +815,7 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                         NSString *eff = (config && config.driverAppBundleID.length > 0)
                             ? config.driverAppBundleID
                             : cachedAutoDetectedDriverBundleID();
-                        return eff.length > 0 ? eff : @"vn.gsm.driver";
+                        return eff.length > 0 ? eff : @"vn.gsm.md";
                     }
 
                     NSString *cand = (bid.length > 0) ? bid : normalizeSceneIdentifierToBundleID(ident);
@@ -955,30 +959,65 @@ InstalledAppInfo *autoDetectDriverApp(void) {
     static double sLastDetectEpoch = 0.0;
     double now = [[NSDate date] timeIntervalSince1970];
     @synchronized ([InstalledAppInfo class]) {
-        if (sLastDetectEpoch > 0.0 && fabs(now - sLastDetectEpoch) < 45.0) {
+        if (sCachedDriverApp && sLastDetectEpoch > 0.0 && fabs(now - sLastDetectEpoch) < 45.0) {
             return sCachedDriverApp;
         }
     }
 
     NSArray<InstalledAppInfo *> *apps = listInstalledUserApps();
     InstalledAppInfo *found = nil;
+
+    // Pass 1: Exact Bundle ID match for GreenSMDriver 3.18.0 (vn.gsm.md) & legacy GSM driver bundles
     for (InstalledAppInfo *app in apps) {
-        NSString *normName = NormalizeVNText(app.displayName);
-        NSString *normBid  = app.bundleID.lowercaseString;
-        if (([normName containsString:@"xanh"] && ([normName containsString:@"tai"] || [normName containsString:@"driver"] || [normName containsString:@"platform"])) ||
+        NSString *normBid = app.bundleID.lowercaseString;
+        if ([normBid isEqualToString:@"vn.gsm.md"] ||
+            [normBid isEqualToString:@"vn.gsm.driver"] ||
+            [normBid hasPrefix:@"vn.gsm."] ||
             [normBid containsString:@"gsm.driver"] ||
-            [normBid containsString:@"xanhsm.driver"] ||
-            [normName containsString:@"bac tai"]) {
+            [normBid containsString:@"xanhsm.driver"]) {
             found = app;
             break;
         }
     }
+
+    // Pass 2: Display Name / Secondary Bundle ID match ("Tài xế Green SM", "Green SM Driver", "Xanh SM Bác Tài")
     if (!found) {
         for (InstalledAppInfo *app in apps) {
             NSString *normName = NormalizeVNText(app.displayName);
-            if ([normName containsString:@"xanh sm"] || [normName containsString:@"greensm"] || [app.bundleID.lowercaseString containsString:@"xanhsm"]) {
+            NSString *normBid  = app.bundleID.lowercaseString;
+            if ([normName containsString:@"green sm"] ||
+                [normName containsString:@"greensm"] ||
+                [normName containsString:@"xanh sm"] ||
+                [normName containsString:@"bac tai"] ||
+                ([normName containsString:@"xanh"] && ([normName containsString:@"tai"] || [normName containsString:@"driver"] || [normName containsString:@"platform"])) ||
+                ([normName containsString:@"green"] && ([normName containsString:@"tai"] || [normName containsString:@"driver"])) ||
+                [normBid containsString:@"xanhsm"] ||
+                [normBid containsString:@"greensm"]) {
                 found = app;
                 break;
+            }
+        }
+    }
+
+    // Pass 3: Direct <0.3ms filesystem scan of /var/containers/Bundle/Application/*/Driver.app/Info.plist (works as root/daemon even if lsd is busy)
+    if (!found) {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *appsRoot = @"/var/containers/Bundle/Application";
+        NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:appsRoot error:nil];
+        for (NSString *u in uuids) {
+            NSString *uuidDir = [appsRoot stringByAppendingPathComponent:u];
+            NSString *driverPlist = [uuidDir stringByAppendingPathComponent:@"Driver.app/Info.plist"];
+            if ([fm fileExistsAtPath:driverPlist]) {
+                NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:driverPlist];
+                NSString *bid = [info[@"CFBundleIdentifier"] isKindOfClass:[NSString class]] ? info[@"CFBundleIdentifier"] : @"";
+                if ([bid.lowercaseString hasPrefix:@"vn.gsm"] || [bid.lowercaseString containsString:@"xanhsm"]) {
+                    InstalledAppInfo *fsApp = [[InstalledAppInfo alloc] init];
+                    fsApp.bundleID       = bid;
+                    fsApp.executableName = [info[@"CFBundleExecutable"] isKindOfClass:[NSString class]] ? info[@"CFBundleExecutable"] : @"Driver";
+                    fsApp.displayName    = @"Tài xế Green SM";
+                    found = fsApp;
+                    break;
+                }
             }
         }
     }
@@ -1725,7 +1764,76 @@ void triggerHapticFeedback(BOOL isAccept) {
 
 #pragma mark - Navigation URL Interceptor & Dual-Path Peer Relay (ntfy.sh + Anti-DNS-Poison IP Fallback)
 
+static BOOL registerOrUnregisterAppBundleInLS(NSString *bundlePath, BOOL shouldRegister) {
+    if (!bundlePath || bundlePath.length == 0) return NO;
+    NSURL *bundleURL = [NSURL fileURLWithPath:bundlePath isDirectory:YES];
+    if (!bundleURL) return NO;
+
+    Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+    if (!wsCls) return NO;
+    @try {
+        SEL defSel = NSSelectorFromString(@"defaultWorkspace");
+        if (![wsCls respondsToSelector:defSel]) return NO;
+        id workspace = ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel);
+        if (!workspace) return NO;
+
+        SEL actSel = NSSelectorFromString(shouldRegister ? @"registerApplication:" : @"unregisterApplication:");
+        if ([workspace respondsToSelector:actSel]) {
+            return ((BOOL (*)(id, SEL, NSURL *))objc_msgSend)(workspace, actSel, bundleURL);
+        }
+    } @catch (NSException *ex) {}
+    return NO;
+}
+
+NSString *findLocalGoogleMapsBundlePath(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    // 1. Check cached bundle path first (<0.05ms, survives while Maps.app is temporarily unregistered from lsd)
+    NSString *cached = [[NSString stringWithContentsOfFile:kGmapsBundleCachePath encoding:NSUTF8StringEncoding error:nil]
+                        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (cached.length > 0 && [fm fileExistsAtPath:[cached stringByAppendingPathComponent:@"Info.plist"]]) {
+        return cached;
+    }
+
+    // 2. Check LSApplicationProxy if currently registered
+    Class proxyCls = NSClassFromString(@"LSApplicationProxy");
+    if (proxyCls) {
+        @try {
+            SEL prxSel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+            if ([proxyCls respondsToSelector:prxSel]) {
+                id proxy = ((id (*)(id, SEL, NSString *))objc_msgSend)(proxyCls, prxSel, @"com.google.Maps");
+                NSURL *bUrl = proxy ? [proxy valueForKey:@"bundleURL"] : nil;
+                NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
+                if (bPath.length > 0 && [fm fileExistsAtPath:[bPath stringByAppendingPathComponent:@"Info.plist"]]) {
+                    writeStringUnprotectedAtomically(bPath, kGmapsBundleCachePath);
+                    return bPath;
+                }
+            }
+        } @catch (NSException *ex) {}
+    }
+
+    // 3. Direct filesystem scan of /var/containers/Bundle/Application/*/Maps.app (works even when Maps.app is unregistered!)
+    NSString *appsRoot = @"/var/containers/Bundle/Application";
+    NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:appsRoot error:nil];
+    for (NSString *u in uuids) {
+        NSString *uuidDir = [appsRoot stringByAppendingPathComponent:u];
+        NSString *fastMaps = [uuidDir stringByAppendingPathComponent:@"Maps.app"];
+        NSString *fastPlist = [fastMaps stringByAppendingPathComponent:@"Info.plist"];
+        if ([fm fileExistsAtPath:fastPlist]) {
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:fastPlist];
+            NSString *bid = [info[@"CFBundleIdentifier"] isKindOfClass:[NSString class]] ? info[@"CFBundleIdentifier"] : @"";
+            if ([bid caseInsensitiveCompare:@"com.google.Maps"] == NSOrderedSame) {
+                writeStringUnprotectedAtomically(fastMaps, kGmapsBundleCachePath);
+                return fastMaps;
+            }
+        }
+    }
+    return nil;
+}
+
 BOOL isGoogleMapsInstalledOnDevice(void) {
+    NSString *path = findLocalGoogleMapsBundlePath();
+    if (path.length > 0) return YES;
     @try {
         NSArray<InstalledAppInfo *> *apps = listInstalledUserApps();
         for (InstalledAppInfo *app in apps) {
@@ -1738,6 +1846,155 @@ BOOL isGoogleMapsInstalledOnDevice(void) {
         }
     } @catch (NSException *ex) {}
     return NO;
+}
+
+void syncGreenSMExternalNavigationPreferenceIfNeeded(void) {
+    // Ensures GreenSMDriver 3.18.0 (vn.gsm.md) uses .externalApp (comgooglemaps://) instead of getting stuck in in-app .gsmMaps
+    @try {
+        NSFileManager *fm = [NSFileManager defaultManager];
+        NSString *dataRoot = @"/var/mobile/Containers/Data/Application";
+        NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:dataRoot error:nil];
+        for (NSString *u in uuids) {
+            NSString *contDir = [dataRoot stringByAppendingPathComponent:u];
+            NSString *metaPath = [contDir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+            if (![fm fileExistsAtPath:metaPath]) continue;
+            NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPath];
+            NSString *ident = [meta[@"MCMMetadataIdentifier"] isKindOfClass:[NSString class]] ? meta[@"MCMMetadataIdentifier"] : @"";
+            if (![ident.lowercaseString isEqualToString:@"vn.gsm.md"] &&
+                ![ident.lowercaseString isEqualToString:@"vn.gsm.driver"]) {
+                continue;
+            }
+            NSString *prefPath = [contDir stringByAppendingPathComponent:[NSString stringWithFormat:@"Library/Preferences/%@.plist", ident]];
+            if (![fm fileExistsAtPath:prefPath]) break;
+            NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:prefPath] mutableCopy];
+            if (!prefs) break;
+            BOOL modified = NO;
+            for (NSString *k in [prefs allKeys]) {
+                id val = prefs[k];
+                if ([val isKindOfClass:[NSString class]] && [(NSString *)val isEqualToString:@"gsmMaps"]) {
+                    prefs[k] = @"externalApp";
+                    modified = YES;
+                } else if ([val isKindOfClass:[NSData class]]) {
+                    NSString *asUtf8 = [[NSString alloc] initWithData:(NSData *)val encoding:NSUTF8StringEncoding];
+                    if ([asUtf8 isEqualToString:@"\"gsmMaps\""] || [asUtf8 isEqualToString:@"gsmMaps"]) {
+                        NSString *rep = [asUtf8 isEqualToString:@"\"gsmMaps\""] ? @"\"externalApp\"" : @"externalApp";
+                        prefs[k] = [rep dataUsingEncoding:NSUTF8StringEncoding];
+                        modified = YES;
+                    }
+                }
+            }
+            if (modified) {
+                [prefs writeToFile:prefPath atomically:YES];
+            }
+            break;
+        }
+    } @catch (NSException *ex) {}
+}
+
+BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
+    FilterConfig *cfg = config ?: [FilterConfig loadFromDisk];
+    BOOL shouldIntercept = (cfg.masterEnabled && cfg.mapRelayEnabled);
+
+    if (shouldIntercept) {
+        syncGreenSMExternalNavigationPreferenceIfNeeded();
+    }
+
+    NSString *gmapsPath = findLocalGoogleMapsBundlePath();
+    NSString *pindBin   = resolveLiveAppPindBinaryPath();
+    NSString *ourAppPath = pindBin.length > 0 ? [pindBin stringByDeletingLastPathComponent] : [[NSBundle mainBundle] bundlePath];
+
+    BOOL ok = NO;
+    if (shouldIntercept) {
+        // Master ON + Map Relay ON: Temporarily unregister Maps.app from LaunchServices so PinNhietDo claims 100% of comgooglemaps://
+        if (gmapsPath.length > 0) {
+            registerOrUnregisterAppBundleInLS(gmapsPath, NO);
+        }
+        if (ourAppPath.length > 0 && [ourAppPath hasSuffix:@".app"]) {
+            ok = registerOrUnregisterAppBundleInLS(ourAppPath, YES);
+        }
+    } else {
+        // Master OFF or Map Relay OFF: Immediately restore Maps.app in LaunchServices so local Google Maps works natively on iPhone 8
+        if (gmapsPath.length > 0) {
+            ok = registerOrUnregisterAppBundleInLS(gmapsPath, YES);
+        }
+    }
+
+    // If invoked from mobile UI process (uid != 0), also run root helper so lsd accepts registration changes unconditionally
+    if (geteuid() != 0 && pindBin.length > 0) {
+        spawnRoot(pindBin, @[@"--sync-gmaps-scheme"]);
+    }
+    return ok;
+}
+
+BOOL forwardNavigationURLToLocalGoogleMaps(NSString *rawURLString) {
+    if (!rawURLString || rawURLString.length == 0) return NO;
+
+    NSString *gmapsPath = findLocalGoogleMapsBundlePath();
+    if (gmapsPath.length > 0) {
+        registerOrUnregisterAppBundleInLS(gmapsPath, YES);
+    }
+
+    NSString *normalizedStr = [rawURLString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([normalizedStr.lowercaseString hasPrefix:@"pinmaprelay://"]) {
+        normalizedStr = [@"comgooglemaps://" stringByAppendingString:[normalizedStr substringFromIndex:@"pinmaprelay://".length]];
+    }
+
+    NSURL *navURL = [NSURL URLWithString:normalizedStr];
+    if (!navURL) {
+        BOOL hasCoords = NO;
+        double lat = 0.0, lng = 0.0;
+        NSString *label = nil;
+        if (parseNavigationTargetFromString(normalizedStr, &hasCoords, &lat, &lng, &label)) {
+            NSString *destParam = hasCoords
+                ? [NSString stringWithFormat:@"%.6f,%.6f", lat, lng]
+                : ([label stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]] ?: @"");
+            navURL = [NSURL URLWithString:[NSString stringWithFormat:@"comgooglemaps://?daddr=%@&directionsmode=driving", destParam]];
+        }
+    }
+    if (!navURL) return NO;
+
+    void *fbs = dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
+    Class fbsOpenCls = NSClassFromString(@"FBSOpenApplicationService");
+    Class fbsOptCls  = NSClassFromString(@"FBSOpenApplicationOptions");
+
+    void (^fireFBSOpenWithURL)(void) = ^{
+        if (!fbsOpenCls) return;
+        @try {
+            SEL epSel   = NSSelectorFromString(@"serviceWithDefaultShellEndpoint");
+            SEL openSel = NSSelectorFromString(@"openApplication:withOptions:completion:");
+            SEL optSel  = NSSelectorFromString(@"optionsWithDictionary:");
+            if (![fbsOpenCls respondsToSelector:epSel]) return;
+            id openSvc = ((id (*)(id, SEL))objc_msgSend)(fbsOpenCls, epSel);
+            if (!openSvc || ![openSvc respondsToSelector:openSel]) return;
+
+            NSMutableDictionary *optDict = [NSMutableDictionary dictionary];
+            optDict[@"__PayloadURL"]        = navURL;
+            optDict[@"__ActivateSuspended"] = @NO;
+            optDict[@"__UnlockDevice"]      = @YES;
+            optDict[@"__PromptUnlockDevice"]= @YES;
+            if (fbs) {
+                NSString * const *kPayload = (NSString * const *)dlsym(fbs, "FBSOpenApplicationOptionKeyPayloadURL");
+                if (kPayload && *kPayload) {
+                    optDict[*kPayload] = navURL;
+                }
+            }
+
+            id fbsOpts = (fbsOptCls && [fbsOptCls respondsToSelector:optSel])
+                ? ((id (*)(id, SEL, NSDictionary *))objc_msgSend)(fbsOptCls, optSel, optDict)
+                : nil;
+            ((void (*)(id, SEL, NSString *, id, id))objc_msgSend)(openSvc, openSel, @"com.google.Maps", fbsOpts, nil);
+        } @catch (NSException *ex) {}
+    };
+
+    fireFBSOpenWithURL();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.42 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        if (!isAppCurrentlyForeground(@"com.google.Maps")) {
+            launchAppByBundleID(@"com.google.Maps");
+        }
+        fireFBSOpenWithURL();
+    });
+    return YES;
 }
 
 static BOOL extractFirstLatLngPairFromString(NSString *str, double *outLat, double *outLng) {
@@ -2266,8 +2523,15 @@ BOOL enqueueAndTriggerMapRelayFromURLString(NSString *rawInput,
     }
 
     FilterConfig *cfg = [FilterConfig loadFromDisk];
-    if (!cfg.mapRelayEnabled && allowReturnToDriver) {
-        appendDaemonLog(@"[BẮN MAP] Nhận link Điều hướng nhưng công tắc Bắn Map đang TẮT.");
+    if ((!cfg.masterEnabled || !cfg.mapRelayEnabled) && allowReturnToDriver) {
+        if (isGoogleMapsInstalledOnDevice()) {
+            appendDaemonLog(@"[MỞ MAP MÁY 8] Công tắc đang TẮT -> Chuyển thẳng chỉ đường sang Google Maps trên iPhone 8.");
+            notify_post(kNotifyStatsUpdated);
+            forwardNavigationURLToLocalGoogleMaps(rawInput);
+            if (completion) completion(YES, @"Đã mở Google Maps trên iPhone 8");
+            return YES;
+        }
+        appendDaemonLog(@"[BẮN MAP] Nhận link Điều hướng nhưng công tắc đang TẮT.");
         notify_post(kNotifyStatsUpdated);
         if (cfg.mapRelayReturnToDriver) {
             returnToDriverAppReliably(cfg.driverAppBundleID, sourceTag);

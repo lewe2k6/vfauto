@@ -74,6 +74,10 @@
 	<true/>
 	<key>com.apple.private.coreservices.canmaplsdatabase</key>
 	<true/>
+	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
+	<true/>
+	<key>com.apple.private.mobileinstall.allowedSPI</key>
+	<true/>
 	<key>com.apple.private.MobileContainerManager.allowed</key>
 	<true/>
 	<key>com.apple.private.hid.client.event-dispatch</key>

@@ -163,9 +163,22 @@ static void killAllOtherPindProcesses(void) {
 }
 
 static int runStopMain(void) {
+    @autoreleasepool {
+        FilterConfig *cfg = [FilterConfig loadFromDisk];
+        cfg.masterEnabled = NO;
+        syncGoogleMapsSchemeInterceptionForConfig(cfg);
+    }
     killAllOtherPindProcesses();
     unlink([kWatchdogPidPath fileSystemRepresentation]);
     unlink([kDaemonPidPath fileSystemRepresentation]);
+    return 0;
+}
+
+static int runSyncGmapsSchemeMain(void) {
+    @autoreleasepool {
+        FilterConfig *cfg = [FilterConfig loadFromDisk];
+        syncGoogleMapsSchemeInterceptionForConfig(cfg);
+    }
     return 0;
 }
 
@@ -1114,6 +1127,7 @@ static int runWorkerMain(void) {
         }
         [state saveStateAndNotify:YES];
         gNeedsReload = NO;
+        syncGoogleMapsSchemeInterceptionForConfig(config);
 
         ScreenTouchEngine *engine = [ScreenTouchEngine sharedEngine];
         OrderScanner *scanner     = [OrderScanner sharedScanner];
@@ -1181,6 +1195,7 @@ static int runWorkerMain(void) {
                     }
                     config = reloaded;
                     gNeedsReload = NO;
+                    syncGoogleMapsSchemeInterceptionForConfig(config);
                     resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
                 }
@@ -1741,6 +1756,9 @@ int main(int argc, char *argv[]) {
     }
     if (argc >= 2 && strcmp(argv[1], "--stop") == 0) {
         return runStopMain();
+    }
+    if (argc >= 2 && strcmp(argv[1], "--sync-gmaps-scheme") == 0) {
+        return runSyncGmapsSchemeMain();
     }
     if (argc >= 3 && strcmp(argv[1], "--kill-pid") == 0) {
         return runKillPidMain((pid_t)atoi(argv[2]));

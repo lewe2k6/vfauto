@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.0.2-ts
-          name: "Pin & Nhiệt Độ v5.0.2 — Bản Rà Soát Sạch Lỗi Toàn Diện (App + Daemon + Cầu Nối Map)"
-          body: "Bản v5.0.2 rà soát và khóa sạch toàn bộ lỗi tiềm ẩn: (1) Sửa regex tọa độ bị cụt số 0 cuối từ React Native (vd 21.03,105.8) và tự bóc tách URL chứa ký tự đặc biệt/tiếng Việt không phụ thuộc NSURLComponents, chống nhầm tọa độ saddr xuất phát; (2) Chống xung đột pind tự xả RAM cắt ngang gói Bắn Map đang gửi + gửi trực tiếp 0ms ngay trong app kèm hàng đợi dự phòng trùng nonce; (3) Hồi quy Xanh SM 3 nhịp chống kẹt chuyển cảnh SpringBoard; (4) Chống rò rỉ cổng Mach port ở màn hình Pin, tách luồng phụ cho LaunchServices XPC, và bổ sung Bảng Phóng Xanh Toàn Màn Hình 1 chạm trên map.html vượt chặn cử chỉ Chrome Android."
+          tag_name: v5.0.3-ts
+          name: "Pin & Nhiệt Độ v5.0.3 — Tương Thích GreenSM 3.18.0 (vn.gsm.md) + Giữ Google Maps Máy 8 + Quét QR Web"
+          body: "Bản v5.0.3 nâng cấp: (1) Tương thích chuẩn GreenSMDriver 3.18.0 (CFBundleIdentifier vn.gsm.md, Tài xế Green SM, tự ép chế độ mở bản đồ ngoài .externalApp thay vì .gsmMaps); (2) Giữ nguyên Google Maps trên iPhone 8 — khi BẬT công tắc sẽ tự động bắt comgooglemaps:// bắn sang máy thứ 2 và ngủ 0% RAM, khi TẮT công tắc sẽ trả quyền comgooglemaps:// và chuyển tiếp trực tiếp sang Google Maps ngay trên iPhone 8; (3) Thêm nút Chụp ảnh / Chọn ảnh / Mở Camera quét mã QR kênh kết nối trực tiếp trên trang map.html."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

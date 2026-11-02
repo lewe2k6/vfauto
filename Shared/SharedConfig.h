@@ -5,10 +5,11 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"5.0.2"
+#define kCurrentDaemonVersion   @"5.0.3"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"
+#define kGmapsBundleCachePath   @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.gmaps_bundle.txt"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
 #define kDaemonPidPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.pid"
 #define kWatchdogPidPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.watchdog.pid"
@@ -151,7 +152,11 @@ void upgradeSharedFilesProtectionNone(void);
 
 NSArray<InstalledAppInfo *> *listInstalledUserApps(void);
 InstalledAppInfo *autoDetectDriverApp(void);
+NSString *findLocalGoogleMapsBundlePath(void);
 BOOL isGoogleMapsInstalledOnDevice(void);
+BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config);
+BOOL forwardNavigationURLToLocalGoogleMaps(NSString *rawURLString);
+void syncGreenSMExternalNavigationPreferenceIfNeeded(void);
 BOOL bundleIDMatchesDriverApp(NSString *bid, FilterConfig *config);
 BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName);
 BOOL launchAppByBundleID(NSString *bundleID);

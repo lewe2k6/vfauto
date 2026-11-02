@@ -920,6 +920,8 @@
 
     [self updateValueLabels];
     [_cfg saveToDiskAndNotify:YES];
+    _lastGmapsCheckEpoch = 0.0;
+    [self refreshStatusAndLogs];
 }
 
 - (void)sliderChanged {
@@ -984,6 +986,8 @@
     _cfg.minFoodPriceVND = MAX(5000, MIN(500000, next));
     [self updateValueLabels];
     [_cfg saveToDiskAndNotify:YES];
+    _lastGmapsCheckEpoch = 0.0;
+    [self refreshStatusAndLogs];
 }
 
 - (void)promptExactFoodPrice {
@@ -1400,12 +1404,22 @@
                 if (!strongSelf) return;
                 strongSelf->_cachedGmapsInstalled = installed;
                 strongSelf->_gmapsCheckInFlight = NO;
-                if (installed) {
-                    strongSelf->_lblGmapsStatus.text = @"PHÁT HIỆN MÁY NÀY VẪN CÒN APP GOOGLE MAPS!\nHãy xóa Google Maps trên chiếc iPhone 8 này để: (1) Nhẹ ~400MB RAM hết đơ Wi-Fi, (2) Khi bấm 'Điều hướng' trong Xanh SM thì iOS chuyển thẳng tọa độ qua Pin & Nhiệt Độ bắn sang máy thứ 2!";
-                    strongSelf->_lblGmapsStatus.textColor = [UIColor systemOrangeColor];
-                } else {
-                    strongSelf->_lblGmapsStatus.text = @"CHUẨN BÀI: Máy này đã gỡ Google Maps — Bấm 'Điều hướng' trong Xanh SM sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!";
+                BOOL relayActive = (strongSelf->_cfg.masterEnabled && strongSelf->_cfg.mapRelayEnabled);
+                if (relayActive) {
+                    if (installed) {
+                        strongSelf->_lblGmapsStatus.text = @"CHẾ ĐỘ BẮN MAP SANG MÁY 2 ĐANG BẬT:\nApp Google Maps trên chiếc iPhone 8 này được giữ nguyên ở chế độ ngủ 0% RAM. Bấm 'Điều hướng' trong Green SM (vn.gsm.md) sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!\n(Khi muốn dùng lại Google Maps trên máy này, chỉ cần TẮT công tắc Bắn Map hoặc TẮT Tổng Công Tắc)";
+                    } else {
+                        strongSelf->_lblGmapsStatus.text = @"CHẾ ĐỘ BẮN MAP SANG MÁY 2 ĐANG BẬT:\nBấm 'Điều hướng' trong Green SM (vn.gsm.md) sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!";
+                    }
                     strongSelf->_lblGmapsStatus.textColor = [UIColor systemGreenColor];
+                } else {
+                    if (installed) {
+                        strongSelf->_lblGmapsStatus.text = @"ĐANG DÙNG GOOGLE MAPS TRỰC TIẾP TRÊN IPHONE 8:\nVì công tắc Bắn Map (hoặc Tổng Công Tắc) đang TẮT, bấm 'Điều hướng' trong Green SM sẽ mở thẳng Google Maps ngay trên chiếc iPhone 8 này như bình thường!";
+                        strongSelf->_lblGmapsStatus.textColor = [UIColor colorWithRed:0.35 green:0.88 blue:1.0 alpha:1.0];
+                    } else {
+                        strongSelf->_lblGmapsStatus.text = @"Đang TẮT Bắn Map (Máy này hiện chưa cài app Google Maps).";
+                        strongSelf->_lblGmapsStatus.textColor = [UIColor systemOrangeColor];
+                    }
                 }
             });
         });
