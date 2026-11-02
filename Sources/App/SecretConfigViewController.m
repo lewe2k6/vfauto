@@ -48,6 +48,7 @@
     UISwitch    *_swMapReturn;
     UIImageView *_qrImageView;
     UILabel     *_lblMapTopic;
+    UILabel     *_lblBarkStatus;
     NSString    *_lastRenderedQRTopic;
     NSTimeInterval _lastGmapsCheckEpoch;
     BOOL         _cachedGmapsInstalled;
@@ -599,6 +600,24 @@
     [relayRow2 addArrangedSubview:clipRelayBtn];
     [sec3 addArrangedSubview:relayRow2];
 
+    _lblBarkStatus = [[UILabel alloc] init];
+    _lblBarkStatus.font = [UIFont monospacedDigitSystemFontOfSize:11.8 weight:UIFontWeightSemibold];
+    _lblBarkStatus.textColor = [UIColor colorWithRed:0.98 green:0.78 blue:0.32 alpha:1.0];
+    _lblBarkStatus.numberOfLines = 0;
+    [sec3 addArrangedSubview:_lblBarkStatus];
+
+    UIStackView *barkRow = [[UIStackView alloc] init];
+    barkRow.axis = UILayoutConstraintAxisHorizontal;
+    barkRow.distribution = UIStackViewDistributionFillEqually;
+    barkRow.spacing = 8;
+    UIButton *editBarkBtn = [self makeStepButton:@"Nhập / Dán Key Bark" tag:0 action:@selector(editBarkKeyTapped)];
+    editBarkBtn.backgroundColor = [UIColor colorWithRed:0.82 green:0.32 blue:0.22 alpha:1.0];
+    UIButton *pullBarkBtn = [self makeStepButton:@"Lấy Key Bark Từ Máy 2" tag:0 action:@selector(pullBarkKeyFromPeerTapped:)];
+    pullBarkBtn.backgroundColor = [UIColor colorWithRed:0.65 green:0.42 blue:0.12 alpha:1.0];
+    [barkRow addArrangedSubview:editBarkBtn];
+    [barkRow addArrangedSubview:pullBarkBtn];
+    [sec3 addArrangedSubview:barkRow];
+
     // --- CARD 4: 4 COORDINATES & SCREENSHOT PICKER ---
     UIStackView *sec4 = nil;
     [self makeCardWithTitle:@"4. Tinh Chỉnh 4 Tọa Độ & Kéo Hồng Tâm" addTo:_stackView outBody:&sec4];
@@ -837,6 +856,15 @@
                             _cfg.driverAppBundleID.length ? _cfg.driverAppBundleID : @"Tự động dò"];
 
     [self renderMapRelayQRIfNeeded];
+
+    NSString *cleanBark = sanitizeBarkKeyOrURL(_cfg.mapRelayBarkKey);
+    if (cleanBark.length >= 6) {
+        _lblBarkStatus.text = [NSString stringWithFormat:@"● BARK IPHONE (NỔ 0.2 GIÂY): ĐÃ BẬT\nKey/Endpoint: %@ — Chạm thông báo Bark trên iPhone 2 sẽ nhảy thẳng vào app Google Maps!", cleanBark];
+        _lblBarkStatus.textColor = [UIColor systemGreenColor];
+    } else {
+        _lblBarkStatus.text = @"○ Bark iPhone (Thông báo nổ 0.2s): Chưa gắn Key\n(Nếu máy nhận Map là iPhone: Cài app 'Bark' trên App Store -> Copy link trong Bark -> Dán vào đây hoặc gửi từ trang Map Máy 2 sang)";
+        _lblBarkStatus.textColor = [UIColor colorWithRed:0.98 green:0.78 blue:0.32 alpha:1.0];
+    }
 
     BOOL isManual = (_cfg.coordMode == CoordModeFixedManual);
     _autoCoordGroup.hidden   = isManual;
@@ -1247,6 +1275,75 @@
         [strongSelf refreshStatusAndLogs];
         [strongSelf showQuickAlert:(ok ? @"Đã Bắn Từ Clipboard!" : @"Lỗi Bắn Clipboard")
                            message:(detail ?: clip)];
+    });
+}
+
+- (void)editBarkKeyTapped {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Cấu Hình Bark (iPhone Nhận Map 0.2s)"
+                                                                message:@"Dán nguyên đường link copy từ app Bark (ví dụ https://api.day.app/AbCdEf.../...) hoặc chỉ mã Key 22 ký tự đều được — App sẽ tự tách chuẩn:"
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        tf.autocorrectionType = UITextAutocorrectionTypeNo;
+        tf.placeholder = @"https://api.day.app/Key... hoặc mã Key";
+        tf.text = self->_cfg.mapRelayBarkKey ?: @"";
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Dán Từ Clipboard & Lưu" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *clip = [UIPasteboard generalPasteboard].string ?: @"";
+        NSString *clean = sanitizeBarkKeyOrURL(clip);
+        if (clean.length < 6) {
+            [self showQuickAlert:@"Clipboard Chưa Có Key Bark"
+                         message:@"Hãy copy link hoặc mã Key từ app Bark trước khi bấm Dán."];
+            return;
+        }
+        self->_cfg.mapRelayBarkKey = clean;
+        [self updateValueLabels];
+        [self->_cfg saveToDiskAndNotify:YES];
+        triggerHapticFeedback(YES);
+        [self showQuickAlert:@"Đã Lưu Key Bark!"
+                     message:[NSString stringWithFormat:@"Đã gắn Key Bark: %@\nTừ giờ bấm 'Điều hướng' sẽ nổ thông báo Bark sang iPhone 2 trong 0.2 giây!", clean]];
+    }]];
+    if (_cfg.mapRelayBarkKey.length > 0) {
+        [ac addAction:[UIAlertAction actionWithTitle:@"Xóa Key Bark" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+            self->_cfg.mapRelayBarkKey = @"";
+            [self updateValueLabels];
+            [self->_cfg saveToDiskAndNotify:YES];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Lưu Key" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *raw = ac.textFields.firstObject.text ?: @"";
+        NSString *clean = sanitizeBarkKeyOrURL(raw);
+        self->_cfg.mapRelayBarkKey = clean;
+        [self updateValueLabels];
+        [self->_cfg saveToDiskAndNotify:YES];
+        if (clean.length >= 6) {
+            triggerHapticFeedback(YES);
+        }
+    }]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)pullBarkKeyFromPeerTapped:(UIButton *)sender {
+    sender.enabled = NO;
+    triggerHapticFeedback(NO);
+    NSString *topic = _cfg.mapRelayTopic;
+    __weak typeof(self) weakSelf = self;
+    fetchBarkKeyFromNtfyTopicAsync(topic, ^(NSString *foundBarkKey, NSString *detail) {
+        sender.enabled = YES;
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (foundBarkKey.length >= 6) {
+            strongSelf->_cfg.mapRelayBarkKey = foundBarkKey;
+            [strongSelf updateValueLabels];
+            [strongSelf->_cfg saveToDiskAndNotify:YES];
+            triggerHapticFeedback(YES);
+            [strongSelf showQuickAlert:@"Đã Hút Key Bark Thành Công!"
+                               message:[NSString stringWithFormat:@"Đã tự động lấy Key Bark (%@) từ iPhone 2 gửi sang!\nBấm 'Bắn Thử Map Ngay' để test nổ 0.2s.", foundBarkKey]];
+        } else {
+            [strongSelf showQuickAlert:@"Chưa Tìm Thấy Key Bark"
+                               message:(detail ?: @"Chưa thấy Key Bark trên kênh này.")];
+        }
     });
 }
 

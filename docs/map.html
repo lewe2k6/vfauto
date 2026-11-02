@@ -572,11 +572,23 @@
       </div>
     </div>
 
-    <!-- Background ntfy App Tip -->
+    <!-- Background Bark (iPhone 0.2s) & ntfy (Android) Card -->
     <div class="card">
-      <p class="card-title">Mẹo Nhận Map Kể Cả Khi Tắt Màn Hình</p>
+      <p class="card-title">3. Nhận Thông Báo Nổ 0.2s Khi Khóa Màn (Bark iPhone / ntfy Android)</p>
       <div class="hint-box">
-        Nếu muốn khóa màn hình hoặc vừa lướt TikTok/Zalo trên máy này mà vẫn nổ thông báo mở Map: tải app miễn phí <strong>ntfy</strong> trên CH Play / App Store, bấm dấu <strong>(+)</strong> và nhập đúng mã kênh <code id="ntfyTopicCode">chưa có</code>.
+        <strong style="color:#34d399;">Nếu máy nhận Map là iPhone (Khuyên dùng Bark — nổ 0.2 giây):</strong><br />
+        1. Tải app miễn phí <strong>Bark</strong> (biểu tượng chó trắng nền đỏ) trên App Store.<br />
+        2. Mở Bark, bấm <strong>Copy</strong> ở dòng link đầu tiên, dán vào ô dưới đây rồi bấm <strong>Gửi Sang iPhone 8</strong>.<br />
+        3. Sang iPhone 8 (mục số 3 trong bảng Cài đặt) bấm <strong>"Lấy Key Bark Từ Máy 2"</strong> là ghép đôi xong!
+      </div>
+      <div class="row-input">
+        <input id="barkKeyInput" type="text" placeholder="Dán link hoặc Key từ app Bark..." autocomplete="off" autocapitalize="none" spellcheck="false" />
+        <button id="sendBarkKeyBtn" type="button" class="btn" style="background:#dc2626;">Gửi Sang iPhone 8</button>
+      </div>
+      <div id="barkSyncStatus" class="qr-scan-status"></div>
+
+      <div class="hint-box" style="margin-top:4px;border-top:1px solid rgba(148,163,184,0.16);padding-top:8px;">
+        <strong style="color:#67e8f9;">Nếu máy nhận Map là Android:</strong> Tải app <strong>ntfy</strong> trên CH Play, bấm dấu <strong>(+)</strong> và nhập mã kênh <code id="ntfyTopicCode">chưa có</code>.
         <div style="margin-top:8px;">
           <button id="copyTopicBtn" type="button" class="btn secondary" style="padding:7px 12px;font-size:12px;">Copy Mã Kênh Cho App ntfy</button>
         </div>
@@ -907,6 +919,8 @@
             parsed = JSON.parse(env.message);
           } catch (_) {}
         }
+        if (parsed && parsed.type === 'bark_sync') return;
+        if (typeof env.message === 'string' && /^bark:/i.test(env.message.trim())) return;
         var dedupKey = (parsed && parsed.id) ? parsed.id : msgId;
         if (!dedupKey || hasSeen(dedupKey)) return;
         markSeen(dedupKey);
@@ -1357,6 +1371,79 @@
           });
         }
       });
+
+      var barkKeyInput   = document.getElementById('barkKeyInput');
+      var sendBarkKeyBtn = document.getElementById('sendBarkKeyBtn');
+      var barkSyncStatus = document.getElementById('barkSyncStatus');
+      var STORAGE_BARK_KEY = 'vf_map_relay_bark_v1';
+
+      function sanitizeBarkKeyJS(raw) {
+        if (!raw) return '';
+        var s = String(raw).trim().replace(/^["'`]+|["'`]+$/g, '');
+        if (!s) return '';
+        if (s.indexOf('://') !== -1) {
+          var noQuery = s.split('?')[0].split('#')[0];
+          var parts = noQuery.split('/');
+          if (parts.length >= 4) {
+            var host = (parts[2] || '').trim().toLowerCase();
+            for (var i = 3; i < parts.length; i++) {
+              var seg = (parts[i] || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+              if (seg && seg.toLowerCase() !== 'push' && seg.toLowerCase() !== 'ping' && seg.length >= 6) {
+                if (host === 'api.day.app') return seg;
+                return parts[0] + '//' + parts[2] + '/' + seg;
+              }
+            }
+          }
+          return '';
+        }
+        var clean = s.replace(/^\/+/, '').split('/')[0].split('?')[0].replace(/[^a-zA-Z0-9_-]/g, '');
+        return clean.length >= 6 ? clean.slice(0, 64) : '';
+      }
+
+      try {
+        var savedBark = localStorage.getItem(STORAGE_BARK_KEY);
+        if (savedBark && barkKeyInput) barkKeyInput.value = savedBark;
+      } catch (_) {}
+
+      if (sendBarkKeyBtn && barkKeyInput) {
+        sendBarkKeyBtn.addEventListener('click', function () {
+          var cleanBark = sanitizeBarkKeyJS(barkKeyInput.value);
+          if (!cleanBark) {
+            barkSyncStatus.className = 'qr-scan-status err';
+            barkSyncStatus.textContent = 'Link hoặc Key Bark chưa hợp lệ. Hãy mở app Bark bấm Copy dòng đầu tiên rồi dán vào đây!';
+            return;
+          }
+          if (!activeTopic) {
+            barkSyncStatus.className = 'qr-scan-status err';
+            barkSyncStatus.textContent = 'Chưa có Mã kênh kết nối ở mục 1. Hãy nhập hoặc quét QR mã kênh trước!';
+            return;
+          }
+          barkKeyInput.value = cleanBark;
+          try { localStorage.setItem(STORAGE_BARK_KEY, cleanBark); } catch (_) {}
+
+          barkSyncStatus.className = 'qr-scan-status busy';
+          barkSyncStatus.textContent = 'Đang gửi Key Bark (' + cleanBark + ') sang kênh ' + activeTopic + '...';
+
+          var syncPayload = JSON.stringify({
+            type: 'bark_sync',
+            barkKey: cleanBark,
+            ts: Date.now()
+          });
+
+          fetch('https://ntfy.sh/' + encodeURIComponent(activeTopic), {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            body: syncPayload
+          }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            barkSyncStatus.className = 'qr-scan-status ok';
+            barkSyncStatus.textContent = 'ĐÃ GỬI KEY BARK (' + cleanBark + ')! Bây giờ trên iPhone 8 hãy bấm nút "Lấy Key Bark Từ Máy 2" là xong!';
+          }).catch(function () {
+            barkSyncStatus.className = 'qr-scan-status err';
+            barkSyncStatus.textContent = 'Không gửi được qua mạng. Bạn có thể nhập trực tiếp mã "' + cleanBark + '" vào nút "Nhập / Dán Key Bark" trên iPhone 8.';
+          });
+        });
+      }
 
       // Restore preferences & URL ?k=<topic>
       try {

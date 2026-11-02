@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.0.5-ts
-          name: "Pin & Nhiệt Độ v5.0.5 — Tối Ưu Triệt Để Hiệu Năng & Mạng Internet Trên iPhone 8 (0% Lag)"
-          body: "Bản v5.0.5 triệt tiêu toàn bộ 6 nguyên nhân gây lag mạng và tụt hiệu năng trên iPhone 8: (1) Chặn lặp lệnh registerApplication:/unregisterApplication: làm đơ lsd + nehelper + symptomsd gây nghẽn mạng Wi-Fi/4G; (2) Tắt 100% Apple Vision Neural Engine OCR khi đang ở sảnh chờ chưa nổ đơn (cảm biến pixel 0.01ms nhận diện trực tiếp nút Nguồn xanh ngọc); (3) Ngắt 100% lệnh chụp màn hình CARenderServerRenderDisplay khi đang dùng app ngoài (Safari, Zalo, Facebook, Màn hình chính); (4) Bỏ copy đúp 4MB VRAM IOSurface mỗi khung hình; (5) Bỏ quét lsd 5 giây/lần trong Watchdog; (6) Chống tự khởi động lại Worker liên tục gây giải nén lại DB 162.000 điểm."
+          tag_name: v5.0.6-ts
+          name: "Pin & Nhiệt Độ v5.0.6 — Tích Hợp Bark (Nổ Thông Báo Mở Google Maps 0.2s Trên iPhone Nhận Map)"
+          body: "Bản v5.0.6 tích hợp Bark (api.day.app Apple APNs trực tiếp + vượt rào DNS 1.1.1.1/IP 43.155.109.24) song song cùng ntfy.sh: (1) Khi dùng iPhone làm máy nhận Map thứ 2, thông báo Bark nổ tức thì trong 0.2 giây (nhanh gấp 20 lần ntfy trên iOS); (2) Chạm thông báo Bark trên iPhone 2 nhảy thẳng vào app Google Maps dẫn đường (comgooglemaps://) không qua Safari; (3) Hỗ trợ đồng bộ Key Bark 1 chạm từ trang map.html trên iPhone 2 sang iPhone 8 không cần gõ tay."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

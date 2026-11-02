@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"5.0.5"
+#define kCurrentDaemonVersion   @"5.0.6"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"
@@ -87,10 +87,11 @@ typedef NS_ENUM(NSInteger, CoordMode) {
 @property (nonatomic, copy)   NSString *driverAppExecName;
 @property (nonatomic, copy)   NSString *driverAppDisplayName;
 
-// 3. Navigation Relay Bridge (iPhone 8 -> Second Phone via ntfy + /map.html)
+// 3. Navigation Relay Bridge (iPhone 8 -> Second Phone via ntfy + Bark APNs + /map.html)
 @property (nonatomic, assign) BOOL mapRelayEnabled;            // Default YES
 @property (nonatomic, copy)   NSString *mapRelayTopic;         // Unique secret channel code (e.g. vf-map-8a92k1)
-@property (nonatomic, assign) BOOL mapRelayReturnToDriver;     // Default YES (bounce right back to Xanh SM in 0.08s)
+@property (nonatomic, copy)   NSString *mapRelayBarkKey;       // Optional Bark device key / URL for 0.2s instant iOS APNs push
+@property (nonatomic, assign) BOOL mapRelayReturnToDriver;     // Default YES (bounce right back to Xanh SM)
 
 // 4. Coordinate Settings (4 Core Buttons: Close X, Accept, Offline Power, Online Start)
 @property (nonatomic, assign) CoordMode coordMode;
@@ -167,6 +168,8 @@ BOOL launchAppByBundleID(NSString *bundleID);
 
 NSString *generateRandomMapRelayTopic(void);
 NSString *sanitizeMapRelayTopic(NSString *rawTopic);
+NSString *sanitizeBarkKeyOrURL(NSString *rawInput);
+void fetchBarkKeyFromNtfyTopicAsync(NSString *topic, void (^completion)(NSString *foundBarkKey, NSString *detail));
 NSString *buildMapRelayViewerURLString(NSString *topic);
 BOOL parseNavigationTargetFromString(NSString *rawInput,
                                      BOOL *outHasCoords,

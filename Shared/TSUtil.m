@@ -197,6 +197,84 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
     return [NSString stringWithFormat:@"%@?k=%@", kMapRelayViewerBaseURL, clean];
 }
 
+NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
+    if (!rawInput || ![rawInput isKindOfClass:[NSString class]] || rawInput.length == 0) {
+        return @"";
+    }
+    NSCharacterSet *trimSet = [NSCharacterSet characterSetWithCharactersInString:@" \t\r\n\"'`"];
+    NSString *s = [rawInput stringByTrimmingCharactersInSet:trimSet];
+    if (s.length == 0) return @"";
+
+    // Handle full Bark URL copied from Bark app (e.g. https://api.day.app/AbCdEfGhIjKlMnOpQrStUv/Here_is_body)
+    NSRange schemeRange = [s rangeOfString:@"://"];
+    if (schemeRange.location != NSNotFound) {
+        NSString *scheme = [[s substringToIndex:schemeRange.location] lowercaseString];
+        NSString *afterScheme = [s substringFromIndex:schemeRange.location + 3];
+        NSRange qPos = [afterScheme rangeOfString:@"?"];
+        if (qPos.location != NSNotFound) {
+            afterScheme = [afterScheme substringToIndex:qPos.location];
+        }
+        NSRange hashPos = [afterScheme rangeOfString:@"#"];
+        if (hashPos.location != NSNotFound) {
+            afterScheme = [afterScheme substringToIndex:hashPos.location];
+        }
+        NSArray<NSString *> *parts = [afterScheme componentsSeparatedByString:@"/"];
+        if (parts.count >= 2) {
+            NSString *host = [parts[0] stringByTrimmingCharactersInSet:trimSet];
+            NSString *firstSeg = @"";
+            for (NSUInteger i = 1; i < parts.count; i++) {
+                NSString *cand = [parts[i] stringByTrimmingCharactersInSet:trimSet];
+                if (cand.length > 0 &&
+                    ![cand.lowercaseString isEqualToString:@"push"] &&
+                    ![cand.lowercaseString isEqualToString:@"ping"]) {
+                    firstSeg = cand;
+                    break;
+                }
+            }
+            NSMutableString *cleanKey = [NSMutableString stringWithCapacity:firstSeg.length];
+            for (NSUInteger i = 0; i < firstSeg.length && cleanKey.length < 64; i++) {
+                unichar c = [firstSeg characterAtIndex:i];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '-' || c == '_') {
+                    [cleanKey appendFormat:@"%C", c];
+                }
+            }
+            if (cleanKey.length >= 6) {
+                if ([host.lowercaseString isEqualToString:@"api.day.app"]) {
+                    return [cleanKey copy];
+                }
+                if (host.length > 0 && ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"])) {
+                    return [NSString stringWithFormat:@"%@://%@/%@", scheme, host, cleanKey];
+                }
+                return [cleanKey copy];
+            }
+        }
+        return @"";
+    }
+
+    // Raw key or path-like string (e.g. "/AbCdEfGhIjKlMnOpQrStUv/Here_is_body")
+    while ([s hasPrefix:@"/"]) {
+        s = [s substringFromIndex:1];
+    }
+    NSRange slashPos = [s rangeOfString:@"/"];
+    if (slashPos.location != NSNotFound) {
+        s = [s substringToIndex:slashPos.location];
+    }
+    NSRange qPos = [s rangeOfString:@"?"];
+    if (qPos.location != NSNotFound) {
+        s = [s substringToIndex:qPos.location];
+    }
+    NSMutableString *clean = [NSMutableString stringWithCapacity:s.length];
+    for (NSUInteger i = 0; i < s.length && clean.length < 64; i++) {
+        unichar c = [s characterAtIndex:i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_') {
+            [clean appendFormat:@"%C", c];
+        }
+    }
+    return [clean copy];
+}
+
 @implementation RuntimeDaemonState
 
 - (instancetype)init {
@@ -282,6 +360,7 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
 
         _mapRelayEnabled          = YES;
         _mapRelayTopic            = @"";
+        _mapRelayBarkKey          = @"";
         _mapRelayReturnToDriver   = YES;
 
         _coordMode                = CoordModeAutoOCRWithOffset;
@@ -382,6 +461,9 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
     if (dict[@"mapRelayEnabled"])        cfg.mapRelayEnabled        = [dict[@"mapRelayEnabled"] boolValue];
     if ([dict[@"mapRelayTopic"] isKindOfClass:[NSString class]]) {
         cfg.mapRelayTopic = sanitizeMapRelayTopic(dict[@"mapRelayTopic"]);
+    }
+    if ([dict[@"mapRelayBarkKey"] isKindOfClass:[NSString class]]) {
+        cfg.mapRelayBarkKey = sanitizeBarkKeyOrURL(dict[@"mapRelayBarkKey"]);
     }
     if (dict[@"mapRelayReturnToDriver"]) cfg.mapRelayReturnToDriver = [dict[@"mapRelayReturnToDriver"] boolValue];
 
@@ -492,6 +574,7 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
 
         @"mapRelayEnabled":          @(self.mapRelayEnabled),
         @"mapRelayTopic":            cleanTopic,
+        @"mapRelayBarkKey":          sanitizeBarkKeyOrURL(self.mapRelayBarkKey) ?: @"",
         @"mapRelayReturnToDriver":   @(self.mapRelayReturnToDriver),
 
         @"coordMode":                @(self.coordMode),
@@ -2327,10 +2410,11 @@ static NSURLSession *sharedMapRelayURLSession(void) {
     return sSess;
 }
 
-static NSString *resolveNtfyIPv4ViaCloudflareDoH(void) {
-    // Queries literal 1.1.1.1 over HTTPS (zero local DNS lookup!) when iOS 16 mDNSResponder is poisoned on Android Hotspot
-    NSURL *dohURL = [NSURL URLWithString:@"https://1.1.1.1/dns-query?name=ntfy.sh&type=A"];
-    if (!dohURL) return @"159.203.148.75";
+static NSString *resolveHostIPv4ViaCloudflareDoH(NSString *domain, NSString *fallbackIP) {
+    // Queries literal 1.1.1.1 over HTTPS (zero local DNS lookup!) when iOS 16 mDNSResponder is poisoned on Hotspot
+    NSString *qUrl = [NSString stringWithFormat:@"https://1.1.1.1/dns-query?name=%@&type=A", domain ?: @"ntfy.sh"];
+    NSURL *dohURL = [NSURL URLWithString:qUrl];
+    if (!dohURL) return fallbackIP;
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:dohURL
                                                        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                    timeoutInterval:1.5];
@@ -2357,7 +2441,101 @@ static NSString *resolveNtfyIPv4ViaCloudflareDoH(void) {
         dispatch_semaphore_signal(sem);
     }] resume];
     dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)));
-    return resolvedIP.length >= 7 ? resolvedIP : @"159.203.148.75";
+    return resolvedIP.length >= 7 ? resolvedIP : fallbackIP;
+}
+
+static NSString *resolveNtfyIPv4ViaCloudflareDoH(void) {
+    return resolveHostIPv4ViaCloudflareDoH(@"ntfy.sh", @"159.203.148.75");
+}
+
+static NSString *resolveBarkIPv4ViaCloudflareDoH(void) {
+    return resolveHostIPv4ViaCloudflareDoH(@"api.day.app", @"43.155.109.24");
+}
+
+static BOOL postBarkRequestSynchronously(NSString *endpointURLString,
+                                         NSString *hostHeaderOverride,
+                                         NSData *jsonBody,
+                                         NSError * __strong *outError) {
+    NSURL *url = [NSURL URLWithString:endpointURLString];
+    if (!url || !jsonBody) return NO;
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
+                                                       cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                   timeoutInterval:2.8];
+    req.HTTPMethod = @"POST";
+    req.HTTPBody   = jsonBody;
+    [req setValue:@"application/json; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+    if (hostHeaderOverride.length > 0) {
+        [req setValue:hostHeaderOverride forHTTPHeaderField:@"Host"];
+    }
+
+    __block BOOL success = NO;
+    __block NSError *reqErr = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        NSHTTPURLResponse *http = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)resp : nil;
+        if (!err && http && http.statusCode >= 200 && http.statusCode < 300) {
+            success = YES;
+        } else {
+            reqErr = err;
+        }
+        dispatch_semaphore_signal(sem);
+    }] resume];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)));
+    if (outError) *outError = reqErr;
+    return success;
+}
+
+static BOOL postBarkPayloadSynchronously(NSString *barkKeyOrURL,
+                                         NSString *title,
+                                         NSString *body,
+                                         NSString *openURLString,
+                                         BOOL *outUsedDirectIP,
+                                         NSError * __strong *outError) {
+    if (outUsedDirectIP) *outUsedDirectIP = NO;
+    NSString *clean = sanitizeBarkKeyOrURL(barkKeyOrURL);
+    if (clean.length < 6) return NO;
+
+    NSString *endpointURL = nil;
+    NSString *deviceKeyOnly = clean;
+    BOOL isOfficialDayApp = YES;
+
+    if ([clean hasPrefix:@"http://"] || [clean hasPrefix:@"https://"]) {
+        endpointURL = clean;
+        isOfficialDayApp = ([clean.lowercaseString rangeOfString:@"://api.day.app/"].location != NSNotFound);
+        NSArray<NSString *> *segs = [clean componentsSeparatedByString:@"/"];
+        if (segs.count > 0) {
+            deviceKeyOnly = [segs lastObject] ?: clean;
+        }
+    } else {
+        endpointURL = [NSString stringWithFormat:@"https://api.day.app/%@", clean];
+    }
+
+    NSDictionary *barkDict = @{
+        @"device_key": deviceKeyOnly ?: @"",
+        @"title":      title ?: @"Xanh SM -> Mở Google Maps",
+        @"body":       body ?: @"Chạm để mở Google Maps chỉ đường ngay",
+        @"url":        openURLString ?: @"",
+        @"group":      @"XanhSM",
+        @"level":      @"timeSensitive",
+        @"sound":      @"minuet",
+        @"isArchive":  @"1"
+    };
+    NSData *barkData = [NSJSONSerialization dataWithJSONObject:barkDict options:0 error:nil];
+    if (!barkData) return NO;
+
+    NSError *err = nil;
+    BOOL ok = postBarkRequestSynchronously(endpointURL, nil, barkData, &err);
+    if (!ok && isOfficialDayApp && deviceKeyOnly.length >= 6) {
+        NSString *barkIP = resolveBarkIPv4ViaCloudflareDoH();
+        NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", barkIP, deviceKeyOnly];
+        ok = postBarkRequestSynchronously(fallbackURL, @"api.day.app", barkData, &err);
+        if (ok && outUsedDirectIP) {
+            *outUsedDirectIP = YES;
+        }
+    }
+    if (outError) *outError = err;
+    return ok;
 }
 
 static BOOL postNtfyPayloadSynchronously(NSString *urlString,
@@ -2419,6 +2597,7 @@ static void dispatchMapRelayPayloadWithNonceAsync(double lat,
         cfg.mapRelayTopic = topic;
         [cfg saveToDiskAndNotify:NO];
     }
+    NSString *barkKey = sanitizeBarkKeyOrURL(cfg.mapRelayBarkKey);
 
     __sync_add_and_fetch(&sMapRelayInFlightCount, 1);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
@@ -2460,33 +2639,67 @@ static void dispatchMapRelayPayloadWithNonceAsync(double lat,
             };
             NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
 
-            NSString *primaryURL = [NSString stringWithFormat:@"https://ntfy.sh/%@", topic];
-            NSError *netErr = nil;
-            BOOL usedDirectIP = NO;
-            BOOL sentOK = postNtfyPayloadSynchronously(primaryURL, nil, gmapsWebURL, jsonData, &netErr);
+            __block BOOL barkSentOK = NO;
+            __block BOOL barkUsedDirectIP = NO;
+            __block NSError *barkErr = nil;
 
-            if (!sentOK) {
-                // Instant Anti-DNS-Poison Bypass for iPhone 8 on Android Hotspot:
-                // Resolve ntfy.sh via literal 1.1.1.1 DoH (or hardcoded 159.203.148.75) and push directly by IP!
-                NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
-                NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", directIP, topic];
-                sentOK = postNtfyPayloadSynchronously(fallbackURL, @"ntfy.sh", gmapsWebURL, jsonData, &netErr);
-                if (sentOK) {
-                    usedDirectIP = YES;
-                }
+            __block BOOL ntfySentOK = NO;
+            __block BOOL ntfyUsedDirectIP = NO;
+            __block NSError *ntfyErr = nil;
+
+            dispatch_group_t grp = dispatch_group_create();
+
+            // 1. Instant 0.2s Apple APNs Push via Bark (if configured for iOS receiver)
+            if (barkKey.length >= 6) {
+                dispatch_group_async(grp, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                    NSString *barkTitle = @"Xanh SM -> Mở Google Maps";
+                    NSString *barkBody  = [NSString stringWithFormat:@"Chạm mở chỉ đường: %@", humanLabel];
+                    BOOL usedIP = NO;
+                    NSError *bErr = nil;
+                    barkSentOK = postBarkPayloadSynchronously(barkKey, barkTitle, barkBody, iosNavURI, &usedIP, &bErr);
+                    barkUsedDirectIP = usedIP;
+                    barkErr = bErr;
+                });
             }
+
+            // 2. Dual-path ntfy.sh Push (Web SSE + Android MacroDroid + iOS backup)
+            dispatch_group_async(grp, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                NSString *primaryURL = [NSString stringWithFormat:@"https://ntfy.sh/%@", topic];
+                NSError *nErr = nil;
+                BOOL ok = postNtfyPayloadSynchronously(primaryURL, nil, gmapsWebURL, jsonData, &nErr);
+                if (!ok) {
+                    NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
+                    NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", directIP, topic];
+                    ok = postNtfyPayloadSynchronously(fallbackURL, @"ntfy.sh", gmapsWebURL, jsonData, &nErr);
+                    if (ok) {
+                        ntfyUsedDirectIP = YES;
+                    }
+                }
+                ntfySentOK = ok;
+                ntfyErr = nErr;
+            });
+
+            dispatch_group_wait(grp, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.2 * NSEC_PER_SEC)));
+
+            BOOL sentOK = (barkSentOK || ntfySentOK);
+            BOOL usedDirectIP = (barkUsedDirectIP || ntfyUsedDirectIP);
+            NSError *netErr = barkErr ?: ntfyErr;
 
             double doneEpoch = [[NSDate date] timeIntervalSince1970];
             RuntimeDaemonState *st = [RuntimeDaemonState loadState];
             if (sentOK) {
-                st.lastRelayedSummary = [NSString stringWithFormat:@"%@ (%@)", humanLabel, usedDirectIP ? @"Xuyên DNS" : @"OK"];
+                NSString *viaTag = (barkSentOK && ntfySentOK)
+                    ? @"Bark + Ntfy"
+                    : (barkSentOK ? @"Bark 0.2s" : (usedDirectIP ? @"Xuyên DNS" : @"OK"));
+                st.lastRelayedSummary = [NSString stringWithFormat:@"%@ (%@)", humanLabel, viaTag];
                 st.lastRelayedEpoch   = doneEpoch;
                 [st saveStateAndNotify:YES];
-                appendDaemonLog(@"[BẮN MAP %@] %@ -> Kênh '%@'%@",
+                appendDaemonLog(@"[BẮN MAP %@] %@ -> %@ (Kênh '%@')%@",
                                 sourceTag ?: @"XanhSM",
                                 humanLabel,
+                                viaTag,
                                 topic,
-                                usedDirectIP ? @" [Đã vượt rào lỗi DNS Hotspot!]" : @"");
+                                usedDirectIP ? @" [Xuyên DNS]" : @"");
             } else {
                 appendDaemonLog(@"[LỖI BẮN MAP] Chưa gửi được '%@' (Kiểm tra Wi-Fi/4G trên iPhone 8: %@)",
                                 humanLabel,
@@ -2513,6 +2726,109 @@ void dispatchMapRelayPayloadAsync(double lat,
                                   FilterConfig *config,
                                   void (^completion)(BOOL ok, NSString *detail)) {
     dispatchMapRelayPayloadWithNonceAsync(lat, lng, hasCoords, queryLabel, sourceTag, nil, config, completion);
+}
+
+static NSString *extractBarkKeyCandidateFromNtfyJSONLines(NSData *rawData) {
+    if (!rawData || rawData.length == 0) return nil;
+    NSString *text = [[NSString alloc] initWithData:rawData encoding:NSUTF8StringEncoding];
+    if (!text || text.length == 0) return nil;
+
+    NSArray<NSString *> *lines = [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    for (NSInteger i = (NSInteger)lines.count - 1; i >= 0; i--) {
+        NSString *line = [lines[(NSUInteger)i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (line.length < 6) continue;
+
+        NSData *lineData = [line dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *evt = lineData ? [NSJSONSerialization JSONObjectWithData:lineData options:0 error:nil] : nil;
+        if (![evt isKindOfClass:[NSDictionary class]]) continue;
+
+        NSString *msgStr = [evt[@"message"] isKindOfClass:[NSString class]] ? evt[@"message"] : nil;
+        if (!msgStr || msgStr.length < 4) continue;
+
+        // 1. Check if message is JSON {"type":"bark_sync","barkKey":"..."}
+        NSData *msgData = [msgStr dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *inner = msgData ? [NSJSONSerialization JSONObjectWithData:msgData options:0 error:nil] : nil;
+        if ([inner isKindOfClass:[NSDictionary class]]) {
+            NSString *rawKey = [inner[@"barkKey"] isKindOfClass:[NSString class]] ? inner[@"barkKey"] : nil;
+            if (rawKey.length >= 6) {
+                NSString *clean = sanitizeBarkKeyOrURL(rawKey);
+                if (clean.length >= 6) return clean;
+            }
+        }
+
+        // 2. Or if user sent raw Bark URL / "BARK:<key>" to the ntfy topic
+        if ([msgStr.lowercaseString containsString:@"api.day.app/"] ||
+            [msgStr.lowercaseString hasPrefix:@"bark:"]) {
+            NSString *stripped = [msgStr.lowercaseString hasPrefix:@"bark:"]
+                ? [msgStr substringFromIndex:5]
+                : msgStr;
+            NSString *clean = sanitizeBarkKeyOrURL(stripped);
+            if (clean.length >= 6) return clean;
+        }
+    }
+    return nil;
+}
+
+void fetchBarkKeyFromNtfyTopicAsync(NSString *topic,
+                                    void (^completion)(NSString *foundBarkKey, NSString *detail)) {
+    NSString *cleanTopic = sanitizeMapRelayTopic(topic);
+    if (cleanTopic.length < 4) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, @"Mã kênh chưa hợp lệ");
+            });
+        }
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        NSString *pollURLStr = [NSString stringWithFormat:@"https://ntfy.sh/%@/json?poll=1&since=12h", cleanTopic];
+        __block NSData *respData = nil;
+        __block NSError *respErr = nil;
+
+        void (^runFetch)(NSString *, NSString *) = ^(NSString *uStr, NSString *hostHdr) {
+            NSURL *u = [NSURL URLWithString:uStr];
+            if (!u) return;
+            NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:u
+                                                               cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                           timeoutInterval:3.2];
+            req.HTTPMethod = @"GET";
+            if (hostHdr.length > 0) {
+                [req setValue:hostHdr forHTTPHeaderField:@"Host"];
+            }
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+            [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+                NSHTTPURLResponse *http = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)resp : nil;
+                if (!err && http && http.statusCode >= 200 && http.statusCode < 300 && data.length > 0) {
+                    respData = data;
+                } else {
+                    respErr = err;
+                }
+                dispatch_semaphore_signal(sem);
+            }] resume];
+            dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)));
+        };
+
+        runFetch(pollURLStr, nil);
+        if (!respData) {
+            NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
+            NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@/json?poll=1&since=12h", directIP, cleanTopic];
+            runFetch(fallbackURL, @"ntfy.sh");
+        }
+
+        NSString *foundKey = extractBarkKeyCandidateFromNtfyJSONLines(respData);
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (foundKey.length >= 6) {
+                    completion(foundKey, @"Đã nhận Key Bark từ Máy 2!");
+                } else if (!respData && respErr) {
+                    completion(nil, [NSString stringWithFormat:@"Lỗi mạng: %@", respErr.localizedDescription]);
+                } else {
+                    completion(nil, @"Chưa thấy Key Bark nào gửi trên kênh này. Hãy mở trang Map trên iPhone 2 -> Dán link Bark -> Bấm 'Gửi Key Bark Sang iPhone 8'!");
+                }
+            });
+        }
+    });
 }
 
 void processPendingMapRelayQueueIfAny(FilterConfig *config) {
