@@ -5,11 +5,12 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"5.0.4"
+#define kCurrentDaemonVersion   @"5.0.5"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"
 #define kGmapsBundleCachePath   @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.gmaps_bundle.txt"
+#define kGmapsSyncStatePath     @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.gmaps_state.txt"
 #define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.log"
 #define kDaemonPidPath          @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.pid"
 #define kWatchdogPidPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.watchdog.pid"

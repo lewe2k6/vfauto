@@ -542,17 +542,18 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     IOSurfaceRef activeSurface = _srcSurface;
     BOOL hasPixels = NO;
 
-    if (_accelerator && _fnAccTransfer && _dstSurface) {
+    // Fast path: inspect _srcSurface directly (saves 4MB VRAM DMA copy per frame on iPhone 8!)
+    if ([self inspectSurfacePixelsAndSensors:_srcSurface updateMetrics:YES]) {
+        activeSurface = _srcSurface;
+        hasPixels = YES;
+    }
+
+    if (!hasPixels && _accelerator && _fnAccTransfer && _dstSurface) {
         kern_return_t kr = _fnAccTransfer(_accelerator, _srcSurface, _dstSurface, NULL, NULL, NULL, NULL);
         if (kr == KERN_SUCCESS && [self inspectSurfacePixelsAndSensors:_dstSurface updateMetrics:YES]) {
             activeSurface = _dstSurface;
             hasPixels = YES;
         }
-    }
-
-    if (!hasPixels && [self inspectSurfacePixelsAndSensors:_srcSurface updateMetrics:YES]) {
-        activeSurface = _srcSurface;
-        hasPixels = YES;
     }
 
     if (!hasPixels) {

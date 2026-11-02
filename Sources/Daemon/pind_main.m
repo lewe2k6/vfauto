@@ -98,6 +98,8 @@ static void ensureSharedFilesPermissions(void) {
         kConfigPlistPath,
         kRuntimeStatePath,
         kMapRelayQueuePath,
+        kGmapsBundleCachePath,
+        kGmapsSyncStatePath,
         kDaemonLogPath,
         kDaemonPidPath,
         kWatchdogPidPath
@@ -406,17 +408,19 @@ static int runWatchdogMain(const char *execPath) {
                                 break;
                             }
                             BOOL curBinGone = (!workerExecPath || access(workerExecPath, X_OK) != 0);
-                            NSString *curLive = resolveLiveAppPindBinaryPath();
-                            if (curBinGone || (curLive.length > 0 && myExecStr.length > 0 && ![curLive isEqualToString:myExecStr])) {
-                                migrateToNewBundle = YES;
-                                migrateTarget = curLive;
-                                gWatchdogExit = YES;
-                                break;
+                            if (curBinGone || (tickCount % 240 == 0)) {
+                                NSString *curLive = resolveLiveAppPindBinaryPath();
+                                if (curBinGone || (curLive.length > 0 && myExecStr.length > 0 && ![curLive isEqualToString:myExecStr])) {
+                                    migrateToNewBundle = YES;
+                                    migrateTarget = curLive;
+                                    gWatchdogExit = YES;
+                                    break;
+                                }
                             }
                             if (nowWall > wakeGraceUntilEpoch) {
                                 RuntimeDaemonState *st = [RuntimeDaemonState loadState];
-                                if (st.workerHeartbeatEpoch > 0.0 && (nowWall - st.workerHeartbeatEpoch) > 20.0) {
-                                    appendDaemonLog(@"[WATCHDOG] Worker phản hồi chậm >20s -> Tự làm mới tiến trình tức thì!");
+                                if (st.workerHeartbeatEpoch > 0.0 && (nowWall - st.workerHeartbeatEpoch) > 35.0) {
+                                    appendDaemonLog(@"[WATCHDOG] Worker phản hồi chậm >35s -> Tự làm mới tiến trình tức thì!");
                                     kill(workerPid, SIGKILL);
                                 }
                             }
@@ -1158,8 +1162,8 @@ static int runWorkerMain(void) {
         HanoiFoodFilterEngine *foodEngine = [HanoiFoodFilterEngine sharedEngine];
 
         BOOL lowRAMMode           = isLowRAMDevice();
-        uint64_t sleepTrimMB      = lowRAMMode ? 128 : 175;
-        uint64_t idleActiveTrimMB = lowRAMMode ? 135 : 220;
+        uint64_t sleepTrimMB      = lowRAMMode ? 185 : 240;
+        uint64_t idleActiveTrimMB = lowRAMMode ? 215 : 280;
 
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
@@ -1191,7 +1195,7 @@ static int runWorkerMain(void) {
         BOOL wasInCoolSleep                   = NO;
         double lockedSinceEpoch               = 0.0;
         int coolSleepTickCounter              = 0;
-        double turboUntilEpoch                = bootEpoch + 6.0;
+        double turboUntilEpoch                = bootEpoch + 3.0;
         double postTransitionUntilEpoch       = 0.0;
         double lastFullOCREpoch               = 0.0;
         double lastHeartbeatSaveEpoch         = bootEpoch;
@@ -1202,7 +1206,7 @@ static int runWorkerMain(void) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 double now = [[NSDate date] timeIntervalSince1970];
 
-                if (now - lastHeartbeatSaveEpoch >= 4.0) {
+                if (now - lastHeartbeatSaveEpoch >= 10.0) {
                     if (readRawPidValueFromFile(kDaemonPidPath) != myPid) {
                         writeStringUnprotectedAtomically(myPidStr, kDaemonPidPath);
                     }
@@ -1239,7 +1243,7 @@ static int runWorkerMain(void) {
                     if (readMasterEnabledSafely(YES)) {
                         config.masterEnabled = YES;
                     } else {
-                        usleep(450000);
+                        usleep(650000);
                         continue;
                     }
                 }
@@ -1259,18 +1263,17 @@ static int runWorkerMain(void) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
                     }
-                    if (!isMapRelayInFlight() && ((now - bootEpoch) > 1800.0 || currentProcessFootprintMB() > sleepTrimMB)) {
+                    if (!isMapRelayInFlight() && ((now - bootEpoch) > 3600.0 || currentProcessFootprintMB() > sleepTrimMB)) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
                     }
-                    usleep(550000);
+                    usleep(750000);
                     continue;
                 } else if (lockedSinceEpoch > 0.0) {
                     double lockedDuration = now - lockedSinceEpoch;
                     lockedSinceEpoch = 0.0;
-                    if (!isMapRelayInFlight() && lockedDuration >= 180.0) {
-                        // Phone was locked >= 3 mins (e.g. morning -> afternoon) -> Spawn brand-new Worker in 0.08s!
+                    if (!isMapRelayInFlight() && lockedDuration >= 300.0) {
                         state.workerHeartbeatEpoch = now;
                         state.phaseDescription = @"Đang trực tuyến / Canh đơn (Mới mở khóa)";
                         [state saveStateAndNotify:NO];
@@ -1280,23 +1283,20 @@ static int runWorkerMain(void) {
 
                 CIImage *preCapturedImg = nil;
 
-                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG Ở NGOÀI APP TÀI XẾ (CÓ CẢM BIẾN PIXEL TỰ ĐÁNH THỨC) ---
+                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG Ở NGOÀI APP TÀI XẾ (0% GPU / 0% CHỤP MÀN HÌNH KHI DÙNG APP KHÁC) ---
                 if (config.smartCoolMode) {
                     NSString *frontBid = currentFrontmostAppBundleIDForConfig(config);
                     BOOL canScan = isFrontmostAppAllowedForScan(frontBid, config);
 
-                    if (!canScan) {
+                    // Only probe pixels if neither monitor identified the foreground app (frontBid.length == 0).
+                    // When frontBid is known to be Safari/Zalo/HomeScreen/Maps, do NOT call CARenderServerRenderDisplay at all!
+                    if (!canScan && frontBid.length == 0) {
                         coolSleepTickCounter++;
-                        BOOL isGoogleMaps = [frontBid isEqualToString:@"com.google.Maps"];
-                        int probeInterval = isGoogleMaps ? 4 : 2;
-
-                        if ((coolSleepTickCounter % probeInterval) == 0) {
+                        if ((coolSleepTickCounter % 5) == 0) {
                             CIImage *probe = [engine captureScreenCIImage];
-                            BOOL pixelLooksLikeDriverUI = (!isGoogleMaps && engine.lastFrameLikelyHasLobbyPowerButton);
-                            if (probe && (engine.lastFrameLikelyHasOrderPopup || pixelLooksLikeDriverUI)) {
+                            if (probe && (engine.lastFrameLikelyHasOrderPopup || engine.lastFrameLikelyHasLobbyPowerButton)) {
                                 canScan = YES;
                                 preCapturedImg = probe;
-                                resetFrontmostAppMonitors();
                             }
                         }
                     }
@@ -1316,22 +1316,21 @@ static int runWorkerMain(void) {
 
                         if (!isMapRelayInFlight() &&
                             ![frontBid isEqualToString:kAppBundleID] &&
-                            (((now - bootEpoch) > 150.0 && currentProcessFootprintMB() > sleepTrimMB) ||
-                             (now - bootEpoch) > 3600.0)) {
+                            (((now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > sleepTrimMB) ||
+                             (now - bootEpoch) > 7200.0)) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:NO];
                             _exit(kExitCodeProactiveRAMTrim);
                         }
 
-                        usleep(500000);
+                        usleep(750000);
                         continue;
                     } else if (wasInCoolSleep) {
-                        // Switched back into Xanh SM -> Instant 5.0s Turbo!
                         wasInCoolSleep = NO;
                         coolSleepTickCounter = 0;
-                        turboUntilEpoch = now + 5.0;
+                        turboUntilEpoch = now + 2.5;
                         [engine invalidateAnalyzedBaseline];
-                        state.phaseDescription = @"Đang trực tuyến / Canh đơn (Turbo)";
+                        state.phaseDescription = @"Đang trực tuyến / Canh đơn";
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
                     } else {
@@ -1344,39 +1343,51 @@ static int runWorkerMain(void) {
                     [state saveStateAndNotify:YES];
                 }
 
-                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: KHIÊN GOOGLE MAPS + CẢM BIẾN PIXEL 0.02ms ---
+                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: CẢM BIẾN PIXEL 0.02ms CHẶN 98% VISION OCR KHI CHƯA NỔ ĐƠN ---
                 CIImage *screenImg = preCapturedImg ?: [engine captureScreenCIImage];
                 if (!screenImg) {
-                    usleep((useconds_t)(MAX(200, config.scanIntervalMs) * 1000));
+                    usleep((useconds_t)(MAX(250, config.scanIntervalMs) * 1000));
                     continue;
                 }
 
                 if (config.smartCoolMode &&
                     engine.lastFrameLooksLikeGoogleMapsNav &&
                     !engine.lastFrameLikelyHasOrderPopup) {
-                    usleep(450000);
+                    usleep(600000);
                     continue;
                 }
 
                 NSInteger frameChangedBeforeMark = engine.lastFrameChangedSamples;
-                BOOL inTurbo = (now < turboUntilEpoch) ||
-                               (now < postTransitionUntilEpoch) ||
-                               engine.lastFrameLikelyHasOrderPopup ||
-                               (retryCount > 0);
+                BOOL hasPopupOrActionCandidate = engine.lastFrameLikelyHasOrderPopup ||
+                                                 engine.lastFrameHasBottomTealButton ||
+                                                 engine.lastFrameHasOrderHeaderAtTop ||
+                                                 (retryCount > 0);
 
-                if (config.smartCoolMode &&
-                    !inTurbo &&
-                    frameChangedBeforeMark <= 3 &&
-                    (now - lastFullOCREpoch) < 2.2) {
-                    // Static screen inside Xanh SM with no order popup -> skip heavy Vision ANE OCR!
-                    if (!isMapRelayInFlight() && (now - bootEpoch) > 180.0 && currentProcessFootprintMB() > idleActiveTrimMB) {
-                        state.workerHeartbeatEpoch = now;
-                        [state saveStateAndNotify:NO];
-                        _exit(kExitCodeProactiveRAMTrim);
+                if (config.smartCoolMode && !hasPopupOrActionCandidate) {
+                    // CASE A: Uncovered bright teal Lobby [Power] circle is visible at (40, 455) in 0.01ms!
+                    // We know with 100% certainty: in Lobby Online, NO order popup, NO '0.0/8' modal sheet -> SKIP Vision OCR 100%!
+                    if (engine.lastFrameLikelyHasLobbyPowerButton) {
+                        inActiveTripSession = NO;
+                        consecutiveOfflineInterrupts = 0;
+                        [engine markCurrentFrameAnalyzed];
+                        NSInteger idleMs = MAX(260, config.scanIntervalMs);
+                        usleep((useconds_t)(idleMs * 1000));
+                        continue;
                     }
-                    NSInteger idleMs = MAX(220, config.scanIntervalMs);
-                    usleep((useconds_t)(idleMs * 1000));
-                    continue;
+
+                    // CASE B: Inside Green SM without order popup or bottom teal bar (e.g. moving map / active trip).
+                    // Only run background OCR at most once every 6.0s when the UI layout actually changes (>= 8 grid cells),
+                    // preventing 3x/sec Neural Engine / GPU thermal throttling while driving!
+                    if (frameChangedBeforeMark < 8 || (now - lastFullOCREpoch) < 6.0) {
+                        if (!isMapRelayInFlight() && (now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > idleActiveTrimMB) {
+                            state.workerHeartbeatEpoch = now;
+                            [state saveStateAndNotify:NO];
+                            _exit(kExitCodeProactiveRAMTrim);
+                        }
+                        NSInteger idleMs = MAX(260, config.scanIntervalMs);
+                        usleep((useconds_t)(idleMs * 1000));
+                        continue;
+                    }
                 }
 
                 [engine markCurrentFrameAnalyzed];

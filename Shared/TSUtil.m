@@ -102,6 +102,8 @@ void upgradeSharedFilesProtectionNone(void) {
         kConfigPlistPath,
         kRuntimeStatePath,
         kMapRelayQueuePath,
+        kGmapsBundleCachePath,
+        kGmapsSyncStatePath,
         kDaemonLogPath,
         kDaemonPidPath,
         kWatchdogPidPath
@@ -1119,58 +1121,32 @@ static NSString *canonicalizedPathString(NSString *rawPath) {
 }
 
 NSString *resolveLiveAppPindBinaryPath(void) {
+    static NSString *sCachedPind = nil;
+    static double sLastPindCheckEpoch = 0.0;
+    double now = [[NSDate date] timeIntervalSince1970];
+
+    @synchronized ([InstalledAppInfo class]) {
+        if (sCachedPind.length > 0 &&
+            (now - sLastPindCheckEpoch) < 25.0 &&
+            access([sCachedPind fileSystemRepresentation], X_OK) == 0) {
+            return sCachedPind;
+        }
+    }
+
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    // Priority 1: Live LaunchServices bundle lookup (always returns NEW TrollStore UUID even inside old Watchdog!)
-    Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
-    Class proxyCls = NSClassFromString(@"LSApplicationProxy");
-    if (proxyCls) {
-        @try {
-            SEL prxSel = NSSelectorFromString(@"applicationProxyForIdentifier:");
-            if ([proxyCls respondsToSelector:prxSel]) {
-                id proxy = ((id (*)(id, SEL, NSString *))objc_msgSend)(proxyCls, prxSel, kAppBundleID);
-                NSURL *bUrl = proxy ? [proxy valueForKey:@"bundleURL"] : nil;
-                NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
-                if (bPath.length > 0) {
-                    NSString *cand = [bPath stringByAppendingPathComponent:@"pind"];
-                    if ([fm fileExistsAtPath:cand]) {
-                        return canonicalizedPathString(cand);
-                    }
-                }
-            }
-        } @catch (NSException *ex) {}
-    }
-    if (wsCls) {
-        @try {
-            SEL defSel = NSSelectorFromString(@"defaultWorkspace");
-            id ws = [wsCls respondsToSelector:defSel] ? ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel) : nil;
-            SEL allSel = NSSelectorFromString(@"allInstalledApplications");
-            if (ws && [ws respondsToSelector:allSel]) {
-                NSArray *proxies = ((NSArray * (*)(id, SEL))objc_msgSend)(ws, allSel);
-                for (id proxy in proxies) {
-                    NSString *bid = [proxy valueForKey:@"applicationIdentifier"];
-                    if ([bid isEqualToString:kAppBundleID]) {
-                        NSURL *bUrl = [proxy valueForKey:@"bundleURL"];
-                        NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
-                        if (bPath.length > 0) {
-                            NSString *cand = [bPath stringByAppendingPathComponent:@"pind"];
-                            if ([fm fileExistsAtPath:cand]) {
-                                return canonicalizedPathString(cand);
-                            }
-                        }
-                    }
-                }
-            }
-        } @catch (NSException *ex) {}
-    }
-
-    // Priority 2: Current process mainBundle (valid inside UI App)
+    // Priority 1: Current process mainBundle (0ms, zero XPC to lsd)
     NSString *candBundle = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"pind"];
-    if (candBundle.length > 0 && [fm fileExistsAtPath:candBundle]) {
-        return canonicalizedPathString(candBundle);
+    if (candBundle.length > 0 && access([candBundle fileSystemRepresentation], X_OK) == 0) {
+        NSString *res = canonicalizedPathString(candBundle);
+        @synchronized ([InstalledAppInfo class]) {
+            sCachedPind = res;
+            sLastPindCheckEpoch = now;
+        }
+        return res;
     }
 
-    // Priority 3: Direct filesystem scan of /var/containers/Bundle/Application/*/PinNhietDo.app/pind (works as uid=0 even if lsd is busy!)
+    // Priority 2: Direct filesystem scan of /var/containers/Bundle/Application/*/PinNhietDo.app/pind (<0.2ms, zero XPC to lsd!)
     NSString *appsRoot = @"/var/containers/Bundle/Application";
     NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:appsRoot error:nil];
     NSString *newestPind = nil;
@@ -1186,7 +1162,36 @@ NSString *resolveLiveAppPindBinaryPath(void) {
         }
     }
     if (newestPind) {
-        return canonicalizedPathString(newestPind);
+        NSString *res = canonicalizedPathString(newestPind);
+        @synchronized ([InstalledAppInfo class]) {
+            sCachedPind = res;
+            sLastPindCheckEpoch = now;
+        }
+        return res;
+    }
+
+    // Priority 3: Live LaunchServices bundle lookup fallback
+    Class proxyCls = NSClassFromString(@"LSApplicationProxy");
+    if (proxyCls) {
+        @try {
+            SEL prxSel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+            if ([proxyCls respondsToSelector:prxSel]) {
+                id proxy = ((id (*)(id, SEL, NSString *))objc_msgSend)(proxyCls, prxSel, kAppBundleID);
+                NSURL *bUrl = proxy ? [proxy valueForKey:@"bundleURL"] : nil;
+                NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
+                if (bPath.length > 0) {
+                    NSString *cand = [bPath stringByAppendingPathComponent:@"pind"];
+                    if ([fm fileExistsAtPath:cand]) {
+                        NSString *res = canonicalizedPathString(cand);
+                        @synchronized ([InstalledAppInfo class]) {
+                            sCachedPind = res;
+                            sLastPindCheckEpoch = now;
+                        }
+                        return res;
+                    }
+                }
+            }
+        } @catch (NSException *ex) {}
     }
 
     // Priority 4: argv[0] fallback if still present on disk
@@ -1890,43 +1895,60 @@ BOOL isGoogleMapsInstalledOnDevice(void) {
 
 void syncGreenSMExternalNavigationPreferenceIfNeeded(void) {
     // Ensures GreenSMDriver 3.18.0 (vn.gsm.md) uses .externalApp (comgooglemaps://) instead of getting stuck in in-app .gsmMaps
+    static NSString *sCachedGsmPrefPath = nil;
+    static double sLastGsmPrefSyncEpoch = 0.0;
+    double now = [[NSDate date] timeIntervalSince1970];
+    if (sLastGsmPrefSyncEpoch > 0.0 && (now - sLastGsmPrefSyncEpoch) < 300.0) {
+        return; // Throttle container scan to at most once every 5 minutes
+    }
+    sLastGsmPrefSyncEpoch = now;
+
     @try {
         NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *dataRoot = @"/var/mobile/Containers/Data/Application";
-        NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:dataRoot error:nil];
-        for (NSString *u in uuids) {
-            NSString *contDir = [dataRoot stringByAppendingPathComponent:u];
-            NSString *metaPath = [contDir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
-            if (![fm fileExistsAtPath:metaPath]) continue;
-            NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPath];
-            NSString *ident = [meta[@"MCMMetadataIdentifier"] isKindOfClass:[NSString class]] ? meta[@"MCMMetadataIdentifier"] : @"";
-            if (![ident.lowercaseString isEqualToString:@"vn.gsm.md"] &&
-                ![ident.lowercaseString isEqualToString:@"vn.gsm.driver"]) {
-                continue;
+        NSString *prefPath = (sCachedGsmPrefPath.length > 0 && [fm fileExistsAtPath:sCachedGsmPrefPath]) ? sCachedGsmPrefPath : nil;
+
+        if (!prefPath) {
+            NSString *dataRoot = @"/var/mobile/Containers/Data/Application";
+            NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:dataRoot error:nil];
+            for (NSString *u in uuids) {
+                NSString *contDir = [dataRoot stringByAppendingPathComponent:u];
+                NSString *metaPath = [contDir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+                if (![fm fileExistsAtPath:metaPath]) continue;
+                NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPath];
+                NSString *ident = [meta[@"MCMMetadataIdentifier"] isKindOfClass:[NSString class]] ? meta[@"MCMMetadataIdentifier"] : @"";
+                if (![ident.lowercaseString isEqualToString:@"vn.gsm.md"] &&
+                    ![ident.lowercaseString isEqualToString:@"vn.gsm.driver"]) {
+                    continue;
+                }
+                NSString *cand = [contDir stringByAppendingPathComponent:[NSString stringWithFormat:@"Library/Preferences/%@.plist", ident]];
+                if ([fm fileExistsAtPath:cand]) {
+                    prefPath = cand;
+                    sCachedGsmPrefPath = cand;
+                }
+                break;
             }
-            NSString *prefPath = [contDir stringByAppendingPathComponent:[NSString stringWithFormat:@"Library/Preferences/%@.plist", ident]];
-            if (![fm fileExistsAtPath:prefPath]) break;
-            NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:prefPath] mutableCopy];
-            if (!prefs) break;
-            BOOL modified = NO;
-            for (NSString *k in [prefs allKeys]) {
-                id val = prefs[k];
-                if ([val isKindOfClass:[NSString class]] && [(NSString *)val isEqualToString:@"gsmMaps"]) {
-                    prefs[k] = @"externalApp";
+        }
+        if (!prefPath) return;
+
+        NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:prefPath] mutableCopy];
+        if (!prefs) return;
+        BOOL modified = NO;
+        for (NSString *k in [prefs allKeys]) {
+            id val = prefs[k];
+            if ([val isKindOfClass:[NSString class]] && [(NSString *)val isEqualToString:@"gsmMaps"]) {
+                prefs[k] = @"externalApp";
+                modified = YES;
+            } else if ([val isKindOfClass:[NSData class]]) {
+                NSString *asUtf8 = [[NSString alloc] initWithData:(NSData *)val encoding:NSUTF8StringEncoding];
+                if ([asUtf8 isEqualToString:@"\"gsmMaps\""] || [asUtf8 isEqualToString:@"gsmMaps"]) {
+                    NSString *rep = [asUtf8 isEqualToString:@"\"gsmMaps\""] ? @"\"externalApp\"" : @"externalApp";
+                    prefs[k] = [rep dataUsingEncoding:NSUTF8StringEncoding];
                     modified = YES;
-                } else if ([val isKindOfClass:[NSData class]]) {
-                    NSString *asUtf8 = [[NSString alloc] initWithData:(NSData *)val encoding:NSUTF8StringEncoding];
-                    if ([asUtf8 isEqualToString:@"\"gsmMaps\""] || [asUtf8 isEqualToString:@"gsmMaps"]) {
-                        NSString *rep = [asUtf8 isEqualToString:@"\"gsmMaps\""] ? @"\"externalApp\"" : @"externalApp";
-                        prefs[k] = [rep dataUsingEncoding:NSUTF8StringEncoding];
-                        modified = YES;
-                    }
                 }
             }
-            if (modified) {
-                [prefs writeToFile:prefPath atomically:YES];
-            }
-            break;
+        }
+        if (modified) {
+            [prefs writeToFile:prefPath atomically:YES];
         }
     } @catch (NSException *ex) {}
 }
@@ -1943,6 +1965,26 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     NSString *pindBin   = resolveLiveAppPindBinaryPath();
     NSString *ourAppPath = pindBin.length > 0 ? [pindBin stringByDeletingLastPathComponent] : [[NSBundle mainBundle] bundlePath];
 
+    // CRITICAL ANTI-LAG GUARD FOR IPHONE 8:
+    // Calling LSApplicationWorkspace registerApplication:/unregisterApplication: broadcasts system-wide LaunchServices notifications
+    // that force lsd, installd, nehelper, symptomsd, and mDNSResponder to rebuild per-app network/URL tables (stalling Wi-Fi/4G & UI!).
+    // Only invoke LaunchServices registration when the desired interception state actually changes!
+    NSString *desiredStateToken = [NSString stringWithFormat:@"intercept=%d|app=%@|gmaps=%@",
+                                   shouldIntercept ? 1 : 0,
+                                   ourAppPath ?: @"",
+                                   gmapsPath ?: @"none"];
+    NSString *savedStateToken = [[NSString stringWithContentsOfFile:kGmapsSyncStatePath encoding:NSUTF8StringEncoding error:nil]
+                                 stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (savedStateToken.length > 0 && [savedStateToken isEqualToString:desiredStateToken]) {
+        return YES; // Already synced -> 0ms, zero lsd / nehelper / network disruption!
+    }
+
+    // If invoked from mobile UI process (uid != 0), delegate the one-time lsd sync to root helper so it only runs ONCE
+    if (geteuid() != 0 && pindBin.length > 0) {
+        spawnRoot(pindBin, @[@"--sync-gmaps-scheme"]);
+        return YES;
+    }
+
     BOOL ok = NO;
     if (shouldIntercept) {
         // Master ON + Map Relay ON: Temporarily unregister Maps.app from LaunchServices so PinNhietDo claims 100% of comgooglemaps://
@@ -1956,13 +1998,12 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
         // Master OFF or Map Relay OFF: Immediately restore Maps.app in LaunchServices so local Google Maps works natively on iPhone 8
         if (gmapsPath.length > 0) {
             ok = registerOrUnregisterAppBundleInLS(gmapsPath, YES);
+        } else {
+            ok = YES;
         }
     }
 
-    // If invoked from mobile UI process (uid != 0), also run root helper so lsd accepts registration changes unconditionally
-    if (geteuid() != 0 && pindBin.length > 0) {
-        spawnRoot(pindBin, @[@"--sync-gmaps-scheme"]);
-    }
+    writeStringUnprotectedAtomically(desiredStateToken, kGmapsSyncStatePath);
     return ok;
 }
 
@@ -1972,6 +2013,7 @@ BOOL forwardNavigationURLToLocalGoogleMaps(NSString *rawURLString) {
     NSString *gmapsPath = findLocalGoogleMapsBundlePath();
     if (gmapsPath.length > 0) {
         registerOrUnregisterAppBundleInLS(gmapsPath, YES);
+        writeStringUnprotectedAtomically(@"passthrough-manual", kGmapsSyncStatePath);
     }
 
     NSString *normalizedStr = [rawURLString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
