@@ -28,12 +28,29 @@
             startFilterDaemonIfNeeded();
         }
     });
+}
 
-    _hwTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
-                                                target:self
-                                              selector:@selector(refreshHardwareMetrics)
-                                              userInfo:nil
-                                               repeats:YES];
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self refreshHardwareMetrics];
+    if (!_hwTimer) {
+        _hwTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
+                                                    target:self
+                                                  selector:@selector(refreshHardwareMetrics)
+                                                  userInfo:nil
+                                                   repeats:YES];
+    }
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [_hwTimer invalidate];
+    _hwTimer = nil;
+}
+
+- (void)dealloc {
+    [_hwTimer invalidate];
+    _hwTimer = nil;
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
@@ -153,16 +170,21 @@
         case NSProcessInfoThermalStateCritical: _thermalLabel.text = @"45.2 °C — Quá nhiệt!"; _thermalLabel.textColor = [UIColor systemRedColor]; break;
     }
 
-    // Real Mach VM RAM query
+    // Real Mach VM RAM query (always deallocate mach_host_self() send right to prevent port leak!)
     mach_port_t hostPort = mach_host_self();
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
     vm_size_t pageSize = 4096;
-    host_page_size(hostPort, &pageSize);
-    vm_statistics64_data_t vmStat;
-    if (host_statistics64(hostPort, HOST_VM_INFO64, (host_info64_t)&vmStat, &count) == KERN_SUCCESS) {
-        uint64_t freeMB = ((uint64_t)(vmStat.free_count + vmStat.inactive_count) * pageSize) / (1024 * 1024);
-        uint64_t totalMB = [NSProcessInfo processInfo].physicalMemory / (1024 * 1024);
-        _ramLabel.text = [NSString stringWithFormat:@"Trống %llu MB / %llu MB", freeMB, totalMB];
+    if (hostPort != MACH_PORT_NULL) {
+        host_page_size(hostPort, &pageSize);
+        vm_statistics64_data_t vmStat;
+        if (host_statistics64(hostPort, HOST_VM_INFO64, (host_info64_t)&vmStat, &count) == KERN_SUCCESS) {
+            uint64_t freeMB = ((uint64_t)(vmStat.free_count + vmStat.inactive_count) * pageSize) / (1024 * 1024);
+            uint64_t totalMB = [NSProcessInfo processInfo].physicalMemory / (1024 * 1024);
+            _ramLabel.text = [NSString stringWithFormat:@"Trống %llu MB / %llu MB", freeMB, totalMB];
+        } else {
+            _ramLabel.text = @"Trống 512 MB / 2048 MB";
+        }
+        mach_port_deallocate(mach_task_self(), hostPort);
     } else {
         _ramLabel.text = @"Trống 512 MB / 2048 MB";
     }
@@ -175,6 +197,7 @@
 
 - (void)handleSecretGate:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
+        if (self.presentedViewController != nil) return;
         AudioServicesPlaySystemSound(1519);
         SecretConfigViewController *cfgVC = [[SecretConfigViewController alloc] init];
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:cfgVC];

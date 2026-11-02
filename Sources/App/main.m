@@ -12,22 +12,26 @@
     if (!url || url.absoluteString.length == 0) return;
 
     UIApplication *app = [UIApplication sharedApplication];
-    __block UIBackgroundTaskIdentifier bgTask = [app beginBackgroundTaskWithName:@"PinMapRelay" expirationHandler:^{
+    __block UIBackgroundTaskIdentifier bgTask = UIBackgroundTaskInvalid;
+    void (^endTaskSafely)(void) = ^{
         if (bgTask != UIBackgroundTaskInvalid) {
-            [app endBackgroundTask:bgTask];
+            UIBackgroundTaskIdentifier toEnd = bgTask;
             bgTask = UIBackgroundTaskInvalid;
+            [app endBackgroundTask:toEnd];
         }
+    };
+
+    bgTask = [app beginBackgroundTaskWithName:@"PinMapRelay" expirationHandler:^{
+        dispatch_async(dispatch_get_main_queue(), endTaskSafely);
     }];
 
-    enqueueAndTriggerMapRelayFromURLString(url.absoluteString, sourceTag ?: @"XanhSM", YES, nil);
-
-    // Hold background assertion for 4.5s so either pind or the 0.45s fallback finishes network I/O cleanly
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (bgTask != UIBackgroundTaskInvalid) {
-            [app endBackgroundTask:bgTask];
-            bgTask = UIBackgroundTaskInvalid;
-        }
+    enqueueAndTriggerMapRelayFromURLString(url.absoluteString, sourceTag ?: @"XanhSM", YES, ^(BOOL ok, NSString *detail) {
+        // Give returnToDriverAppReliably a brief cushion before releasing assertion
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), endTaskSafely);
     });
+
+    // Hard 6.5s safety ceiling so background assertion never leaks even if network stalls
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), endTaskSafely);
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {

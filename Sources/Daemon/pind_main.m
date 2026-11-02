@@ -1086,6 +1086,9 @@ static int runWorkerMain(void) {
         notify_register_dispatch(kNotifyDiagCapture,   &diagTok,     bgQ, ^(int t) { gDiagRequested = YES; });
         notify_register_dispatch(kNotifySendMapRelay,  &mapRelayTok, bgQ, ^(int t) {
             processPendingMapRelayQueueIfAny(nil);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), bgQ, ^{
+                processPendingMapRelayQueueIfAny(nil);
+            });
         });
 
         FilterConfig *config      = [FilterConfig loadFromDisk];
@@ -1123,7 +1126,8 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v5.0 Siêu Nhẹ RAM%@ + Bắn Map + DB 3 Sàn (%ld quán + %ld ghim) chạy (WD:%d WK:%d, Quét:%@)",
+            appendDaemonLog(@"pind v%@ Siêu Nhẹ RAM%@ + Bắn Map + DB 3 Sàn (%ld quán + %ld ghim) chạy (WD:%d WK:%d, Quét:%@)",
+                            kCurrentDaemonVersion,
                             lowRAMMode ? @" (2GB)" : @"",
                             (long)foodEngine.loadedMerchantCount,
                             (long)foodEngine.loadedStreetPinCount,
@@ -1164,6 +1168,7 @@ static int runWorkerMain(void) {
                     if (readRawPidValueFromFile(kDaemonPidPath) != myPid) {
                         writeStringUnprotectedAtomically(myPidStr, kDaemonPidPath);
                     }
+                    processPendingMapRelayQueueIfAny(config);
                     state.workerHeartbeatEpoch = now;
                     [state saveStateAndNotify:NO];
                     lastHeartbeatSaveEpoch = now;
@@ -1215,7 +1220,7 @@ static int runWorkerMain(void) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
                     }
-                    if ((now - bootEpoch) > 1800.0 || currentProcessFootprintMB() > sleepTrimMB) {
+                    if (!isMapRelayInFlight() && ((now - bootEpoch) > 1800.0 || currentProcessFootprintMB() > sleepTrimMB)) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
@@ -1225,7 +1230,7 @@ static int runWorkerMain(void) {
                 } else if (lockedSinceEpoch > 0.0) {
                     double lockedDuration = now - lockedSinceEpoch;
                     lockedSinceEpoch = 0.0;
-                    if (lockedDuration >= 180.0) {
+                    if (!isMapRelayInFlight() && lockedDuration >= 180.0) {
                         // Phone was locked >= 3 mins (e.g. morning -> afternoon) -> Spawn brand-new Worker in 0.08s!
                         state.workerHeartbeatEpoch = now;
                         state.phaseDescription = @"Đang trực tuyến / Canh đơn (Mới mở khóa)";
@@ -1270,8 +1275,10 @@ static int runWorkerMain(void) {
                             [state saveStateAndNotify:YES];
                         }
 
-                        if (((now - bootEpoch) > 150.0 && currentProcessFootprintMB() > sleepTrimMB) ||
-                            (now - bootEpoch) > 3600.0) {
+                        if (!isMapRelayInFlight() &&
+                            ![frontBid isEqualToString:kAppBundleID] &&
+                            (((now - bootEpoch) > 150.0 && currentProcessFootprintMB() > sleepTrimMB) ||
+                             (now - bootEpoch) > 3600.0)) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:NO];
                             _exit(kExitCodeProactiveRAMTrim);
@@ -1323,7 +1330,7 @@ static int runWorkerMain(void) {
                     frameChangedBeforeMark <= 3 &&
                     (now - lastFullOCREpoch) < 2.2) {
                     // Static screen inside Xanh SM with no order popup -> skip heavy Vision ANE OCR!
-                    if ((now - bootEpoch) > 180.0 && currentProcessFootprintMB() > idleActiveTrimMB) {
+                    if (!isMapRelayInFlight() && (now - bootEpoch) > 180.0 && currentProcessFootprintMB() > idleActiveTrimMB) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);

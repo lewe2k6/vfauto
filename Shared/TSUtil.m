@@ -14,6 +14,7 @@
 #import <unistd.h>
 #import <errno.h>
 #import <string.h>
+#import <math.h>
 
 #ifndef SZOMB
 #define SZOMB 5
@@ -323,7 +324,7 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
             cfg.masterEnabled = YES;
         }
         cfg.mapRelayTopic = generateRandomMapRelayTopic();
-        if (geteuid() != 0) {
+        if (geteuid() != 0 && ![NSThread isMainThread]) {
             InstalledAppInfo *detected = autoDetectDriverApp();
             if (detected) {
                 cfg.driverAppBundleID    = detected.bundleID;
@@ -336,6 +337,13 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
         }
         return cfg;
     }
+
+    #define LOAD_FINITE_DBL(key, prop, defVal) do { \
+        if (dict[key]) { \
+            double _v = [dict[key] doubleValue]; \
+            cfg.prop = isfinite(_v) ? _v : (defVal); \
+        } \
+    } while (0)
 
     if (dict[@"masterEnabled"])          cfg.masterEnabled          = [dict[@"masterEnabled"] boolValue];
     if (dict[@"autoAcceptBike"])         cfg.autoAcceptBike         = [dict[@"autoAcceptBike"] boolValue];
@@ -355,7 +363,7 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
         cfg.foodChainKeywords = [savedChain isEqualToString:v47DefaultChain] ? kDefaultFoodChainKeywords : savedChain;
     }
     if (dict[@"foodAcceptLongDistance"])   cfg.foodAcceptLongDistance   = [dict[@"foodAcceptLongDistance"] boolValue];
-    if (dict[@"minFoodDistanceKm"])        cfg.minFoodDistanceKm        = [dict[@"minFoodDistanceKm"] doubleValue];
+    LOAD_FINITE_DBL(@"minFoodDistanceKm", minFoodDistanceKm, 3.0);
     if (dict[@"smartCoolMode"])          cfg.smartCoolMode          = [dict[@"smartCoolMode"] boolValue];
     if (dict[@"tapVerifyRetries"])       cfg.tapVerifyRetries       = [dict[@"tapVerifyRetries"] integerValue];
     if (dict[@"hapticEnabled"])          cfg.hapticEnabled          = [dict[@"hapticEnabled"] boolValue];
@@ -382,34 +390,36 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
     }
 
     if (dict[@"coordMode"])              cfg.coordMode              = (CoordMode)[dict[@"coordMode"] integerValue];
-    if (dict[@"closeXRatio"])            cfg.closeXRatio            = [dict[@"closeXRatio"] doubleValue];
-    if (dict[@"closeOffsetX"])           cfg.closeOffsetX           = [dict[@"closeOffsetX"] doubleValue];
-    if (dict[@"closeOffsetY"])           cfg.closeOffsetY           = [dict[@"closeOffsetY"] doubleValue];
-    if (dict[@"acceptOffsetX"])          cfg.acceptOffsetX          = [dict[@"acceptOffsetX"] doubleValue];
-    if (dict[@"acceptOffsetY"])          cfg.acceptOffsetY          = [dict[@"acceptOffsetY"] doubleValue];
-    if (dict[@"onlineOffsetX"])          cfg.onlineOffsetX          = [dict[@"onlineOffsetX"] doubleValue];
-    if (dict[@"onlineOffsetY"])          cfg.onlineOffsetY          = [dict[@"onlineOffsetY"] doubleValue];
+    LOAD_FINITE_DBL(@"closeXRatio",    closeXRatio,    0.903);
+    LOAD_FINITE_DBL(@"closeOffsetX",   closeOffsetX,   0.0);
+    LOAD_FINITE_DBL(@"closeOffsetY",   closeOffsetY,   0.0);
+    LOAD_FINITE_DBL(@"acceptOffsetX",  acceptOffsetX,  0.0);
+    LOAD_FINITE_DBL(@"acceptOffsetY",  acceptOffsetY,  0.0);
+    LOAD_FINITE_DBL(@"onlineOffsetX",  onlineOffsetX,  0.0);
+    LOAD_FINITE_DBL(@"onlineOffsetY",  onlineOffsetY,  0.0);
 
-    if (dict[@"manualCloseX"])           cfg.manualCloseX           = [dict[@"manualCloseX"] doubleValue];
-    if (dict[@"manualCloseY"])           cfg.manualCloseY           = [dict[@"manualCloseY"] doubleValue];
-    if (dict[@"manualAcceptX"])          cfg.manualAcceptX          = [dict[@"manualAcceptX"] doubleValue];
-    if (dict[@"manualAcceptY"])          cfg.manualAcceptY          = [dict[@"manualAcceptY"] doubleValue];
-    if (dict[@"manualOfflineX"])         cfg.manualOfflineX         = [dict[@"manualOfflineX"] doubleValue];
-    if (dict[@"manualOfflineY"])         cfg.manualOfflineY         = [dict[@"manualOfflineY"] doubleValue];
-    if (dict[@"manualOnlineX"])          cfg.manualOnlineX          = [dict[@"manualOnlineX"] doubleValue];
-    if (dict[@"manualOnlineY"])          cfg.manualOnlineY          = [dict[@"manualOnlineY"] doubleValue];
+    LOAD_FINITE_DBL(@"manualCloseX",   manualCloseX,   339.0);
+    LOAD_FINITE_DBL(@"manualCloseY",   manualCloseY,   52.0);
+    LOAD_FINITE_DBL(@"manualAcceptX",  manualAcceptX,  187.0);
+    LOAD_FINITE_DBL(@"manualAcceptY",  manualAcceptY,  640.0);
+    LOAD_FINITE_DBL(@"manualOfflineX", manualOfflineX, 40.0);
+    LOAD_FINITE_DBL(@"manualOfflineY", manualOfflineY, 455.0);
+    LOAD_FINITE_DBL(@"manualOnlineX",  manualOnlineX,  187.0);
+    LOAD_FINITE_DBL(@"manualOnlineY",  manualOnlineY,  307.0);
 
     if (dict[@"scanIntervalMs"])         cfg.scanIntervalMs         = [dict[@"scanIntervalMs"] integerValue];
     if (dict[@"acceptDelayMinMs"])       cfg.acceptDelayMinMs       = [dict[@"acceptDelayMinMs"] integerValue];
     if (dict[@"acceptDelayMaxMs"])       cfg.acceptDelayMaxMs       = [dict[@"acceptDelayMaxMs"] integerValue];
     if (dict[@"rejectDelayMinMs"])       cfg.rejectDelayMinMs       = [dict[@"rejectDelayMinMs"] integerValue];
     if (dict[@"rejectDelayMaxMs"])       cfg.rejectDelayMaxMs       = [dict[@"rejectDelayMaxMs"] integerValue];
-    if (dict[@"jitterRadiusPt"])         cfg.jitterRadiusPt         = [dict[@"jitterRadiusPt"] doubleValue];
+    LOAD_FINITE_DBL(@"jitterRadiusPt", jitterRadiusPt, 5.0);
     if (dict[@"holdMinMs"])              cfg.holdMinMs              = [dict[@"holdMinMs"] integerValue];
     if (dict[@"holdMaxMs"])              cfg.holdMaxMs              = [dict[@"holdMaxMs"] integerValue];
     if (dict[@"cooldownMs"])             cfg.cooldownMs             = [dict[@"cooldownMs"] integerValue];
 
-    if (geteuid() != 0 && (cfg.driverAppBundleID.length == 0 || cfg.driverAppExecName.length == 0)) {
+    #undef LOAD_FINITE_DBL
+
+    if (geteuid() != 0 && ![NSThread isMainThread] && (cfg.driverAppBundleID.length == 0 || cfg.driverAppExecName.length == 0)) {
         InstalledAppInfo *matched = nil;
         if (cfg.driverAppBundleID.length > 0) {
             for (InstalledAppInfo *app in listInstalledUserApps()) {
@@ -879,33 +889,50 @@ NSArray<InstalledAppInfo *> *listInstalledUserApps(void) {
     Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
     if (!wsCls) return result;
 
-    SEL defSel = NSSelectorFromString(@"defaultWorkspace");
-    if (![wsCls respondsToSelector:defSel]) return result;
-    id workspace = ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel);
-    if (!workspace) return result;
+    NSArray *proxies = nil;
+    @try {
+        SEL defSel = NSSelectorFromString(@"defaultWorkspace");
+        if (![wsCls respondsToSelector:defSel]) return result;
+        id workspace = ((id (*)(id, SEL))objc_msgSend)(wsCls, defSel);
+        if (!workspace) return result;
 
-    SEL allSel = NSSelectorFromString(@"allInstalledApplications");
-    if (![workspace respondsToSelector:allSel]) return result;
-    NSArray *proxies = ((NSArray * (*)(id, SEL))objc_msgSend)(workspace, allSel);
+        SEL allSel = NSSelectorFromString(@"allInstalledApplications");
+        if (![workspace respondsToSelector:allSel]) return result;
+        id rawProxies = ((id (*)(id, SEL))objc_msgSend)(workspace, allSel);
+        if ([rawProxies isKindOfClass:[NSArray class]]) {
+            proxies = (NSArray *)rawProxies;
+        }
+    } @catch (NSException *ex) {
+        return result;
+    }
+    if (!proxies) return result;
 
     for (id proxy in proxies) {
         @try {
-            NSString *appType = [proxy valueForKey:@"applicationType"];
+            id rawType = [proxy valueForKey:@"applicationType"];
+            NSString *appType = [rawType isKindOfClass:[NSString class]] ? (NSString *)rawType : nil;
             if (appType && ![appType isEqualToString:@"User"]) continue;
 
-            NSString *bid = [proxy valueForKey:@"applicationIdentifier"];
-            if (!bid || [bid isEqualToString:kAppBundleID] || [bid hasPrefix:@"com.apple."]) continue;
+            id rawBid = [proxy valueForKey:@"applicationIdentifier"];
+            if (![rawBid isKindOfClass:[NSString class]]) continue;
+            NSString *bid = (NSString *)rawBid;
+            if (bid.length == 0 || [bid isEqualToString:kAppBundleID] || [bid hasPrefix:@"com.apple."]) continue;
 
             NSString *name = nil;
             SEL locSel = NSSelectorFromString(@"localizedName");
             if ([proxy respondsToSelector:locSel]) {
-                name = ((NSString * (*)(id, SEL))objc_msgSend)(proxy, locSel);
+                id rawLoc = ((id (*)(id, SEL))objc_msgSend)(proxy, locSel);
+                if ([rawLoc isKindOfClass:[NSString class]]) name = (NSString *)rawLoc;
             }
             if (!name || name.length == 0) {
-                name = [proxy valueForKey:@"itemName"] ?: bid;
+                id rawItemName = [proxy valueForKey:@"itemName"];
+                name = ([rawItemName isKindOfClass:[NSString class]] && [(NSString *)rawItemName length] > 0)
+                    ? (NSString *)rawItemName
+                    : bid;
             }
 
-            NSString *exec = [proxy valueForKey:@"bundleExecutable"] ?: @"";
+            id rawExec = [proxy valueForKey:@"bundleExecutable"];
+            NSString *exec = [rawExec isKindOfClass:[NSString class]] ? (NSString *)rawExec : @"";
 
             InstalledAppInfo *info = [[InstalledAppInfo alloc] init];
             info.bundleID       = bid;
@@ -916,13 +943,25 @@ NSArray<InstalledAppInfo *> *listInstalledUserApps(void) {
     }
 
     [result sortUsingComparator:^NSComparisonResult(InstalledAppInfo *a, InstalledAppInfo *b) {
-        return [a.displayName localizedCaseInsensitiveCompare:b.displayName];
+        NSString *na = a.displayName ?: a.bundleID ?: @"";
+        NSString *nb = b.displayName ?: b.bundleID ?: @"";
+        return [na localizedCaseInsensitiveCompare:nb];
     }];
     return result;
 }
 
 InstalledAppInfo *autoDetectDriverApp(void) {
+    static InstalledAppInfo *sCachedDriverApp = nil;
+    static double sLastDetectEpoch = 0.0;
+    double now = [[NSDate date] timeIntervalSince1970];
+    @synchronized ([InstalledAppInfo class]) {
+        if (sLastDetectEpoch > 0.0 && fabs(now - sLastDetectEpoch) < 45.0) {
+            return sCachedDriverApp;
+        }
+    }
+
     NSArray<InstalledAppInfo *> *apps = listInstalledUserApps();
+    InstalledAppInfo *found = nil;
     for (InstalledAppInfo *app in apps) {
         NSString *normName = NormalizeVNText(app.displayName);
         NSString *normBid  = app.bundleID.lowercaseString;
@@ -930,16 +969,25 @@ InstalledAppInfo *autoDetectDriverApp(void) {
             [normBid containsString:@"gsm.driver"] ||
             [normBid containsString:@"xanhsm.driver"] ||
             [normName containsString:@"bac tai"]) {
-            return app;
+            found = app;
+            break;
         }
     }
-    for (InstalledAppInfo *app in apps) {
-        NSString *normName = NormalizeVNText(app.displayName);
-        if ([normName containsString:@"xanh sm"] || [normName containsString:@"greensm"] || [app.bundleID.lowercaseString containsString:@"xanhsm"]) {
-            return app;
+    if (!found) {
+        for (InstalledAppInfo *app in apps) {
+            NSString *normName = NormalizeVNText(app.displayName);
+            if ([normName containsString:@"xanh sm"] || [normName containsString:@"greensm"] || [app.bundleID.lowercaseString containsString:@"xanhsm"]) {
+                found = app;
+                break;
+            }
         }
     }
-    return nil;
+
+    @synchronized ([InstalledAppInfo class]) {
+        sCachedDriverApp = found;
+        sLastDetectEpoch = [[NSDate date] timeIntervalSince1970];
+    }
+    return found;
 }
 
 static BOOL isUserAppPidAlive(pid_t pid) {
@@ -1697,8 +1745,9 @@ static BOOL extractFirstLatLngPairFromString(NSString *str, double *outLat, doub
     static NSRegularExpression *sCoordRx = nil;
     static dispatch_once_t onceTok;
     dispatch_once(&onceTok, ^{
+        // Allow 1..15 decimal digits so React Native JS Number.toString() stripped trailing zeros (e.g. 21.03,105.8) match 100%!
         sCoordRx = [NSRegularExpression regularExpressionWithPattern:
-            @"(-?\\d{1,2}\\.\\d{3,12})\\s*,\\s*(-?\\d{1,3}\\.\\d{3,12})"
+            @"(-?\\d{1,2}\\.\\d{1,15})\\s*,\\s*(-?\\d{1,3}\\.\\d{1,15})"
             options:0 error:nil];
     });
     if (!sCoordRx) return NO;
@@ -1707,6 +1756,7 @@ static BOOL extractFirstLatLngPairFromString(NSString *str, double *outLat, doub
 
     double lat = [[str substringWithRange:[m rangeAtIndex:1]] doubleValue];
     double lng = [[str substringWithRange:[m rangeAtIndex:2]] doubleValue];
+    if (!isfinite(lat) || !isfinite(lng)) return NO;
     if (fabs(lat) > 90.0 || fabs(lng) > 180.0) return NO;
     if (fabs(lat) < 0.001 && fabs(lng) < 0.001) return NO;
 
@@ -1720,6 +1770,18 @@ static NSString *decodeURLQueryComponent(NSString *raw) {
     NSString *plusFixed = [raw stringByReplacingOccurrencesOfString:@"+" withString:@" "];
     NSString *decoded = [plusFixed stringByRemovingPercentEncoding];
     return [(decoded ?: plusFixed) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+static NSString *encodeURIComponentStrict(NSString *raw) {
+    if (!raw || raw.length == 0) return @"";
+    static NSCharacterSet *sStrictSet = nil;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        NSMutableCharacterSet *cs = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+        [cs removeCharactersInString:@":/?#[]@!$&'()*+,;="];
+        sStrictSet = [cs copy];
+    });
+    return [raw stringByAddingPercentEncodingWithAllowedCharacters:sStrictSet] ?: @"";
 }
 
 BOOL parseNavigationTargetFromString(NSString *rawInput,
@@ -1758,28 +1820,44 @@ BOOL parseNavigationTargetFromString(NSString *rawInput,
         }
     }
 
-    // 2. Parse URL query parameters with strict destination priority (daddr > destination > to > q > query > ll > center)
-    NSURLComponents *comp = [NSURLComponents componentsWithString:trimmed];
-    if (comp) {
-        NSMutableDictionary<NSString *, NSString *> *qMap = [NSMutableDictionary dictionary];
-        for (NSURLQueryItem *item in comp.queryItems) {
-            if (item.name.length > 0 && item.value.length > 0) {
-                qMap[item.name.lowercaseString] = [item.value stringByReplacingOccurrencesOfString:@"+" withString:@" "];
-            }
+    // 2. Parse URL query parameters manually FIRST (resilient to unescaped '|', spaces, or raw Vietnamese UTF-8
+    //    where NSURLComponents returns nil!), then enrich with NSURLComponents if valid.
+    NSMutableDictionary<NSString *, NSString *> *qMap = [NSMutableDictionary dictionary];
+    NSRange qMark = [trimmed rangeOfString:@"?"];
+    if (qMark.location != NSNotFound && qMark.location + 1 < trimmed.length) {
+        NSString *rawQuery = [trimmed substringFromIndex:qMark.location + 1];
+        NSRange hashRange = [rawQuery rangeOfString:@"#"];
+        if (hashRange.location != NSNotFound) {
+            rawQuery = [rawQuery substringToIndex:hashRange.location];
         }
-        // Fallback manual query parse if raw URL had unescaped '+' or nested params
-        if (qMap.count == 0 && comp.percentEncodedQuery.length > 0) {
-            NSArray<NSString *> *pairs = [comp.percentEncodedQuery componentsSeparatedByString:@"&"];
-            for (NSString *pair in pairs) {
-                NSRange eq = [pair rangeOfString:@"="];
-                if (eq.location != NSNotFound && eq.location > 0 && eq.location + 1 < pair.length) {
-                    NSString *k = [[pair substringToIndex:eq.location] lowercaseString];
-                    NSString *v = decodeURLQueryComponent([pair substringFromIndex:eq.location + 1]);
-                    if (v.length > 0) qMap[k] = v;
+        NSArray<NSString *> *pairs = [rawQuery componentsSeparatedByString:@"&"];
+        for (NSString *pair in pairs) {
+            NSRange eq = [pair rangeOfString:@"="];
+            if (eq.location != NSNotFound && eq.location > 0 && eq.location + 1 < pair.length) {
+                NSString *k = [[[pair substringToIndex:eq.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
+                NSString *v = decodeURLQueryComponent([pair substringFromIndex:eq.location + 1]);
+                if (k.length > 0 && v.length > 0 && !qMap[k]) {
+                    qMap[k] = v;
                 }
             }
         }
+    }
 
+    NSURLComponents *comp = [NSURLComponents componentsWithString:trimmed];
+    if (comp) {
+        for (NSURLQueryItem *item in comp.queryItems) {
+            if (item.name.length > 0 && item.value.length > 0) {
+                NSString *k = item.name.lowercaseString;
+                if (!qMap[k]) {
+                    qMap[k] = [[item.value stringByReplacingOccurrencesOfString:@"+" withString:@" "]
+                               stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                }
+            }
+        }
+    }
+
+    if (qMap.count > 0) {
+        // Strict destination priority (never pick saddr / driver origin!)
         NSArray<NSString *> *destKeys = @[@"daddr", @"destination", @"to", @"q", @"query", @"ll", @"sll", @"center", @"coord", @"target"];
         for (NSString *dk in destKeys) {
             NSString *val = qMap[dk];
@@ -1801,15 +1879,29 @@ BOOL parseNavigationTargetFromString(NSString *rawInput,
                 return YES;
             }
         }
+    }
 
-        // Check URL path for /maps/dir/<origin>/<dest> or /@lat,lng
-        NSString *path = comp.path ?: @"";
-        if (path.length > 0) {
-            NSRange atRange = [path rangeOfString:@"@"];
-            if (atRange.location != NSNotFound) {
-                NSString *afterAt = [path substringFromIndex:atRange.location + 1];
+    // 2B. Check URL path for /maps/dir/<origin>/<dest> or /@lat,lng (works even when comp == nil)
+    NSString *pathPart = comp.path;
+    if (!pathPart || pathPart.length == 0) {
+        NSString *noQuery = (qMark.location != NSNotFound) ? [trimmed substringToIndex:qMark.location] : trimmed;
+        NSRange schemeSep = [noQuery rangeOfString:@"://"];
+        if (schemeSep.location != NSNotFound) {
+            NSString *afterScheme = [noQuery substringFromIndex:schemeSep.location + 3];
+            NSRange firstSlash = [afterScheme rangeOfString:@"/"];
+            if (firstSlash.location != NSNotFound) {
+                pathPart = [afterScheme substringFromIndex:firstSlash.location];
+            }
+        }
+    }
+    if (pathPart.length > 0) {
+        if ([pathPart.lowercaseString containsString:@"/dir/"]) {
+            NSArray<NSString *> *segs = [pathPart componentsSeparatedByString:@"/"];
+            for (NSInteger idx = (NSInteger)segs.count - 1; idx >= 0; idx--) {
+                NSString *seg = decodeURLQueryComponent(segs[(NSUInteger)idx]);
+                if (seg.length == 0 || [seg.lowercaseString isEqualToString:@"dir"] || [seg hasPrefix:@"@"]) continue;
                 double lat = 0.0, lng = 0.0;
-                if (extractFirstLatLngPairFromString(afterAt, &lat, &lng)) {
+                if (extractFirstLatLngPairFromString(seg, &lat, &lng)) {
                     if (outHasCoords)  *outHasCoords  = YES;
                     if (outLat)        *outLat        = lat;
                     if (outLng)        *outLng        = lng;
@@ -1817,31 +1909,41 @@ BOOL parseNavigationTargetFromString(NSString *rawInput,
                     return YES;
                 }
             }
-            if ([path.lowercaseString containsString:@"/dir/"]) {
-                NSArray<NSString *> *segs = [path componentsSeparatedByString:@"/"];
-                if (segs.count >= 2) {
-                    NSString *lastSeg = decodeURLQueryComponent(segs.lastObject);
-                    double lat = 0.0, lng = 0.0;
-                    if (extractFirstLatLngPairFromString(lastSeg, &lat, &lng)) {
-                        if (outHasCoords)  *outHasCoords  = YES;
-                        if (outLat)        *outLat        = lat;
-                        if (outLng)        *outLng        = lng;
-                        if (outQueryLabel) *outQueryLabel = [NSString stringWithFormat:@"%.6f, %.6f", lat, lng];
-                        return YES;
-                    }
-                }
+        }
+        NSRange atRange = [pathPart rangeOfString:@"@"];
+        if (atRange.location != NSNotFound) {
+            NSString *afterAt = [pathPart substringFromIndex:atRange.location + 1];
+            double lat = 0.0, lng = 0.0;
+            if (extractFirstLatLngPairFromString(afterAt, &lat, &lng)) {
+                if (outHasCoords)  *outHasCoords  = YES;
+                if (outLat)        *outLat        = lat;
+                if (outLng)        *outLng        = lng;
+                if (outQueryLabel) *outQueryLabel = [NSString stringWithFormat:@"%.6f, %.6f", lat, lng];
+                return YES;
             }
         }
     }
 
-    // 3. Direct coordinate pair or plain address text (excluding saddr=... if raw malformed URL)
+    // 3. Direct coordinate pair or plain address text (explicitly strip saddr=... / origin=... so we never grab driver origin!)
     NSString *scrubbed = trimmed;
-    NSRange daddrPos = [scrubbed rangeOfString:@"daddr=" options:NSCaseInsensitiveSearch];
-    if (daddrPos.location != NSNotFound) {
-        scrubbed = [scrubbed substringFromIndex:daddrPos.location + 6];
-        NSRange amp = [scrubbed rangeOfString:@"&"];
-        if (amp.location != NSNotFound) scrubbed = [scrubbed substringToIndex:amp.location];
-        scrubbed = decodeURLQueryComponent(scrubbed);
+    BOOL extractedExplicitDest = NO;
+    for (NSString *marker in @[@"daddr=", @"destination="]) {
+        NSRange mPos = [scrubbed rangeOfString:marker options:NSCaseInsensitiveSearch];
+        if (mPos.location != NSNotFound) {
+            scrubbed = [scrubbed substringFromIndex:mPos.location + marker.length];
+            NSRange amp = [scrubbed rangeOfString:@"&"];
+            if (amp.location != NSNotFound) scrubbed = [scrubbed substringToIndex:amp.location];
+            scrubbed = decodeURLQueryComponent(scrubbed);
+            extractedExplicitDest = YES;
+            break;
+        }
+    }
+    if (!extractedExplicitDest && [scrubbed rangeOfString:@"://"].location != NSNotFound) {
+        // Strip saddr=... / origin=... segments if present before scanning for raw lat,lng
+        NSRegularExpression *originRx = [NSRegularExpression regularExpressionWithPattern:@"(?i)(?:saddr|origin)=[^&#]*" options:0 error:nil];
+        if (originRx) {
+            scrubbed = [originRx stringByReplacingMatchesInString:scrubbed options:0 range:NSMakeRange(0, scrubbed.length) withTemplate:@""];
+        }
     }
 
     double directLat = 0.0, directLng = 0.0;
@@ -1853,12 +1955,23 @@ BOOL parseNavigationTargetFromString(NSString *rawInput,
         return YES;
     }
 
+    if (extractedExplicitDest && scrubbed.length >= 3) {
+        if (outQueryLabel) *outQueryLabel = scrubbed;
+        return YES;
+    }
+
     if (![trimmed containsString:@"://"] && trimmed.length >= 5) {
         if (outQueryLabel) *outQueryLabel = trimmed;
         return YES;
     }
 
     return NO;
+}
+
+static volatile int32_t sMapRelayInFlightCount = 0;
+
+BOOL isMapRelayInFlight(void) {
+    return (__sync_fetch_and_add(&sMapRelayInFlightCount, 0) > 0);
 }
 
 static NSURLSession *sharedMapRelayURLSession(void) {
@@ -1927,6 +2040,9 @@ static BOOL postNtfyPayloadSynchronously(NSString *urlString,
     [req setValue:@"motorcycle,round_pushpin"        forHTTPHeaderField:@"Tags"];
     if (clickURL.length > 0) {
         [req setValue:clickURL forHTTPHeaderField:@"Click"];
+        NSString *safeActionURL = [clickURL stringByReplacingOccurrencesOfString:@"'" withString:@"%27"];
+        [req setValue:[NSString stringWithFormat:@"view, Mo Google Maps Xe May, '%@', clear=true", safeActionURL]
+   forHTTPHeaderField:@"Actions"];
     }
     if (hostHeaderOverride.length > 0) {
         [req setValue:hostHeaderOverride forHTTPHeaderField:@"Host"];
@@ -1949,13 +2065,14 @@ static BOOL postNtfyPayloadSynchronously(NSString *urlString,
     return success;
 }
 
-void dispatchMapRelayPayloadAsync(double lat,
-                                  double lng,
-                                  BOOL hasCoords,
-                                  NSString *queryLabel,
-                                  NSString *sourceTag,
-                                  FilterConfig *config,
-                                  void (^completion)(BOOL ok, NSString *detail)) {
+static void dispatchMapRelayPayloadWithNonceAsync(double lat,
+                                                  double lng,
+                                                  BOOL hasCoords,
+                                                  NSString *queryLabel,
+                                                  NSString *sourceTag,
+                                                  NSString *explicitNonce,
+                                                  FilterConfig *config,
+                                                  void (^completion)(BOOL ok, NSString *detail)) {
     FilterConfig *cfg = config ?: [FilterConfig loadFromDisk];
     NSString *topic = sanitizeMapRelayTopic(cfg.mapRelayTopic);
     if (topic.length < 4) {
@@ -1964,79 +2081,99 @@ void dispatchMapRelayPayloadAsync(double lat,
         [cfg saveToDiskAndNotify:NO];
     }
 
+    __sync_add_and_fetch(&sMapRelayInFlightCount, 1);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        NSString *destParam = hasCoords
-            ? [NSString stringWithFormat:@"%.6f,%.6f", lat, lng]
-            : ([queryLabel stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]] ?: @"");
-        NSString *humanLabel = hasCoords
-            ? [NSString stringWithFormat:@"%.6f, %.6f", lat, lng]
-            : (queryLabel ?: @"Điểm đến");
+        @try {
+            NSString *rawCoordPair = [NSString stringWithFormat:@"%.6f,%.6f", lat, lng];
+            NSString *encodedQuery = encodeURIComponentStrict(queryLabel ?: @"");
+            NSString *destWebParam = hasCoords
+                ? [NSString stringWithFormat:@"%.6f%%2C%.6f", lat, lng]
+                : encodedQuery;
+            NSString *destNativeParam = hasCoords ? rawCoordPair : encodedQuery;
+            NSString *humanLabel = hasCoords
+                ? [NSString stringWithFormat:@"%.6f, %.6f", lat, lng]
+                : (queryLabel ?: @"Điểm đến");
 
-        NSString *gmapsWebURL = [NSString stringWithFormat:
-            @"https://www.google.com/maps/dir/?api=1&destination=%@&travelmode=two-wheeler", destParam];
-        NSString *androidNavURI = [NSString stringWithFormat:
-            @"google.navigation:q=%@&mode=l", destParam];
-        NSString *iosNavURI = [NSString stringWithFormat:
-            @"comgooglemaps://?daddr=%@&directionsmode=driving", destParam];
+            NSString *gmapsWebURL = [NSString stringWithFormat:
+                @"https://www.google.com/maps/dir/?api=1&destination=%@&travelmode=two-wheeler", destWebParam];
+            NSString *androidNavURI = [NSString stringWithFormat:
+                @"google.navigation:q=%@&mode=l", destNativeParam];
+            NSString *iosNavURI = [NSString stringWithFormat:
+                @"comgooglemaps://?daddr=%@&directionsmode=driving", destNativeParam];
 
-        uint64_t tsMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
-        NSString *nonce = [NSString stringWithFormat:@"%llu-%u", tsMs, arc4random_uniform(999999)];
+            uint64_t tsMs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000.0);
+            NSString *nonce = (explicitNonce.length > 0)
+                ? explicitNonce
+                : [NSString stringWithFormat:@"%llu-%u", tsMs, arc4random_uniform(999999)];
 
-        NSDictionary *payload = @{
-            @"v":          @(1),
-            @"id":         nonce,
-            @"hasCoords":  @(hasCoords),
-            @"lat":        @(hasCoords ? lat : 0.0),
-            @"lng":        @(hasCoords ? lng : 0.0),
-            @"label":      humanLabel,
-            @"source":     sourceTag ?: @"XanhSM",
-            @"gmapsUrl":   gmapsWebURL,
-            @"androidUri": androidNavURI,
-            @"iosUri":     iosNavURI,
-            @"ts":         @(tsMs)
-        };
-        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+            NSDictionary *payload = @{
+                @"v":          @(1),
+                @"id":         nonce,
+                @"hasCoords":  @(hasCoords),
+                @"lat":        @(hasCoords ? lat : 0.0),
+                @"lng":        @(hasCoords ? lng : 0.0),
+                @"label":      humanLabel,
+                @"source":     sourceTag ?: @"XanhSM",
+                @"gmapsUrl":   gmapsWebURL,
+                @"androidUri": androidNavURI,
+                @"iosUri":     iosNavURI,
+                @"ts":         @(tsMs)
+            };
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
 
-        NSString *primaryURL = [NSString stringWithFormat:@"https://ntfy.sh/%@", topic];
-        NSError *netErr = nil;
-        BOOL usedDirectIP = NO;
-        BOOL sentOK = postNtfyPayloadSynchronously(primaryURL, nil, gmapsWebURL, jsonData, &netErr);
+            NSString *primaryURL = [NSString stringWithFormat:@"https://ntfy.sh/%@", topic];
+            NSError *netErr = nil;
+            BOOL usedDirectIP = NO;
+            BOOL sentOK = postNtfyPayloadSynchronously(primaryURL, nil, gmapsWebURL, jsonData, &netErr);
 
-        if (!sentOK) {
-            // Instant Anti-DNS-Poison Bypass for iPhone 8 on Android Hotspot:
-            // Resolve ntfy.sh via literal 1.1.1.1 DoH (or hardcoded 159.203.148.75) and push directly by IP!
-            NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
-            NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", directIP, topic];
-            sentOK = postNtfyPayloadSynchronously(fallbackURL, @"ntfy.sh", gmapsWebURL, jsonData, &netErr);
-            if (sentOK) {
-                usedDirectIP = YES;
+            if (!sentOK) {
+                // Instant Anti-DNS-Poison Bypass for iPhone 8 on Android Hotspot:
+                // Resolve ntfy.sh via literal 1.1.1.1 DoH (or hardcoded 159.203.148.75) and push directly by IP!
+                NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
+                NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", directIP, topic];
+                sentOK = postNtfyPayloadSynchronously(fallbackURL, @"ntfy.sh", gmapsWebURL, jsonData, &netErr);
+                if (sentOK) {
+                    usedDirectIP = YES;
+                }
             }
-        }
 
-        double doneEpoch = [[NSDate date] timeIntervalSince1970];
-        RuntimeDaemonState *st = [RuntimeDaemonState loadState];
-        if (sentOK) {
-            st.lastRelayedSummary = [NSString stringWithFormat:@"%@ (%@)", humanLabel, usedDirectIP ? @"Xuyên DNS" : @"OK"];
-            st.lastRelayedEpoch   = doneEpoch;
-            [st saveStateAndNotify:YES];
-            appendDaemonLog(@"[BẮN MAP %@] %@ -> Kênh '%@'%@",
-                            sourceTag ?: @"XanhSM",
-                            humanLabel,
-                            topic,
-                            usedDirectIP ? @" [Đã vượt rào lỗi DNS Hotspot!]" : @"");
-        } else {
-            appendDaemonLog(@"[LỖI BẮN MAP] Chưa gửi được '%@' (Kiểm tra Wi-Fi/4G trên iPhone 8: %@)",
-                            humanLabel,
-                            netErr.localizedDescription ?: @"Mất kết nối");
-            notify_post(kNotifyStatsUpdated);
-        }
+            double doneEpoch = [[NSDate date] timeIntervalSince1970];
+            RuntimeDaemonState *st = [RuntimeDaemonState loadState];
+            if (sentOK) {
+                st.lastRelayedSummary = [NSString stringWithFormat:@"%@ (%@)", humanLabel, usedDirectIP ? @"Xuyên DNS" : @"OK"];
+                st.lastRelayedEpoch   = doneEpoch;
+                [st saveStateAndNotify:YES];
+                appendDaemonLog(@"[BẮN MAP %@] %@ -> Kênh '%@'%@",
+                                sourceTag ?: @"XanhSM",
+                                humanLabel,
+                                topic,
+                                usedDirectIP ? @" [Đã vượt rào lỗi DNS Hotspot!]" : @"");
+            } else {
+                appendDaemonLog(@"[LỖI BẮN MAP] Chưa gửi được '%@' (Kiểm tra Wi-Fi/4G trên iPhone 8: %@)",
+                                humanLabel,
+                                netErr.localizedDescription ?: @"Mất kết nối");
+                notify_post(kNotifyStatsUpdated);
+            }
 
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completion(sentOK, humanLabel);
-            });
+            if (completion) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(sentOK, humanLabel);
+                });
+            }
+        } @finally {
+            __sync_sub_and_fetch(&sMapRelayInFlightCount, 1);
         }
     });
+}
+
+void dispatchMapRelayPayloadAsync(double lat,
+                                  double lng,
+                                  BOOL hasCoords,
+                                  NSString *queryLabel,
+                                  NSString *sourceTag,
+                                  FilterConfig *config,
+                                  void (^completion)(BOOL ok, NSString *detail)) {
+    dispatchMapRelayPayloadWithNonceAsync(lat, lng, hasCoords, queryLabel, sourceTag, nil, config, completion);
 }
 
 void processPendingMapRelayQueueIfAny(FilterConfig *config) {
@@ -2044,12 +2181,22 @@ void processPendingMapRelayQueueIfAny(FilterConfig *config) {
     if (!cPath || access(cPath, F_OK) != 0) return;
 
     NSDictionary *q = readDictSafelyWithRetry(kMapRelayQueuePath);
+    if (!q || ![q isKindOfClass:[NSDictionary class]]) {
+        unlink(cPath);
+        return;
+    }
+
+    double now = [[NSDate date] timeIntervalSince1970];
+    double claimAfter = [q[@"claimAfterEpoch"] doubleValue];
+    if (claimAfter > 0.0 && now < claimAfter) {
+        // Primary in-app relay is still in flight; leave backup intact in case app gets suspended
+        return;
+    }
+
     unlink(cPath);
-    if (!q || ![q isKindOfClass:[NSDictionary class]]) return;
 
     double qEpoch = [q[@"epoch"] doubleValue];
-    double now = [[NSDate date] timeIntervalSince1970];
-    if (qEpoch > 0.0 && fabs(now - qEpoch) > 25.0) {
+    if (qEpoch > 0.0 && fabs(now - qEpoch) > 30.0) {
         return; // Expired stale item
     }
 
@@ -2058,9 +2205,43 @@ void processPendingMapRelayQueueIfAny(FilterConfig *config) {
     double lng      = [q[@"lng"] doubleValue];
     NSString *label = [q[@"label"] isKindOfClass:[NSString class]] ? q[@"label"] : @"";
     NSString *src   = [q[@"source"] isKindOfClass:[NSString class]] ? q[@"source"] : @"XanhSM";
+    NSString *nonce = [q[@"nonce"] isKindOfClass:[NSString class]] ? q[@"nonce"] : nil;
 
     if (!hasCoords && label.length == 0) return;
-    dispatchMapRelayPayloadAsync(lat, lng, hasCoords, label, src, config, nil);
+    dispatchMapRelayPayloadWithNonceAsync(lat, lng, hasCoords, label, src, nonce, config, nil);
+}
+
+static BOOL looksLikeThirdPartyBundleID(NSString *candidate) {
+    if (![candidate isKindOfClass:[NSString class]] || candidate.length < 5) return NO;
+    if ([candidate rangeOfString:@"."].location == NSNotFound) return NO;
+    if ([candidate rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].location != NSNotFound) return NO;
+    if ([candidate isEqualToString:kAppBundleID]) return NO;
+    if ([candidate hasPrefix:@"com.apple."]) return NO;
+    return YES;
+}
+
+static void returnToDriverAppReliably(NSString *configuredBid, NSString *callerSourceTag) {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        NSString *targetBid = configuredBid;
+        if (targetBid.length == 0 && looksLikeThirdPartyBundleID(callerSourceTag)) {
+            targetBid = callerSourceTag;
+        }
+        if (targetBid.length == 0) {
+            InstalledAppInfo *det = autoDetectDriverApp();
+            targetBid = det.bundleID;
+        }
+        if (targetBid.length == 0) return;
+
+        // Wait 120ms for SpringBoard's incoming openURL scene transition to settle, then retry up to 3x if busy
+        const useconds_t delaysUs[3] = { 120000, 320000, 450000 };
+        for (int i = 0; i < 3; i++) {
+            usleep(delaysUs[i]);
+            if (isDeviceScreenLocked()) break;
+            if (isAppCurrentlyForeground(targetBid)) break;
+            launchAppByBundleID(targetBid);
+            if (isAppCurrentlyForeground(targetBid)) break;
+        }
+    });
 }
 
 BOOL enqueueAndTriggerMapRelayFromURLString(NSString *rawInput,
@@ -2070,18 +2251,28 @@ BOOL enqueueAndTriggerMapRelayFromURLString(NSString *rawInput,
     static NSString *sLastRawURL = nil;
     static double sLastRawEpoch  = 0.0;
 
-    if (!rawInput || rawInput.length == 0) return NO;
+    if (!rawInput || rawInput.length == 0) {
+        if (completion) completion(NO, @"URL trống");
+        return NO;
+    }
     double now = [[NSDate date] timeIntervalSince1970];
-    if (!completion && sLastRawURL && [sLastRawURL isEqualToString:rawInput] && fabs(now - sLastRawEpoch) < 1.2) {
+    if (allowReturnToDriver && sLastRawURL && [sLastRawURL isEqualToString:rawInput] && fabs(now - sLastRawEpoch) < 1.2) {
+        if (completion) completion(YES, @"Deduplicated");
         return YES; // Deduplicate double launch callback from iOS UIKit
     }
-    sLastRawURL   = [rawInput copy];
-    sLastRawEpoch = now;
+    if (allowReturnToDriver) {
+        sLastRawURL   = [rawInput copy];
+        sLastRawEpoch = now;
+    }
 
     FilterConfig *cfg = [FilterConfig loadFromDisk];
     if (!cfg.mapRelayEnabled && allowReturnToDriver) {
         appendDaemonLog(@"[BẮN MAP] Nhận link Điều hướng nhưng công tắc Bắn Map đang TẮT.");
         notify_post(kNotifyStatsUpdated);
+        if (cfg.mapRelayReturnToDriver) {
+            returnToDriverAppReliably(cfg.driverAppBundleID, sourceTag);
+        }
+        if (completion) completion(NO, @"Công tắc Bắn Map đang TẮT");
         return NO;
     }
 
@@ -2091,6 +2282,9 @@ BOOL enqueueAndTriggerMapRelayFromURLString(NSString *rawInput,
     if (!parseNavigationTargetFromString(rawInput, &hasCoords, &lat, &lng, &label)) {
         appendDaemonLog(@"[BẮN MAP] Không tách được tọa độ từ URL: %@", rawInput);
         notify_post(kNotifyStatsUpdated);
+        if (allowReturnToDriver && cfg.mapRelayReturnToDriver) {
+            returnToDriverAppReliably(cfg.driverAppBundleID, sourceTag);
+        }
         if (completion) completion(NO, rawInput);
         return NO;
     }
@@ -2100,45 +2294,44 @@ BOOL enqueueAndTriggerMapRelayFromURLString(NSString *rawInput,
     }
 
     NSString *nonce = [NSString stringWithFormat:@"%llu-%u", (uint64_t)(now * 1000.0), arc4random_uniform(999999)];
-    pid_t daemonPid = getRunningDaemonPID();
+    BOOL wroteDaemonBackup = NO;
 
-    if (daemonPid > 0 && !completion) {
-        // Hand off to background pind worker so PinNhietDo UI app can jump back to Xanh SM in 0.06s with zero suspension risk!
+    if (allowReturnToDriver && getRunningDaemonPID() > 0) {
+        // Crash-proof backup queue with identical nonce: only claimed by pind if PinNhietDo gets killed before finishing!
         NSDictionary *qDict = @{
-            @"nonce":     nonce,
-            @"hasCoords": @(hasCoords),
-            @"lat":       @(lat),
-            @"lng":       @(lng),
-            @"label":     label ?: @"",
-            @"source":    sourceTag ?: @"XanhSM",
-            @"epoch":     @(now)
+            @"nonce":           nonce,
+            @"hasCoords":       @(hasCoords),
+            @"lat":             @(lat),
+            @"lng":             @(lng),
+            @"label":           label ?: @"",
+            @"source":          sourceTag ?: @"XanhSM",
+            @"epoch":           @(now),
+            @"claimAfterEpoch": @(now + 1.8)
         };
-        writeDictUnprotectedAtomically(qDict, kMapRelayQueuePath);
-        notify_post(kNotifySendMapRelay);
+        wroteDaemonBackup = writeDictUnprotectedAtomically(qDict, kMapRelayQueuePath);
+        if (wroteDaemonBackup) {
+            notify_post(kNotifySendMapRelay);
+        }
+    }
 
-        // Safety net: if pind worker was sleeping/recycling and didn't consume kMapRelayQueuePath within 0.45s, send directly!
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
-                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+    // Primary path: fire HTTP POST immediately inside PinNhietDo (0ms IPC latency, works even when Master daemon is OFF!)
+    dispatchMapRelayPayloadWithNonceAsync(lat, lng, hasCoords, label, sourceTag, nonce, cfg, ^(BOOL ok, NSString *detail) {
+        if (wroteDaemonBackup && ok) {
             const char *cPath = [kMapRelayQueuePath fileSystemRepresentation];
             if (cPath && access(cPath, F_OK) == 0) {
                 NSDictionary *rem = readDictSafelyWithRetry(kMapRelayQueuePath);
-                if ([rem isKindOfClass:[NSDictionary class]] && [rem[@"nonce"] isEqual:nonce]) {
+                if (![rem isKindOfClass:[NSDictionary class]] || [rem[@"nonce"] isEqual:nonce]) {
                     unlink(cPath);
-                    dispatchMapRelayPayloadAsync(lat, lng, hasCoords, label, sourceTag, cfg, nil);
                 }
             }
-        });
-    } else {
-        // Master daemon is OFF or interactive UI test requested -> send directly!
-        dispatchMapRelayPayloadAsync(lat, lng, hasCoords, label, sourceTag, cfg, completion);
-    }
+        }
+        if (completion) {
+            completion(ok, detail);
+        }
+    });
 
     if (allowReturnToDriver && cfg.mapRelayReturnToDriver) {
-        NSString *driverBid = cfg.driverAppBundleID;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
-                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-            launchAppByBundleID(driverBid);
-        });
+        returnToDriverAppReliably(cfg.driverAppBundleID, sourceTag);
     }
 
     return YES;

@@ -335,9 +335,97 @@
       text-decoration: none;
       font-weight: 600;
     }
+
+    /* Full-Screen 1-Tap Handlebar Launch Pad (defeats Chrome Android non-gesture custom scheme block) */
+    .fs-launch-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: none;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: calc(env(safe-area-inset-top, 12px) + 18px) 18px calc(env(safe-area-inset-bottom, 16px) + 18px);
+      background: linear-gradient(160deg, #022c22 0%, #047857 48%, #059669 100%);
+      color: #ffffff;
+      text-align: center;
+      user-select: none;
+      cursor: pointer;
+    }
+    .fs-launch-overlay.visible {
+      display: flex;
+      animation: flashIn 0.18s ease-out;
+    }
+    @keyframes flashIn {
+      from { opacity: 0; transform: scale(0.97); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    .fs-center {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+    }
+    .fs-badge {
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.32);
+      border: 1px solid rgba(167, 243, 208, 0.45);
+      color: #a7f3d0;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+    }
+    .fs-coords {
+      font-size: 28px;
+      font-weight: 900;
+      line-height: 1.25;
+      word-break: break-word;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+    }
+    .fs-giant-btn {
+      width: 100%;
+      max-width: 460px;
+      padding: 22px 16px;
+      border-radius: 18px;
+      background: #ffffff;
+      color: #064e3b;
+      font-size: 20px;
+      font-weight: 900;
+      letter-spacing: 0.3px;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+    }
+    .fs-hint {
+      font-size: 14px;
+      font-weight: 600;
+      color: #d1fae5;
+    }
+    .fs-dismiss {
+      align-self: center;
+      padding: 10px 20px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.32);
+      background: rgba(0, 0, 0, 0.26);
+      color: #ecfdf5;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
+  <div id="fsLaunchOverlay" class="fs-launch-overlay" role="button" tabindex="0">
+    <div class="fs-center">
+      <div id="fsBadge" class="fs-badge">CÓ TỌA ĐỘ MỚI TỪ XANH SM</div>
+      <div id="fsCoords" class="fs-coords">--</div>
+      <div class="fs-giant-btn">CHẠM BẤT KỲ ĐÂU MỞ GOOGLE MAPS</div>
+      <div class="fs-hint">Vào thẳng dẫn đường Xe máy 2 bánh ngay lập tức</div>
+    </div>
+    <button id="fsDismissBtn" type="button" class="fs-dismiss">Đóng bảng chờ này</button>
+  </div>
   <div class="wrap">
     <div class="topbar">
       <div class="brand">
@@ -452,6 +540,10 @@
       var clearHistBtn   = document.getElementById('clearHistBtn');
       var ntfyTopicCode  = document.getElementById('ntfyTopicCode');
       var copyTopicBtn   = document.getElementById('copyTopicBtn');
+      var fsOverlay      = document.getElementById('fsLaunchOverlay');
+      var fsBadge        = document.getElementById('fsBadge');
+      var fsCoords       = document.getElementById('fsCoords');
+      var fsDismissBtn   = document.getElementById('fsDismissBtn');
 
       var activeTopic    = '';
       var wsConn         = null;
@@ -505,10 +597,10 @@
         connText.textContent = label;
       }
 
-      function buildTargetURI(item) {
+      function buildTargetURI(item, forAsyncAutoAttempt) {
         if (!item) return '';
         var mode = navModeSelect.value || 'auto';
-        var hasCoords = !!item.hasCoords && typeof item.lat === 'number' && typeof item.lng === 'number';
+        var hasCoords = !!item.hasCoords && typeof item.lat === 'number' && typeof item.lng === 'number' && isFinite(item.lat) && isFinite(item.lng);
         var destRaw = hasCoords
           ? (item.lat.toFixed(6) + ',' + item.lng.toFixed(6))
           : encodeURIComponent(item.label || '');
@@ -520,7 +612,14 @@
           return item.iosUri || ('comgooglemaps://?daddr=' + destRaw + '&directionsmode=driving');
         }
         if (mode === 'apple_maps') {
+          if (forAsyncAutoAttempt) return 'maps://?daddr=' + destRaw + '&dirflg=d';
           return 'http://maps.apple.com/?daddr=' + destRaw + '&dirflg=d';
+        }
+        if (forAsyncAutoAttempt) {
+          // Never navigate top-level tab away to https:// without user gesture, or map.html stream would close!
+          if (isAndroid) return item.androidUri || ('google.navigation:q=' + destRaw + '&mode=l');
+          if (isIOS) return item.iosUri || ('comgooglemaps://?daddr=' + destRaw + '&directionsmode=driving');
+          return '';
         }
         return item.gmapsUrl || ('https://www.google.com/maps/dir/?api=1&destination=' + destRaw + '&travelmode=two-wheeler');
       }
@@ -574,13 +673,62 @@
             if (audioCtx.state === 'suspended') audioCtx.resume();
           }
         } catch (_) {}
+        try {
+          if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission().catch(function () {});
+          }
+        } catch (_) {}
         requestScreenWakeLock();
         playAlertChime();
       });
 
+      function hideFullscreenLaunchPad() {
+        fsOverlay.classList.remove('visible');
+      }
+
+      function showFullscreenLaunchPad(item) {
+        if (!item) return;
+        fsBadge.textContent = 'ĐIỂM ĐẾN MỚI LÚC ' + formatTimeStr(item.ts) + ' (' + (item.source || 'XanhSM') + ')';
+        fsCoords.textContent = item.label || (item.lat + ', ' + item.lng);
+        fsOverlay.classList.add('visible');
+      }
+
+      fsOverlay.addEventListener('click', function () {
+        hideFullscreenLaunchPad();
+        if (latestItem) {
+          openMapForItem(latestItem, true);
+        }
+      });
+
+      fsDismissBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        hideFullscreenLaunchPad();
+      });
+
       document.addEventListener('visibilitychange', function () {
-        if (document.visibilityState === 'visible') {
+        if (document.visibilityState === 'hidden') {
+          // Auto-open succeeded in switching to Google Maps -> clean up overlay for next return!
+          hideFullscreenLaunchPad();
+        } else if (document.visibilityState === 'visible') {
           if (wakeLockSentinel) requestScreenWakeLock();
+          if (activeTopic && !wsConn && !sseConn) {
+            connectLiveStream();
+          }
+          pollRecentMessages(false);
+        }
+      });
+
+      window.addEventListener('online', function () {
+        if (activeTopic) {
+          wsFailCount = 0;
+          connectLiveStream();
+          pollRecentMessages(false);
+        }
+      });
+
+      window.addEventListener('pageshow', function () {
+        if (activeTopic && !wsConn && !sseConn) {
+          connectLiveStream();
           pollRecentMessages(false);
         }
       });
@@ -593,11 +741,13 @@
         return hh + ':' + mm + ':' + ss;
       }
 
-      function openMapForItem(item) {
+      function openMapForItem(item, isUserGesture) {
         if (!item) return;
-        var uri = buildTargetURI(item);
+        var uri = buildTargetURI(item, !isUserGesture);
         if (!uri) return;
-        window.location.href = uri;
+        try {
+          window.location.href = uri;
+        } catch (_) {}
       }
 
       function renderHero(item) {
@@ -641,7 +791,7 @@
           row.appendChild(main);
           row.appendChild(badge);
           row.addEventListener('click', function () {
-            openMapForItem(it);
+            openMapForItem(it, true);
           });
           historyList.appendChild(row);
         });
@@ -649,7 +799,7 @@
 
       heroCard.addEventListener('click', function () {
         if (latestItem) {
-          openMapForItem(latestItem);
+          openMapForItem(latestItem, true);
         }
       });
 
@@ -691,8 +841,22 @@
         var shouldLaunchNow = isLiveStream || ageSec <= 20;
         if (shouldLaunchNow) {
           playAlertChime();
+          showFullscreenLaunchPad(item);
+          try {
+            if (document.visibilityState !== 'visible' && 'Notification' in window && Notification.permission === 'granted') {
+              var n = new Notification('Mở Google Maps Xe Máy', {
+                body: item.label || 'Tọa độ mới từ Xanh SM',
+                tag: 'vf-map-relay'
+              });
+              n.onclick = function () {
+                try { window.focus(); } catch (_) {}
+                hideFullscreenLaunchPad();
+                openMapForItem(item, true);
+              };
+            }
+          } catch (_) {}
           if (autoOpenChk.checked) {
-            openMapForItem(item);
+            openMapForItem(item, false);
           }
         }
       }

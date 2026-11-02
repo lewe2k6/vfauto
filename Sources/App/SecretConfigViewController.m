@@ -97,7 +97,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Tinh Chỉnh Lọc Đơn v5.0.1";
+    self.title = [NSString stringWithFormat:@"Tinh Chỉnh Lọc Đơn v%@", kCurrentDaemonVersion];
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -121,6 +121,36 @@
     [self refreshStatusAndLogs];
 
     __weak typeof(self) weakSelf = self;
+    if (_cfg.driverAppBundleID.length == 0 || _cfg.driverAppExecName.length == 0) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            InstalledAppInfo *det = autoDetectDriverApp();
+            if (!det) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
+                BOOL changed = NO;
+                if (strongSelf->_cfg.driverAppBundleID.length == 0 && det.bundleID.length > 0) {
+                    strongSelf->_cfg.driverAppBundleID = det.bundleID;
+                    changed = YES;
+                }
+                if (strongSelf->_cfg.driverAppExecName.length == 0 && det.executableName.length > 0) {
+                    strongSelf->_cfg.driverAppExecName = det.executableName;
+                    changed = YES;
+                }
+                if (det.displayName.length > 0 &&
+                    (strongSelf->_cfg.driverAppDisplayName.length == 0 ||
+                     [strongSelf->_cfg.driverAppDisplayName isEqualToString:@"Tự động dò Xanh SM"])) {
+                    strongSelf->_cfg.driverAppDisplayName = det.displayName;
+                    changed = YES;
+                }
+                if (changed) {
+                    [strongSelf updateValueLabels];
+                    [strongSelf->_cfg saveToDiskAndNotify:NO];
+                }
+            });
+        });
+    }
+
     notify_register_dispatch(kNotifyStatsUpdated, &_statsNotifyToken, dispatch_get_main_queue(), ^(int token) {
         [weakSelf refreshStatusAndLogs];
     });
@@ -130,6 +160,17 @@
                                                    selector:@selector(refreshStatusAndLogs)
                                                    userInfo:nil
                                                     repeats:YES];
+}
+
+- (void)dealloc {
+    [_refreshTimer invalidate];
+    _refreshTimer = nil;
+    [_sliderSaveTimer invalidate];
+    _sliderSaveTimer = nil;
+    if (_statsNotifyToken != 0) {
+        notify_cancel(_statsNotifyToken);
+        _statsNotifyToken = 0;
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -485,7 +526,7 @@
     appBtnRow.distribution = UIStackViewDistributionFillEqually;
     appBtnRow.spacing = 8;
 
-    UIButton *pickAppBtn = [self makeStepButton:@"Chọn App Tài Xế" tag:0 action:@selector(pickDriverAppTapped)];
+    UIButton *pickAppBtn = [self makeStepButton:@"Chọn App Tài Xế" tag:0 action:@selector(pickDriverAppTapped:)];
     UIButton *testKillBtn = [self makeStepButton:@"Test Kill & Mở Lại" tag:0 action:@selector(testKillAndRelaunchTapped)];
     testKillBtn.backgroundColor = [UIColor colorWithRed:0.45 green:0.20 blue:0.15 alpha:1.0];
     [appBtnRow addArrangedSubview:pickAppBtn];
@@ -1066,23 +1107,40 @@
 
 #pragma mark - Driver App Picker & Kill/Relaunch Test
 
-- (void)pickDriverAppTapped {
-    NSArray<InstalledAppInfo *> *apps = listInstalledUserApps();
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Chọn App Tài Xế Trên Máy"
-                                                                   message:@"Chọn đúng ứng dụng Xanh SM Bác Tài để dùng cho tính năng Tự động Kill & Mở lại"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (InstalledAppInfo *app in apps) {
-        NSString *title = [NSString stringWithFormat:@"%@ (%@)", app.displayName, app.bundleID];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            self->_cfg.driverAppBundleID    = app.bundleID;
-            self->_cfg.driverAppExecName    = app.executableName;
-            self->_cfg.driverAppDisplayName = app.displayName;
-            [self updateValueLabels];
-            [self->_cfg saveToDiskAndNotify:YES];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:sheet animated:YES completion:nil];
+- (void)pickDriverAppTapped:(UIButton *)sender {
+    sender.enabled = NO;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSArray<InstalledAppInfo *> *apps = listInstalledUserApps();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sender.enabled = YES;
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.presentedViewController) return;
+
+            UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Chọn App Tài Xế Trên Máy"
+                                                                           message:@"Chọn đúng ứng dụng Xanh SM Bác Tài để dùng cho tính năng Tự động Kill & Mở lại"
+                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
+            for (InstalledAppInfo *app in apps) {
+                NSString *title = [NSString stringWithFormat:@"%@ (%@)", app.displayName, app.bundleID];
+                [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                    __strong typeof(weakSelf) innerSelf = weakSelf;
+                    if (!innerSelf) return;
+                    innerSelf->_cfg.driverAppBundleID    = app.bundleID;
+                    innerSelf->_cfg.driverAppExecName    = app.executableName;
+                    innerSelf->_cfg.driverAppDisplayName = app.displayName;
+                    [innerSelf updateValueLabels];
+                    [innerSelf->_cfg saveToDiskAndNotify:YES];
+                }]];
+            }
+            [sheet addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
+            UIPopoverPresentationController *pop = sheet.popoverPresentationController;
+            if (pop) {
+                pop.sourceView = sender ?: strongSelf.view;
+                pop.sourceRect = sender ? sender.bounds : CGRectMake(CGRectGetMidX(strongSelf.view.bounds), CGRectGetMidY(strongSelf.view.bounds), 1, 1);
+            }
+            [strongSelf presentViewController:sheet animated:YES completion:nil];
+        });
+    });
 }
 
 - (void)testKillAndRelaunchTapped {
@@ -1173,7 +1231,9 @@
     triggerHapticFeedback(NO);
     NSString *wrapped = clip;
     if ([clip rangeOfString:@"://"].location == NSNotFound) {
-        NSString *enc = [clip stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]] ?: clip;
+        NSMutableCharacterSet *cs = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+        [cs removeCharactersInString:@":/?#[]@!$&'()*+,;="];
+        NSString *enc = [clip stringByAddingPercentEncodingWithAllowedCharacters:cs] ?: clip;
         wrapped = [NSString stringWithFormat:@"comgooglemaps://?daddr=%@&directionsmode=driving", enc];
     }
     __weak typeof(self) weakSelf = self;
@@ -1189,10 +1249,19 @@
 #pragma mark - Screenshot Coordinate Picker (4 Pins)
 
 - (void)openScreenshotPicker {
+    if (![UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypePhotoLibrary]) {
+        [self showQuickAlert:@"Không Mở Được Thư Viện Ảnh"
+                     message:@"Thiết bị hiện không cho phép truy cập Thư viện ảnh."];
+        return;
+    }
     UIImagePickerController *picker = [[UIImagePickerController alloc] init];
     picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
@@ -1244,7 +1313,7 @@
     triggerHapticFeedback(NO);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         forceRestartFilterDaemon();
-        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v5.0.1!");
+        appendDaemonLog(@"[HỆ THỐNG] Đã khởi động làm mới sạch Lõi Ngầm v%@!", kCurrentDaemonVersion);
         dispatch_async(dispatch_get_main_queue(), ^{
             [self refreshStatusAndLogs];
         });
@@ -1286,13 +1355,13 @@
     }
 
     if (wkPid > 0 && _cfg.masterEnabled && !heartbeatStale) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v5.0.1 (WD:%d | WK:%d)%@%@",
-                                   wdPid, wkPid,
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● BẤT TỬ v%@ (WD:%d | WK:%d)%@%@",
+                                   kCurrentDaemonVersion, wdPid, wkPid,
                                    _cfg.smartCoolMode ? @" [MÁT-2GB]" : @"",
                                    _cfg.dryRunMode ? @" [THỬ]" : @""];
         _daemonStatusLabel.textColor = [UIColor systemGreenColor];
     } else if (_cfg.masterEnabled) {
-        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG TỰ CHỮA LÀNH LÕI NGẦM v5.0.1 (WD:%d | WK:%d)...", wdPid, wkPid];
+        _daemonStatusLabel.text = [NSString stringWithFormat:@"● ĐANG TỰ CHỮA LÀNH LÕI NGẦM v%@ (WD:%d | WK:%d)...", kCurrentDaemonVersion, wdPid, wkPid];
         _daemonStatusLabel.textColor = [UIColor systemYellowColor];
     } else {
         _daemonStatusLabel.text = @"○ LÕI NGẦM ĐANG TẮT";
