@@ -1566,9 +1566,13 @@ int spawnRoot(NSString *path, NSArray<NSString *> *args) {
         NSString *firstArg = args.firstObject;
         if ([firstArg isEqualToString:@"--daemonize"] ||
             [firstArg isEqualToString:@"--stop"] ||
-            [firstArg isEqualToString:@"--kill-pid"]) {
+            [firstArg isEqualToString:@"--kill-pid"] ||
+            [firstArg isEqualToString:@"--restore-gmaps"] ||
+            [firstArg isEqualToString:@"--sync-gmaps-scheme"]) {
+            int maxWaitTicks = ([firstArg isEqualToString:@"--restore-gmaps"] ||
+                                [firstArg isEqualToString:@"--sync-gmaps-scheme"]) ? 75 : 25;
             int wstatus = 0;
-            for (int w = 0; w < 25; w++) {
+            for (int w = 0; w < maxWaitTicks; w++) {
                 pid_t r = waitpid(pid, &wstatus, WNOHANG);
                 if (r == pid || r == -1) break;
                 usleep(20000);
@@ -2005,33 +2009,17 @@ static NSString *findExistingAppDataContainerPath(NSString *bundleID) {
     return nil;
 }
 
-static NSString *findTrollStoreRootHelperPath(void) {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    Class proxyCls = NSClassFromString(@"LSApplicationProxy");
-    if (proxyCls) {
-        @try {
-            SEL prxSel = NSSelectorFromString(@"applicationProxyForIdentifier:");
-            if ([proxyCls respondsToSelector:prxSel]) {
-                id proxy = ((id (*)(id, SEL, NSString *))objc_msgSend)(proxyCls, prxSel, @"com.opa334.TrollStore");
-                NSURL *bUrl = proxy ? [proxy valueForKey:@"bundleURL"] : nil;
-                NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
-                if (bPath.length > 0) {
-                    NSString *cand = [bPath stringByAppendingPathComponent:@"trollstorehelper"];
-                    if ([fm fileExistsAtPath:cand]) return cand;
-                }
-            }
-        } @catch (NSException *ex) {}
+static NSString *normalizeBundlePathForToken(NSString *rawPath) {
+    if (!rawPath || ![rawPath isKindOfClass:[NSString class]]) return nil;
+    NSString *s = [rawPath stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (s.length == 0 || [s isEqualToString:@"NONE"] || [s isEqualToString:@"none"]) return nil;
+    while ([s hasSuffix:@"/"] && s.length > 1) {
+        s = [s substringToIndex:s.length - 1];
     }
-
-    NSString *appsRoot = @"/var/containers/Bundle/Application";
-    NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:appsRoot error:nil];
-    for (NSString *u in uuids) {
-        NSString *cand = [[appsRoot stringByAppendingPathComponent:u] stringByAppendingPathComponent:@"TrollStore.app/trollstorehelper"];
-        if ([fm fileExistsAtPath:cand]) {
-            return cand;
-        }
+    if ([s hasPrefix:@"/private/var/"]) {
+        s = [s substringFromIndex:@"/private".length];
     }
-    return nil;
+    return s;
 }
 
 static void reloadSpringBoardHomeScreenIconsSafely(void) {
@@ -2064,7 +2052,10 @@ BOOL isGoogleMapsCurrentlyVisibleOnHomeScreen(void) {
         }
         NSURL *bUrl = [proxy valueForKey:@"bundleURL"];
         NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
-        if (bPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:bPath]) {
+        if (bPath.length > 0) {
+            if (geteuid() == 0) {
+                return [[NSFileManager defaultManager] fileExistsAtPath:bPath];
+            }
             return YES;
         }
     } @catch (NSException *ex) {}
@@ -2291,6 +2282,17 @@ static BOOL registerGoogleMapsBundleInLS(NSString *rawPath, BOOL stripURLSchemes
                     }
                 }
             }
+            NSArray *pSysGroups = pluginEnt[@"com.apple.security.system-groups"];
+            if ([pSysGroups isKindOfClass:[NSArray class]]) {
+                for (NSString *gID in pSysGroups) {
+                    if (![gID isKindOfClass:[NSString class]]) continue;
+                    NSString *gPath = fetchMCMContainerURL(mcmSysGroupCls, gID, YES);
+                    if (gPath.length > 0) {
+                        pluginGroupContainers[gID] = gPath;
+                        pluginDict[@"HasSystemGroupContainers"] = @YES;
+                    }
+                }
+            }
             if (pluginGroupContainers.count > 0) {
                 pluginDict[@"GroupContainers"] = [pluginGroupContainers copy];
             }
@@ -2299,24 +2301,6 @@ static BOOL registerGoogleMapsBundleInLS(NSString *rawPath, BOOL stripURLSchemes
         dictToRegister[@"_LSBundlePlugins"] = bundlePlugins;
 
         regOK = ((BOOL (*)(id, SEL, NSDictionary *))objc_msgSend)(workspace, regDictSel, dictToRegister);
-
-        // Fallback: If lsd also wants TrollStore's own root helper to register it, invoke trollstorehelper modify-registration
-        if (!regOK || !isGoogleMapsCurrentlyVisibleOnHomeScreen()) {
-            NSString *tsHelper = findTrollStoreRootHelperPath();
-            if (tsHelper.length > 0) {
-                NSString *bundleContainerDir = [path stringByDeletingLastPathComponent];
-                NSString *tsMarker = [bundleContainerDir stringByAppendingPathComponent:@"_TrollStore"];
-                BOOL hadMarker = [fm fileExistsAtPath:tsMarker];
-                if (!hadMarker) {
-                    [[NSData data] writeToFile:tsMarker atomically:NO];
-                }
-                spawnRoot(tsHelper, @[@"modify-registration", path, @"User"]);
-                if (!hadMarker) {
-                    unlink([tsMarker fileSystemRepresentation]);
-                }
-                regOK = isGoogleMapsCurrentlyVisibleOnHomeScreen();
-            }
-        }
     } @catch (NSException *ex) {
         regOK = NO;
     } @finally {
@@ -2344,25 +2328,38 @@ static BOOL registerGoogleMapsBundleInLS(NSString *rawPath, BOOL stripURLSchemes
 
 NSString *findLocalGoogleMapsBundlePath(void) {
     NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL isRoot = (geteuid() == 0);
 
     // 1. Check cached bundle path first (<0.05ms, survives even if Maps.app was previously unregistered from lsd)
+    // NOTE: uid=501 (PinNhietDo UI) does NOT have com.apple.private.security.storage.AppBundles,
+    // so [fm fileExistsAtPath:] on /var/containers/Bundle/Application/<UUID>/Maps.app fails with sandbox EPERM in uid=501!
+    // Therefore, uid=501 trusts the cached path written by pind (uid=0), while uid=0 verifies it on disk.
     NSString *cached = [[NSString stringWithContentsOfFile:kGmapsBundleCachePath encoding:NSUTF8StringEncoding error:nil]
                         stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (cached.length > 0 && [fm fileExistsAtPath:[cached stringByAppendingPathComponent:@"Info.plist"]]) {
-        return [[cached stringByResolvingSymlinksInPath] stringByStandardizingPath];
+    if ([cached isEqualToString:@"NONE"]) {
+        if (!isRoot) return nil;
+    } else if (cached.length > 0) {
+        if (!isRoot || [fm fileExistsAtPath:[cached stringByAppendingPathComponent:@"Info.plist"]]) {
+            return normalizeBundlePathForToken(cached);
+        }
     }
 
-    // 2. Check LSApplicationProxy if currently registered
+    // 2. Check LSApplicationProxy if currently registered in LaunchServices
     Class proxyCls = NSClassFromString(@"LSApplicationProxy");
     if (proxyCls) {
         @try {
             SEL prxSel = NSSelectorFromString(@"applicationProxyForIdentifier:");
             if ([proxyCls respondsToSelector:prxSel]) {
                 id proxy = ((id (*)(id, SEL, NSString *))objc_msgSend)(proxyCls, prxSel, @"com.google.Maps");
-                NSURL *bUrl = proxy ? [proxy valueForKey:@"bundleURL"] : nil;
+                BOOL installed = YES;
+                SEL instSel = NSSelectorFromString(@"isInstalled");
+                if (proxy && [proxy respondsToSelector:instSel]) {
+                    installed = ((BOOL (*)(id, SEL))objc_msgSend)(proxy, instSel);
+                }
+                NSURL *bUrl = (proxy && installed) ? [proxy valueForKey:@"bundleURL"] : nil;
                 NSString *bPath = [bUrl isKindOfClass:[NSURL class]] ? bUrl.path : nil;
-                if (bPath.length > 0 && [fm fileExistsAtPath:[bPath stringByAppendingPathComponent:@"Info.plist"]]) {
-                    NSString *norm = [[bPath stringByResolvingSymlinksInPath] stringByStandardizingPath];
+                if (bPath.length > 0 && (!isRoot || [fm fileExistsAtPath:[bPath stringByAppendingPathComponent:@"Info.plist"]])) {
+                    NSString *norm = normalizeBundlePathForToken(bPath);
                     writeStringUnprotectedAtomically(norm, kGmapsBundleCachePath);
                     return norm;
                 }
@@ -2370,26 +2367,44 @@ NSString *findLocalGoogleMapsBundlePath(void) {
         } @catch (NSException *ex) {}
     }
 
-    // 3. Direct filesystem scan of /var/containers/Bundle/Application/<UUID>/ (works even when Maps.app was unregistered!)
+    // 3. If running as mobile UI (uid != 0) and cache was missing, ask root pind once to scan /var/containers/Bundle/Application
+    if (!isRoot) {
+        static BOOL sAskedRootScanOnce = NO;
+        if (!sAskedRootScanOnce) {
+            sAskedRootScanOnce = YES;
+            NSString *pindBin = resolveLiveAppPindBinaryPath();
+            if (pindBin.length > 0) {
+                spawnRoot(pindBin, @[@"--sync-gmaps-scheme"]);
+                NSString *afterRoot = [[NSString stringWithContentsOfFile:kGmapsBundleCachePath encoding:NSUTF8StringEncoding error:nil]
+                                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                if (afterRoot.length > 0 && ![afterRoot isEqualToString:@"NONE"]) {
+                    return normalizeBundlePathForToken(afterRoot);
+                }
+            }
+        }
+        return nil;
+    }
+
+    // 4. Direct root (uid=0) filesystem scan of /var/containers/Bundle/Application/<UUID>/ (works even when Maps.app was unregistered!)
     NSString *appsRoot = @"/var/containers/Bundle/Application";
     NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:appsRoot error:nil];
     for (NSString *u in uuids) {
         NSString *uuidDir = [appsRoot stringByAppendingPathComponent:u];
 
-        // 3A. Fast check for Maps.app
+        // 4A. Fast check for Maps.app
         NSString *fastMaps = [uuidDir stringByAppendingPathComponent:@"Maps.app"];
         NSString *fastPlist = [fastMaps stringByAppendingPathComponent:@"Info.plist"];
         if ([fm fileExistsAtPath:fastPlist]) {
             NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:fastPlist];
             NSString *bid = [info[@"CFBundleIdentifier"] isKindOfClass:[NSString class]] ? info[@"CFBundleIdentifier"] : @"";
             if ([bid caseInsensitiveCompare:@"com.google.Maps"] == NSOrderedSame) {
-                NSString *norm = [[fastMaps stringByResolvingSymlinksInPath] stringByStandardizingPath];
+                NSString *norm = normalizeBundlePathForToken(fastMaps);
                 writeStringUnprotectedAtomically(norm, kGmapsBundleCachePath);
                 return norm;
             }
         }
 
-        // 3B. Check container metadata plist or any *.app inside UUID directory
+        // 4B. Check container metadata plist or any *.app inside UUID directory
         NSString *metaPath = [uuidDir stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
         if ([fm fileExistsAtPath:metaPath]) {
             NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:metaPath];
@@ -2398,7 +2413,7 @@ NSString *findLocalGoogleMapsBundlePath(void) {
                 NSArray<NSString *> *subItems = [fm contentsOfDirectoryAtPath:uuidDir error:nil];
                 for (NSString *sub in subItems) {
                     if ([sub hasSuffix:@".app"]) {
-                        NSString *foundApp = [[uuidDir stringByAppendingPathComponent:sub] stringByResolvingSymlinksInPath].stringByStandardizingPath;
+                        NSString *foundApp = normalizeBundlePathForToken([uuidDir stringByAppendingPathComponent:sub]);
                         writeStringUnprotectedAtomically(foundApp, kGmapsBundleCachePath);
                         return foundApp;
                     }
@@ -2406,6 +2421,7 @@ NSString *findLocalGoogleMapsBundlePath(void) {
             }
         }
     }
+    writeStringUnprotectedAtomically(@"NONE", kGmapsBundleCachePath);
     return nil;
 }
 
@@ -2430,7 +2446,7 @@ BOOL forceRestoreGoogleMapsIconNow(void) {
     NSString *pindBin = resolveLiveAppPindBinaryPath();
     if (geteuid() != 0 && pindBin.length > 0) {
         spawnRoot(pindBin, @[@"--restore-gmaps"]);
-        return isGoogleMapsCurrentlyVisibleOnHomeScreen();
+        return (isGoogleMapsCurrentlyVisibleOnHomeScreen() || findLocalGoogleMapsBundlePath().length > 0);
     }
 
     NSString *gmapsPath = findLocalGoogleMapsBundlePath();
@@ -2444,9 +2460,9 @@ BOOL forceRestoreGoogleMapsIconNow(void) {
     // Register ONLY Maps.app (NEVER touch PinNhietDo.app!) so Google Maps icon is 100% visible on the iPhone 8 Home Screen!
     BOOL ok = registerGoogleMapsBundleInLS(gmapsPath, shouldIntercept);
 
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.0.8|intercept=%d|gmaps=%@",
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.0.9|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
-                                   gmapsPath ?: @"none"];
+                                   normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     writeStringUnprotectedAtomically(desiredStateToken, kGmapsSyncStatePath);
     reloadSpringBoardHomeScreenIconsSafely();
     return ok;
@@ -2532,10 +2548,10 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
         gmapsIconMissing = YES;
     }
 
-    // Version-stamped state token (without ourAppPath so uid=501 and uid=0 always match!)
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.0.8|intercept=%d|gmaps=%@",
+    // Version-stamped state token (normalized so uid=501 and uid=0 always match!)
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.0.9|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
-                                   gmapsPath ?: @"none"];
+                                   normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     NSString *savedStateToken = [[NSString stringWithContentsOfFile:kGmapsSyncStatePath encoding:NSUTF8StringEncoding error:nil]
                                  stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!gmapsIconMissing && savedStateToken.length > 0 && [savedStateToken isEqualToString:desiredStateToken]) {
@@ -2551,9 +2567,9 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     // Re-check gmapsPath now that we are running as root (uid=0)
     if (!gmapsPath || gmapsPath.length == 0) {
         gmapsPath = findLocalGoogleMapsBundlePath();
-        desiredStateToken = [NSString stringWithFormat:@"ver=5.0.8|intercept=%d|gmaps=%@",
+        desiredStateToken = [NSString stringWithFormat:@"ver=5.0.9|intercept=%d|gmaps=%@",
                              shouldIntercept ? 1 : 0,
-                             gmapsPath ?: @"none"];
+                             normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     }
 
     // STRICT RULE: ONLY register Maps.app (com.google.Maps) — NEVER touch PinNhietDo.app!
@@ -2570,10 +2586,8 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
 BOOL forwardNavigationURLToLocalGoogleMaps(NSString *rawURLString) {
     if (!rawURLString || rawURLString.length == 0) return NO;
 
-    NSString *gmapsPath = findLocalGoogleMapsBundlePath();
-    if (gmapsPath.length > 0) {
-        registerGoogleMapsBundleInLS(gmapsPath, NO);
-        writeStringUnprotectedAtomically(@"passthrough-manual", kGmapsSyncStatePath);
+    if (!isGoogleMapsCurrentlyVisibleOnHomeScreen()) {
+        forceRestoreGoogleMapsIconNow();
     }
 
     NSString *normalizedStr = [rawURLString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
