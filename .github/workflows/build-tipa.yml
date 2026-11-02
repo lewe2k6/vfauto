@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.0.3-ts
-          name: "Pin & Nhiệt Độ v5.0.3 — Tương Thích GreenSM 3.18.0 (vn.gsm.md) + Giữ Google Maps Máy 8 + Quét QR Web"
-          body: "Bản v5.0.3 nâng cấp: (1) Tương thích chuẩn GreenSMDriver 3.18.0 (CFBundleIdentifier vn.gsm.md, Tài xế Green SM, tự ép chế độ mở bản đồ ngoài .externalApp thay vì .gsmMaps); (2) Giữ nguyên Google Maps trên iPhone 8 — khi BẬT công tắc sẽ tự động bắt comgooglemaps:// bắn sang máy thứ 2 và ngủ 0% RAM, khi TẮT công tắc sẽ trả quyền comgooglemaps:// và chuyển tiếp trực tiếp sang Google Maps ngay trên iPhone 8; (3) Thêm nút Chụp ảnh / Chọn ảnh / Mở Camera quét mã QR kênh kết nối trực tiếp trên trang map.html."
+          tag_name: v5.0.4-ts
+          name: "Pin & Nhiệt Độ v5.0.4 — Sửa Triệt Để Tự Bật Lại App Tài Xế Green SM Sau Khi Bắn Map"
+          body: "Bản v5.0.4 khắc phục triệt để lỗi đứng lại ở màn hình Pin & Nhiệt Độ sau khi ấn Điều hướng trên Green SM Driver (vn.gsm.md): kiểm tra kép trạng thái Foreground của cả hai app, ưu tiên lấy chính xác Bundle ID gốc vừa gọi URL (vn.gsm.md), ngắt xung đột LaunchServices trong applicationDidBecomeActive:, và phối hợp cả luồng UI lẫn tiến trình root pind --return-to-app để tự động bật ngược về màn hình cuốc xe Green SM 100%."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

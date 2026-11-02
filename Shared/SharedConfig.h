@@ -5,7 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 #define kAppBundleID            @"com.vn.utility.batterycheck"
-#define kCurrentDaemonVersion   @"5.0.3"
+#define kCurrentDaemonVersion   @"5.0.4"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"
@@ -158,6 +158,9 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config);
 BOOL forwardNavigationURLToLocalGoogleMaps(NSString *rawURLString);
 void syncGreenSMExternalNavigationPreferenceIfNeeded(void);
 BOOL bundleIDMatchesDriverApp(NSString *bid, FilterConfig *config);
+BOOL isDriverAppTrulyFrontmostAndOursBackgrounded(NSString *targetBid);
+NSString *resolveEffectiveDriverBundleID(NSString *configuredBid, NSString *callerSourceTag);
+void returnToDriverAppReliably(NSString *configuredBid, NSString *callerSourceTag);
 BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName);
 BOOL launchAppByBundleID(NSString *bundleID);
 

@@ -419,25 +419,22 @@ NSString *buildMapRelayViewerURLString(NSString *topic) {
 
     #undef LOAD_FINITE_DBL
 
-    if (geteuid() != 0 && ![NSThread isMainThread] && (cfg.driverAppBundleID.length == 0 || cfg.driverAppExecName.length == 0)) {
-        InstalledAppInfo *matched = nil;
-        if (cfg.driverAppBundleID.length > 0) {
-            for (InstalledAppInfo *app in listInstalledUserApps()) {
-                if ([app.bundleID isEqualToString:cfg.driverAppBundleID]) {
-                    matched = app;
-                    break;
-                }
-            }
-        }
-        if (!matched) {
-            matched = autoDetectDriverApp();
-        }
+    if (cfg.driverAppBundleID.length == 0 || cfg.driverAppExecName.length == 0) {
+        InstalledAppInfo *matched = autoDetectDriverApp();
         if (matched) {
             if (cfg.driverAppBundleID.length == 0)    cfg.driverAppBundleID    = matched.bundleID;
             if (cfg.driverAppExecName.length == 0)    cfg.driverAppExecName    = matched.executableName;
             if (cfg.driverAppDisplayName.length == 0 || [cfg.driverAppDisplayName isEqualToString:@"Tự động dò Xanh SM"]) {
                 cfg.driverAppDisplayName = matched.displayName;
             }
+        }
+    } else if (![cfg.driverAppBundleID isEqualToString:@"vn.gsm.md"]) {
+        // Auto-migrate stale legacy bundle ID (e.g. com.gsm.driver.xanhsm / vn.gsm.driver) when GreenSMDriver 3.18.0 (vn.gsm.md) is installed
+        InstalledAppInfo *detected = autoDetectDriverApp();
+        if (detected && [detected.bundleID isEqualToString:@"vn.gsm.md"]) {
+            cfg.driverAppBundleID    = detected.bundleID;
+            cfg.driverAppExecName    = detected.executableName;
+            cfg.driverAppDisplayName = detected.displayName;
         }
     }
 
@@ -1315,6 +1312,26 @@ static BOOL isAppCurrentlyForeground(NSString *bundleID) {
     return fg;
 }
 
+BOOL isDriverAppTrulyFrontmostAndOursBackgrounded(NSString *targetBid) {
+    if (!targetBid || targetBid.length == 0) return NO;
+    Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
+    if (!bksMonCls) return NO;
+    BOOL ok = NO;
+    @try {
+        id mon = [[bksMonCls alloc] init];
+        SEL stSel = NSSelectorFromString(@"applicationStateForApplication:");
+        if (mon && [mon respondsToSelector:stSel]) {
+            unsigned int targetSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(mon, stSel, targetBid);
+            unsigned int ourSt    = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(mon, stSel, kAppBundleID);
+            // During SpringBoard's 450ms openURL transition from Driver -> PinNhietDo, BOTH apps have bit 8 set.
+            // Only consider the bounce-back complete when targetBid is Foreground (bit 8) AND PinNhietDo is NOT Foreground!
+            ok = (((targetSt & 8U) != 0) && ((ourSt & 8U) == 0));
+        }
+        invalidateMonitorSafely(mon);
+    } @catch (NSException *ex) {}
+    return ok;
+}
+
 BOOL launchAppByBundleID(NSString *bundleID) {
     if (!bundleID || bundleID.length == 0) {
         InstalledAppInfo *det = autoDetectDriverApp();
@@ -1325,7 +1342,47 @@ BOOL launchAppByBundleID(NSString *bundleID) {
     resetFrontmostAppMonitors();
     BOOL invokedAny = NO;
 
-    // Layer 1: LSApplicationWorkspace openApplicationWithBundleID:
+    // Layer 1: FrontBoardServices FBSOpenApplicationService with explicit foreground activation options
+    void *fbs = dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
+    Class fbsOpenCls = NSClassFromString(@"FBSOpenApplicationService");
+    Class fbsOptCls  = NSClassFromString(@"FBSOpenApplicationOptions");
+    if (fbsOpenCls) {
+        @try {
+            SEL epSel   = NSSelectorFromString(@"serviceWithDefaultShellEndpoint");
+            SEL openSel = NSSelectorFromString(@"openApplication:withOptions:completion:");
+            SEL optSel  = NSSelectorFromString(@"optionsWithDictionary:");
+            if ([fbsOpenCls respondsToSelector:epSel]) {
+                id openSvc = ((id (*)(id, SEL))objc_msgSend)(fbsOpenCls, epSel);
+                if (openSvc && [openSvc respondsToSelector:openSel]) {
+                    NSMutableDictionary *optDict = [NSMutableDictionary dictionary];
+                    optDict[@"__ActivateSuspended"]  = @NO;
+                    optDict[@"__UnlockDevice"]       = @YES;
+                    optDict[@"__PromptUnlockDevice"] = @YES;
+                    if (fbs) {
+                        NSString * const *kSusp = (NSString * const *)dlsym(fbs, "FBSOpenApplicationOptionKeyActivateSuspended");
+                        if (kSusp && *kSusp) optDict[*kSusp] = @NO;
+                        NSString * const *kUnlk = (NSString * const *)dlsym(fbs, "FBSOpenApplicationOptionKeyUnlockDevice");
+                        if (kUnlk && *kUnlk) optDict[*kUnlk] = @YES;
+                        NSString * const *kPrmp = (NSString * const *)dlsym(fbs, "FBSOpenApplicationOptionKeyPromptUnlockDevice");
+                        if (kPrmp && *kPrmp) optDict[*kPrmp] = @YES;
+                    }
+                    id fbsOpts = (fbsOptCls && [fbsOptCls respondsToSelector:optSel])
+                        ? ((id (*)(id, SEL, NSDictionary *))objc_msgSend)(fbsOptCls, optSel, optDict)
+                        : nil;
+                    ((void (*)(id, SEL, NSString *, id, id))objc_msgSend)(openSvc, openSel, bundleID, fbsOpts, nil);
+                    invokedAny = YES;
+                }
+            }
+        } @catch (NSException *ex) {}
+    }
+
+    usleep(95000);
+    if (isDriverAppTrulyFrontmostAndOursBackgrounded(bundleID)) {
+        resetFrontmostAppMonitors();
+        return YES;
+    }
+
+    // Layer 2: LSApplicationWorkspace openApplicationWithBundleID:
     Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
     if (wsCls) {
         @try {
@@ -1340,31 +1397,8 @@ BOOL launchAppByBundleID(NSString *bundleID) {
         } @catch (NSException *ex) {}
     }
 
-    usleep(220000);
-    if (isAppCurrentlyForeground(bundleID)) {
-        resetFrontmostAppMonitors();
-        return YES;
-    }
-
-    // Layer 2: FrontBoardServices FBSOpenApplicationService (works reliably from headless background daemons on iOS 16)
-    dlopen("/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices", RTLD_LAZY);
-    Class fbsOpenCls = NSClassFromString(@"FBSOpenApplicationService");
-    if (fbsOpenCls) {
-        @try {
-            SEL epSel   = NSSelectorFromString(@"serviceWithDefaultShellEndpoint");
-            SEL openSel = NSSelectorFromString(@"openApplication:withOptions:completion:");
-            if ([fbsOpenCls respondsToSelector:epSel]) {
-                id openSvc = ((id (*)(id, SEL))objc_msgSend)(fbsOpenCls, epSel);
-                if (openSvc && [openSvc respondsToSelector:openSel]) {
-                    ((void (*)(id, SEL, NSString *, id, id))objc_msgSend)(openSvc, openSel, bundleID, nil, nil);
-                    invokedAny = YES;
-                }
-            }
-        } @catch (NSException *ex) {}
-    }
-
-    usleep(180000);
-    if (isAppCurrentlyForeground(bundleID)) {
+    usleep(95000);
+    if (isDriverAppTrulyFrontmostAndOursBackgrounded(bundleID)) {
         resetFrontmostAppMonitors();
         return YES;
     }
@@ -1381,7 +1415,7 @@ BOOL launchAppByBundleID(NSString *bundleID) {
     }
 
     resetFrontmostAppMonitors();
-    return invokedAny || isAppCurrentlyForeground(bundleID);
+    return invokedAny || isDriverAppTrulyFrontmostAndOursBackgrounded(bundleID);
 }
 
 #pragma mark - TrollStore Root Spawner & Dual-Process Daemon Control
@@ -1445,6 +1479,12 @@ int spawnRoot(NSString *path, NSArray<NSString *> *args) {
                 if (r == pid || r == -1) break;
                 usleep(20000);
             }
+        } else {
+            pid_t childToReap = pid;
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                int wstatus = 0;
+                waitpid(childToReap, &wstatus, 0);
+            });
         }
     }
 
@@ -2477,26 +2517,97 @@ static BOOL looksLikeThirdPartyBundleID(NSString *candidate) {
     return YES;
 }
 
-static void returnToDriverAppReliably(NSString *configuredBid, NSString *callerSourceTag) {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        NSString *targetBid = configuredBid;
-        if (targetBid.length == 0 && looksLikeThirdPartyBundleID(callerSourceTag)) {
-            targetBid = callerSourceTag;
-        }
-        if (targetBid.length == 0) {
-            InstalledAppInfo *det = autoDetectDriverApp();
-            targetBid = det.bundleID;
-        }
-        if (targetBid.length == 0) return;
+NSString *resolveEffectiveDriverBundleID(NSString *configuredBid, NSString *callerSourceTag) {
+    // Priority 1: Exact calling application bundle ID provided by iOS UIApplicationOpenURLOptionsSourceApplicationKey (e.g. vn.gsm.md)
+    if (looksLikeThirdPartyBundleID(callerSourceTag)) {
+        return callerSourceTag;
+    }
 
-        // Wait 120ms for SpringBoard's incoming openURL scene transition to settle, then retry up to 3x if busy
-        const useconds_t delaysUs[3] = { 120000, 320000, 450000 };
-        for (int i = 0; i < 3; i++) {
+    // Priority 2: Auto-detected installed Green SM Driver (vn.gsm.md in v3.18.0)
+    InstalledAppInfo *det = autoDetectDriverApp();
+    if (configuredBid.length > 0) {
+        if (!det || [det.bundleID isEqualToString:configuredBid]) {
+            return configuredBid;
+        }
+        // Check if configuredBid is actually installed on device
+        for (InstalledAppInfo *app in listInstalledUserApps()) {
+            if ([app.bundleID isEqualToString:configuredBid]) {
+                return configuredBid;
+            }
+        }
+    }
+
+    if (det && det.bundleID.length > 0) {
+        return det.bundleID;
+    }
+    if (configuredBid.length > 0) {
+        return configuredBid;
+    }
+    return @"vn.gsm.md";
+}
+
+void returnToDriverAppReliably(NSString *configuredBid, NSString *callerSourceTag) {
+    static NSString *sActiveTargetBid      = nil;
+    static BOOL      sLoopRunning          = NO;
+    static double    sLastRootHelperEpoch  = 0.0;
+
+    NSString *resolvedBid = resolveEffectiveDriverBundleID(configuredBid, callerSourceTag);
+    if (resolvedBid.length == 0) return;
+
+    double now = [[NSDate date] timeIntervalSince1970];
+    BOOL shouldSpawnRootHelper = NO;
+
+    @synchronized ([FilterConfig class]) {
+        if (looksLikeThirdPartyBundleID(callerSourceTag) || sActiveTargetBid.length == 0) {
+            sActiveTargetBid = [resolvedBid copy];
+        }
+        if (geteuid() != 0 && fabs(now - sLastRootHelperEpoch) > 0.85) {
+            sLastRootHelperEpoch = now;
+            shouldSpawnRootHelper = YES;
+        }
+        if (sLoopRunning) {
+            if (shouldSpawnRootHelper) {
+                NSString *pindBin = resolveLiveAppPindBinaryPath();
+                if (pindBin.length > 0) {
+                    spawnRoot(pindBin, @[@"--return-to-app", sActiveTargetBid]);
+                }
+            }
+            return;
+        }
+        sLoopRunning = YES;
+    }
+
+    if (shouldSpawnRootHelper) {
+        NSString *pindBin = resolveLiveAppPindBinaryPath();
+        if (pindBin.length > 0) {
+            spawnRoot(pindBin, @[@"--return-to-app", resolvedBid]);
+        }
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        // SpringBoard's incoming openURL transition (vn.gsm.md -> PinNhietDo) takes ~400-550ms on iPhone 8.
+        // Retry across 0.16s .. 2.60s and only stop once vn.gsm.md is Foreground AND PinNhietDo is Backgrounded!
+        const useconds_t delaysUs[7] = { 160000, 260000, 320000, 380000, 420000, 480000, 550000 };
+        for (int i = 0; i < 7; i++) {
             usleep(delaysUs[i]);
             if (isDeviceScreenLocked()) break;
-            if (isAppCurrentlyForeground(targetBid)) break;
+
+            NSString *targetBid = nil;
+            @synchronized ([FilterConfig class]) {
+                targetBid = sActiveTargetBid ?: resolvedBid;
+            }
+            if (targetBid.length == 0) break;
+
+            if (i >= 1 && isDriverAppTrulyFrontmostAndOursBackgrounded(targetBid)) {
+                break;
+            }
             launchAppByBundleID(targetBid);
-            if (isAppCurrentlyForeground(targetBid)) break;
+            if (isDriverAppTrulyFrontmostAndOursBackgrounded(targetBid)) {
+                break;
+            }
+        }
+        @synchronized ([FilterConfig class]) {
+            sLoopRunning = NO;
         }
     });
 }
@@ -2514,8 +2625,14 @@ BOOL enqueueAndTriggerMapRelayFromURLString(NSString *rawInput,
     }
     double now = [[NSDate date] timeIntervalSince1970];
     if (allowReturnToDriver && sLastRawURL && [sLastRawURL isEqualToString:rawInput] && fabs(now - sLastRawEpoch) < 1.2) {
+        if (looksLikeThirdPartyBundleID(sourceTag)) {
+            FilterConfig *dupCfg = [FilterConfig loadFromDisk];
+            if (dupCfg.mapRelayReturnToDriver) {
+                returnToDriverAppReliably(dupCfg.driverAppBundleID, sourceTag);
+            }
+        }
         if (completion) completion(YES, @"Deduplicated");
-        return YES; // Deduplicate double launch callback from iOS UIKit
+        return YES; // Deduplicate double launch callback from iOS UIKit while preserving real sourceApplication bundle ID
     }
     if (allowReturnToDriver) {
         sLastRawURL   = [rawInput copy];

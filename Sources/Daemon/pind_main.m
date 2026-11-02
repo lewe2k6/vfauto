@@ -182,6 +182,30 @@ static int runSyncGmapsSchemeMain(void) {
     return 0;
 }
 
+static int runReturnToAppMain(const char *rawBid) {
+    @autoreleasepool {
+        ignoreBenignDaemonSignals();
+        NSString *argBid = (rawBid && rawBid[0] != '\0') ? [NSString stringWithUTF8String:rawBid] : nil;
+        FilterConfig *cfg = [FilterConfig loadFromDisk];
+        NSString *targetBid = resolveEffectiveDriverBundleID(cfg.driverAppBundleID, argBid);
+        if (targetBid.length == 0) return 1;
+
+        const useconds_t delaysUs[6] = { 240000, 320000, 380000, 450000, 520000, 600000 };
+        for (int i = 0; i < 6; i++) {
+            usleep(delaysUs[i]);
+            if (isDeviceScreenLocked()) break;
+            if (i >= 1 && isDriverAppTrulyFrontmostAndOursBackgrounded(targetBid)) {
+                break;
+            }
+            launchAppByBundleID(targetBid);
+            if (isDriverAppTrulyFrontmostAndOursBackgrounded(targetBid)) {
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
 static int runKillPidMain(pid_t targetPid) {
     if (targetPid <= 50 || targetPid == getpid()) return 1;
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)targetPid };
@@ -1759,6 +1783,9 @@ int main(int argc, char *argv[]) {
     }
     if (argc >= 2 && strcmp(argv[1], "--sync-gmaps-scheme") == 0) {
         return runSyncGmapsSchemeMain();
+    }
+    if (argc >= 3 && strcmp(argv[1], "--return-to-app") == 0) {
+        return runReturnToAppMain(argv[2]);
     }
     if (argc >= 3 && strcmp(argv[1], "--kill-pid") == 0) {
         return runKillPidMain((pid_t)atoi(argv[2]));
