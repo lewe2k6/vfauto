@@ -2286,7 +2286,7 @@ static BOOL registerGoogleMapsBundleInLS(NSString *rawPath, BOOL stripURLSchemes
             if ([pSysGroups isKindOfClass:[NSArray class]]) {
                 for (NSString *gID in pSysGroups) {
                     if (![gID isKindOfClass:[NSString class]]) continue;
-                    NSString *gPath = fetchMCMContainerURL(mcmSysGroupCls, gID, YES);
+                    NSString *gPath = fetchMCMContainerURL(mcmSysGrpCls, gID, YES);
                     if (gPath.length > 0) {
                         pluginGroupContainers[gID] = gPath;
                         pluginDict[@"HasSystemGroupContainers"] = @YES;
