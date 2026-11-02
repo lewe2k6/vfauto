@@ -543,9 +543,13 @@
     _lblGmapsStatus.numberOfLines = 0;
     [sec3 addArrangedSubview:_lblGmapsStatus];
 
+    UIButton *restoreGmapsBtn = [self makeStepButton:@"Khôi Phục Icon Google Maps Lên Màn Hình" tag:0 action:@selector(restoreGoogleMapsIconTapped:)];
+    restoreGmapsBtn.backgroundColor = [UIColor colorWithRed:0.12 green:0.56 blue:0.32 alpha:1.0];
+    [sec3 addArrangedSubview:restoreGmapsBtn];
+
     _swMapRelay = [self addSwitchRowTo:sec3
                                  title:@"Bắt Nút 'Điều Hướng' -> Bắn Sang Máy Kia"
-                              subtitle:@"Gỡ Google Maps trên iPhone 8: Bấm 'Điều hướng' trong Xanh SM là tọa độ vệ tinh bắn thẳng sang máy thứ 2"
+                              subtitle:@"Giữ nguyên icon Google Maps trên iPhone 8: Bấm 'Điều hướng' trong Xanh SM là tọa độ bắn thẳng sang máy thứ 2"
                                 action:@selector(generalControlChanged)];
 
     _swMapReturn = [self addSwitchRowTo:sec3
@@ -1205,6 +1209,33 @@
     [self presentViewController:ac animated:YES completion:nil];
 }
 
+- (void)restoreGoogleMapsIconTapped:(UIButton *)sender {
+    sender.enabled = NO;
+    triggerHapticFeedback(NO);
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        BOOL ok = forceRestoreGoogleMapsIconNow();
+        NSString *gmapsPath = findLocalGoogleMapsBundlePath();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sender.enabled = YES;
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->_lastGmapsCheckEpoch = 0.0;
+            [strongSelf refreshStatusAndLogs];
+            if (gmapsPath.length > 0) {
+                triggerHapticFeedback(YES);
+                [strongSelf showQuickAlert:@"Đã Khôi Phục Icon Google Maps!"
+                                   message:[NSString stringWithFormat:@"Đã đăng ký lại nguyên vẹn Google Maps (%@) lên màn hình chính iPhone 8 (trạng thái: %@).\nTừ bản v5.0.7 trở đi, icon Google Maps sẽ luôn hiển thị 100%% trên màn hình chính mà không bao giờ bị ẩn nữa!",
+                                            [gmapsPath lastPathComponent],
+                                            ok ? @"Thành công" : @"Đã làm mới LaunchServices"]];
+            } else {
+                [strongSelf showQuickAlert:@"Không Tìm Thấy Bộ Cài Google Maps"
+                                   message:@"Không tìm thấy thư mục Maps.app trong /var/containers/Bundle/Application. Nếu bạn đã xóa hẳn Google Maps trước đó, hãy tải lại từ App Store."];
+            }
+        });
+    });
+}
+
 - (void)copyMapViewerLinkTapped {
     NSString *url = buildMapRelayViewerURLString(_cfg.mapRelayTopic);
     [UIPasteboard generalPasteboard].string = url;
@@ -1504,14 +1535,14 @@
                 BOOL relayActive = (strongSelf->_cfg.masterEnabled && strongSelf->_cfg.mapRelayEnabled);
                 if (relayActive) {
                     if (installed) {
-                        strongSelf->_lblGmapsStatus.text = @"CHẾ ĐỘ BẮN MAP SANG MÁY 2 ĐANG BẬT:\nApp Google Maps trên chiếc iPhone 8 này được giữ nguyên ở chế độ ngủ 0% RAM. Bấm 'Điều hướng' trong Green SM (vn.gsm.md) sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!\n(Khi muốn dùng lại Google Maps trên máy này, chỉ cần TẮT công tắc Bắn Map hoặc TẮT Tổng Công Tắc)";
+                        strongSelf->_lblGmapsStatus.text = @"CHẾ ĐỘ BẮN MAP SANG MÁY 2 ĐANG BẬT:\nIcon Google Maps vẫn hiển thị 100% ngoài màn hình chính iPhone 8 để mở tay bất cứ lúc nào. Khi bấm 'Điều hướng' trong Green SM (vn.gsm.md), tọa độ sẽ bắn thẳng sang máy thứ 2 trong 0.2s!";
                     } else {
                         strongSelf->_lblGmapsStatus.text = @"CHẾ ĐỘ BẮN MAP SANG MÁY 2 ĐANG BẬT:\nBấm 'Điều hướng' trong Green SM (vn.gsm.md) sẽ bắn thẳng tọa độ sang máy thứ 2 trong 0.2s!";
                     }
                     strongSelf->_lblGmapsStatus.textColor = [UIColor systemGreenColor];
                 } else {
                     if (installed) {
-                        strongSelf->_lblGmapsStatus.text = @"ĐANG DÙNG GOOGLE MAPS TRỰC TIẾP TRÊN IPHONE 8:\nVì công tắc Bắn Map (hoặc Tổng Công Tắc) đang TẮT, bấm 'Điều hướng' trong Green SM sẽ mở thẳng Google Maps ngay trên chiếc iPhone 8 này như bình thường!";
+                        strongSelf->_lblGmapsStatus.text = @"ĐANG DÙNG GOOGLE MAPS TRỰC TIẾP TRÊN IPHONE 8:\nIcon Google Maps hiển thị bình thường ngoài màn hình chính & bấm 'Điều hướng' trong Green SM sẽ mở thẳng Google Maps ngay trên chiếc iPhone 8 này!";
                         strongSelf->_lblGmapsStatus.textColor = [UIColor colorWithRed:0.35 green:0.88 blue:1.0 alpha:1.0];
                     } else {
                         strongSelf->_lblGmapsStatus.text = @"Đang TẮT Bắn Map (Máy này hiện chưa cài app Google Maps).";

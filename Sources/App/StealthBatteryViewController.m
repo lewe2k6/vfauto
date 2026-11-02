@@ -24,6 +24,7 @@
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         upgradeSharedFilesProtectionNone();
         FilterConfig *cfg = [FilterConfig loadFromDisk];
+        syncGoogleMapsSchemeInterceptionForConfig(cfg);
         if (cfg.masterEnabled || readMasterEnabledSafely(NO)) {
             startFilterDaemonIfNeeded();
         }

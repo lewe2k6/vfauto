@@ -100,6 +100,7 @@ static void ensureSharedFilesPermissions(void) {
         kMapRelayQueuePath,
         kGmapsBundleCachePath,
         kGmapsSyncStatePath,
+        kGmapsInfoBackupPath,
         kDaemonLogPath,
         kDaemonPidPath,
         kWatchdogPidPath
@@ -1794,6 +1795,13 @@ int main(int argc, char *argv[]) {
     }
     if (argc >= 2 && strcmp(argv[1], "--sync-gmaps-scheme") == 0) {
         return runSyncGmapsSchemeMain();
+    }
+    if (argc >= 2 && strcmp(argv[1], "--restore-gmaps") == 0) {
+        @autoreleasepool {
+            ensureSharedFilesPermissions();
+            forceRestoreGoogleMapsIconNow();
+        }
+        return 0;
     }
     if (argc >= 3 && strcmp(argv[1], "--return-to-app") == 0) {
         return runReturnToAppMain(argv[2]);

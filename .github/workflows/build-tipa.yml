@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.0.6-ts
-          name: "Pin & Nhiệt Độ v5.0.6 — Tích Hợp Bark (Nổ Thông Báo Mở Google Maps 0.2s Trên iPhone Nhận Map)"
-          body: "Bản v5.0.6 tích hợp Bark (api.day.app Apple APNs trực tiếp + vượt rào DNS 1.1.1.1/IP 43.155.109.24) song song cùng ntfy.sh: (1) Khi dùng iPhone làm máy nhận Map thứ 2, thông báo Bark nổ tức thì trong 0.2 giây (nhanh gấp 20 lần ntfy trên iOS); (2) Chạm thông báo Bark trên iPhone 2 nhảy thẳng vào app Google Maps dẫn đường (comgooglemaps://) không qua Safari; (3) Hỗ trợ đồng bộ Key Bark 1 chạm từ trang map.html trên iPhone 2 sang iPhone 8 không cần gõ tay."
+          tag_name: v5.0.7-ts
+          name: "Pin & Nhiệt Độ v5.0.7 — Khôi Phục Icon Google Maps Lên Màn Hình iPhone 8 & Giữ Icon 100% Khi Bắn Map"
+          body: "Bản v5.0.7 sửa triệt để lỗi mất icon Google Maps trên màn hình chính iPhone 8: (1) Tự động khôi phục lại icon Google Maps đã bị ẩn ở các bản cũ ngay khi mở app (dùng registerApplicationDictionary chuẩn uicache TrollStore + SBReloadIconForIdentifier); (2) Không bao giờ gọi unregisterApplication làm ẩn icon Google Maps nữa — giữ nguyên icon Google Maps trên màn hình chính iPhone 8 24/7 kể cả khi đang bật Bắn Map sang máy thứ 2; (3) Thêm nút 1 chạm 'Khôi Phục Icon Google Maps Lên Màn Hình' tại mục số 3."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

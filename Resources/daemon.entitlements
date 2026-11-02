@@ -76,8 +76,20 @@
 	<true/>
 	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
 	<true/>
-	<key>com.apple.private.mobileinstall.allowedSPI</key>
+	<key>com.apple.private.MobileInstallationHelperService.InstallDaemonOpsEnabled</key>
 	<true/>
+	<key>com.apple.private.MobileInstallationHelperService.allowed</key>
+	<true/>
+	<key>com.apple.private.uninstall.deletion</key>
+	<true/>
+	<key>com.apple.private.mobileinstall.allowedSPI</key>
+	<array>
+		<string>InstallForLaunchServices</string>
+		<string>Install</string>
+		<string>UninstallForLaunchServices</string>
+		<string>Uninstall</string>
+		<string>UpdatePlaceholderMetadata</string>
+	</array>
 	<key>com.apple.private.MobileContainerManager.allowed</key>
 	<true/>
 	<key>com.apple.private.hid.client.event-dispatch</key>
