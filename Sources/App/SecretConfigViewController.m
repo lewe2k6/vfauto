@@ -152,6 +152,14 @@
         });
     }
 
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf) {
+            syncGoogleMapsSchemeInterceptionForConfig(strongSelf->_cfg);
+        }
+    });
+
     notify_register_dispatch(kNotifyStatsUpdated, &_statsNotifyToken, dispatch_get_main_queue(), ^(int token) {
         [weakSelf refreshStatusAndLogs];
     });

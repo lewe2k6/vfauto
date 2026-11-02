@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.0.7-ts
-          name: "Pin & Nhiệt Độ v5.0.7 — Khôi Phục Icon Google Maps Lên Màn Hình iPhone 8 & Giữ Icon 100% Khi Bắn Map"
-          body: "Bản v5.0.7 sửa triệt để lỗi mất icon Google Maps trên màn hình chính iPhone 8: (1) Tự động khôi phục lại icon Google Maps đã bị ẩn ở các bản cũ ngay khi mở app (dùng registerApplicationDictionary chuẩn uicache TrollStore + SBReloadIconForIdentifier); (2) Không bao giờ gọi unregisterApplication làm ẩn icon Google Maps nữa — giữ nguyên icon Google Maps trên màn hình chính iPhone 8 24/7 kể cả khi đang bật Bắn Map sang máy thứ 2; (3) Thêm nút 1 chạm 'Khôi Phục Icon Google Maps Lên Màn Hình' tại mục số 3."
+          tag_name: v5.0.8-ts
+          name: "Pin & Nhiệt Độ v5.0.8 — Sửa Triệt Để Văng App Khi Mở & Khôi Phục Icon Google Maps"
+          body: "Bản v5.0.8 sửa triệt để lỗi văng app khi mở của v5.0.7: (1) Tuyệt đối không bao giờ tự gọi registerApplicationDictionary đè lên chính PinNhietDo.app đang chạy và xóa bỏ lệnh SBReloadIconForIdentifier sai chữ ký C gây crash; (2) Giữ nguyên 100% app.entitlements chuẩn v5.0.6; (3) Chỉ tác động riêng lên com.google.Maps (Maps.app) để khôi phục và giữ icon Google Maps 100% trên màn hình chính iPhone 8."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

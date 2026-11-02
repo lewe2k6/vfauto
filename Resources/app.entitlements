@@ -12,30 +12,14 @@
 	<true/>
 	<key>com.apple.private.security.storage.AppDataContainers</key>
 	<true/>
-	<key>com.apple.private.security.storage.AppBundles</key>
-	<true/>
 	<key>com.apple.private.security.storage.preferences</key>
-	<true/>
-	<key>com.apple.private.MobileContainerManager.allowed</key>
 	<true/>
 	<key>com.apple.private.coreservices.canmaplsdatabase</key>
 	<true/>
 	<key>com.apple.lsapplicationworkspace.rebuildappdatabases</key>
 	<true/>
-	<key>com.apple.private.MobileInstallationHelperService.InstallDaemonOpsEnabled</key>
-	<true/>
-	<key>com.apple.private.MobileInstallationHelperService.allowed</key>
-	<true/>
-	<key>com.apple.private.uninstall.deletion</key>
-	<true/>
 	<key>com.apple.private.mobileinstall.allowedSPI</key>
-	<array>
-		<string>InstallForLaunchServices</string>
-		<string>Install</string>
-		<string>UninstallForLaunchServices</string>
-		<string>Uninstall</string>
-		<string>UpdatePlaceholderMetadata</string>
-	</array>
+	<true/>
 	<key>com.apple.springboard.opensensitiveurl</key>
 	<true/>
 	<key>com.apple.springboard.openurlswhenlocked</key>
