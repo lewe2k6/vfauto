@@ -102,9 +102,10 @@ static NSString *gLastMapRelaySourceBid = nil;
             return;
         }
 
-        syncGoogleMapsSchemeInterceptionForConfig(cfg);
-        if (readMasterEnabledSafely(NO)) {
+        if (cfg.masterEnabled || readMasterEnabledSafely(NO)) {
             startFilterDaemonIfNeeded();
+        } else {
+            syncGoogleMapsSchemeInterceptionForConfig(cfg);
         }
     });
 }

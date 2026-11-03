@@ -1569,7 +1569,8 @@ int spawnRoot(NSString *path, NSArray<NSString *> *args) {
             [firstArg isEqualToString:@"--kill-pid"] ||
             [firstArg isEqualToString:@"--restore-gmaps"] ||
             [firstArg isEqualToString:@"--sync-gmaps-scheme"]) {
-            int maxWaitTicks = ([firstArg isEqualToString:@"--restore-gmaps"] ||
+            int maxWaitTicks = ([firstArg isEqualToString:@"--stop"] ||
+                                [firstArg isEqualToString:@"--restore-gmaps"] ||
                                 [firstArg isEqualToString:@"--sync-gmaps-scheme"]) ? 75 : 25;
             int wstatus = 0;
             for (int w = 0; w < maxWaitTicks; w++) {
@@ -1767,7 +1768,19 @@ BOOL startFilterDaemonIfNeeded(void) {
             }
         }
 
-        stopFilterDaemonUnlocked();
+        // Clear stale Food Pause & Heartbeat before spawning fresh Watchdog (do NOT run --stop here,
+        // as pind --watchdog already terminates old instances as root without flipping masterEnabled=NO!)
+        RuntimeDaemonState *preSt = [RuntimeDaemonState loadState];
+        if (preSt.pauseEndEpoch > 0.0 || preSt.workerHeartbeatEpoch > 0.0) {
+            preSt.pauseEndEpoch        = 0.0;
+            preSt.workerHeartbeatEpoch = 0.0;
+            preSt.phaseDescription     = @"Đang trực tuyến / Canh đơn";
+            [preSt saveStateAndNotify:NO];
+        }
+        notify_post(kNotifyStopDaemon);
+        usleep(80000);
+        unlink([kWatchdogPidPath fileSystemRepresentation]);
+        unlink([kDaemonPidPath fileSystemRepresentation]);
 
         NSString *daemonPath = liveDaemonPath;
         if (!daemonPath || daemonPath.length == 0) {
@@ -2367,21 +2380,9 @@ NSString *findLocalGoogleMapsBundlePath(void) {
         } @catch (NSException *ex) {}
     }
 
-    // 3. If running as mobile UI (uid != 0) and cache was missing, ask root pind once to scan /var/containers/Bundle/Application
+    // 3. If running as mobile UI (uid != 0) and cache is not yet created, return nil for read-only callers
+    // (syncGoogleMapsSchemeInterceptionForConfig and forceRestoreGoogleMapsIconNow handle root delegation explicitly)
     if (!isRoot) {
-        static BOOL sAskedRootScanOnce = NO;
-        if (!sAskedRootScanOnce) {
-            sAskedRootScanOnce = YES;
-            NSString *pindBin = resolveLiveAppPindBinaryPath();
-            if (pindBin.length > 0) {
-                spawnRoot(pindBin, @[@"--sync-gmaps-scheme"]);
-                NSString *afterRoot = [[NSString stringWithContentsOfFile:kGmapsBundleCachePath encoding:NSUTF8StringEncoding error:nil]
-                                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (afterRoot.length > 0 && ![afterRoot isEqualToString:@"NONE"]) {
-                    return normalizeBundlePathForToken(afterRoot);
-                }
-            }
-        }
         return nil;
     }
 
@@ -2460,7 +2461,7 @@ BOOL forceRestoreGoogleMapsIconNow(void) {
     // Register ONLY Maps.app (NEVER touch PinNhietDo.app!) so Google Maps icon is 100% visible on the iPhone 8 Home Screen!
     BOOL ok = registerGoogleMapsBundleInLS(gmapsPath, shouldIntercept);
 
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.0.9|intercept=%d|gmaps=%@",
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.0|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
                                    normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     writeStringUnprotectedAtomically(desiredStateToken, kGmapsSyncStatePath);
@@ -2549,7 +2550,7 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     }
 
     // Version-stamped state token (normalized so uid=501 and uid=0 always match!)
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.0.9|intercept=%d|gmaps=%@",
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.0|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
                                    normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     NSString *savedStateToken = [[NSString stringWithContentsOfFile:kGmapsSyncStatePath encoding:NSUTF8StringEncoding error:nil]
@@ -2567,7 +2568,7 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     // Re-check gmapsPath now that we are running as root (uid=0)
     if (!gmapsPath || gmapsPath.length == 0) {
         gmapsPath = findLocalGoogleMapsBundlePath();
-        desiredStateToken = [NSString stringWithFormat:@"ver=5.0.9|intercept=%d|gmaps=%@",
+        desiredStateToken = [NSString stringWithFormat:@"ver=5.1.0|intercept=%d|gmaps=%@",
                              shouldIntercept ? 1 : 0,
                              normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     }

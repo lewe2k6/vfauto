@@ -166,21 +166,26 @@ static void killAllOtherPindProcesses(void) {
 }
 
 static int runStopMain(void) {
-    @autoreleasepool {
-        FilterConfig *cfg = [FilterConfig loadFromDisk];
-        cfg.masterEnabled = NO;
-        syncGoogleMapsSchemeInterceptionForConfig(cfg);
-    }
     killAllOtherPindProcesses();
     unlink([kWatchdogPidPath fileSystemRepresentation]);
     unlink([kDaemonPidPath fileSystemRepresentation]);
+    @autoreleasepool {
+        if (!readMasterEnabledSafely(NO)) {
+            FilterConfig *cfg = [FilterConfig loadFromDisk];
+            cfg.masterEnabled = NO;
+            syncGoogleMapsSchemeInterceptionForConfig(cfg);
+            ensureSharedFilesPermissions();
+        }
+    }
     return 0;
 }
 
 static int runSyncGmapsSchemeMain(void) {
     @autoreleasepool {
+        ensureSharedFilesPermissions();
         FilterConfig *cfg = [FilterConfig loadFromDisk];
         syncGoogleMapsSchemeInterceptionForConfig(cfg);
+        ensureSharedFilesPermissions();
     }
     return 0;
 }
@@ -305,6 +310,14 @@ static int runWatchdogMain(const char *execPath) {
         NSString *wdPidStr = [NSString stringWithFormat:@"%d", me];
         NSString *myExecStr = workerExecPath ? [NSString stringWithUTF8String:workerExecPath] : @"";
         writeStringUnprotectedAtomically(wdPidStr, kWatchdogPidPath);
+
+        // Sync Google Maps scheme interception while running as root (uid=0) so Worker (uid=501) never needs to spawn a child
+        FilterConfig *bootCfg = [FilterConfig loadFromDisk];
+        if (!bootCfg.masterEnabled && readMasterEnabledSafely(YES)) {
+            bootCfg.masterEnabled = YES;
+        }
+        syncGoogleMapsSchemeInterceptionForConfig(bootCfg);
+        ensureSharedFilesPermissions();
 
         dispatch_queue_t wdQ = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
         int stopTok = 0;
@@ -1800,6 +1813,7 @@ int main(int argc, char *argv[]) {
         @autoreleasepool {
             ensureSharedFilesPermissions();
             forceRestoreGoogleMapsIconNow();
+            ensureSharedFilesPermissions();
         }
         return 0;
     }
