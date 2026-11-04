@@ -2461,7 +2461,7 @@ BOOL forceRestoreGoogleMapsIconNow(void) {
     // Register ONLY Maps.app (NEVER touch PinNhietDo.app!) so Google Maps icon is 100% visible on the iPhone 8 Home Screen!
     BOOL ok = registerGoogleMapsBundleInLS(gmapsPath, shouldIntercept);
 
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.0|intercept=%d|gmaps=%@",
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.1|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
                                    normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     writeStringUnprotectedAtomically(desiredStateToken, kGmapsSyncStatePath);
@@ -2550,7 +2550,7 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     }
 
     // Version-stamped state token (normalized so uid=501 and uid=0 always match!)
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.0|intercept=%d|gmaps=%@",
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.1|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
                                    normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     NSString *savedStateToken = [[NSString stringWithContentsOfFile:kGmapsSyncStatePath encoding:NSUTF8StringEncoding error:nil]
@@ -2568,7 +2568,7 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     // Re-check gmapsPath now that we are running as root (uid=0)
     if (!gmapsPath || gmapsPath.length == 0) {
         gmapsPath = findLocalGoogleMapsBundlePath();
-        desiredStateToken = [NSString stringWithFormat:@"ver=5.1.0|intercept=%d|gmaps=%@",
+        desiredStateToken = [NSString stringWithFormat:@"ver=5.1.1|intercept=%d|gmaps=%@",
                              shouldIntercept ? 1 : 0,
                              normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     }

@@ -148,6 +148,19 @@
 
 - (BOOL)headerNormMatchesNonFoodService:(NSString *)hNorm {
     if (!hNorm || hNorm.length == 0 || !_nonFoodHeaderRegex) return NO;
+    // Guard against in-trip collapsible header "Điểm giao hàng v Mở rộng" / "Điểm nhận hàng v Mở rộng" matching "giao hang"
+    if ([hNorm containsString:@"diem giao"] ||
+        [hNorm containsString:@"diemgiao"] ||
+        [hNorm containsString:@"diem nhan"] ||
+        [hNorm containsString:@"diemnhan"] ||
+        [hNorm containsString:@"diem don"] ||
+        [hNorm containsString:@"diem den"] ||
+        [hNorm containsString:@"mo rong"] ||
+        [hNorm containsString:@"morong"] ||
+        [hNorm containsString:@"thu gon"] ||
+        [hNorm containsString:@"thugon"]) {
+        return NO;
+    }
     return ([_nonFoodHeaderRegex firstMatchInString:hNorm options:0 range:NSMakeRange(0, hNorm.length)] != nil);
 }
 
@@ -491,9 +504,13 @@
                 hasDeliveryTripOnly = YES;
             }
         }
-        if (b.uiCenter.y > screenSize.height * 0.12 && b.uiCenter.y < screenSize.height * 0.96) {
+        if (b.uiCenter.y > screenSize.height * 0.05 && b.uiCenter.y < screenSize.height * 0.96) {
             if ([t containsString:@"nguoi gui"] ||
                 [t containsString:@"nguoi nhan"] ||
+                [t containsString:@"diem giao hang"] ||
+                [t containsString:@"diem nhan hang"] ||
+                ([t containsString:@"diem giao"] && ([t containsString:@"mo rong"] || [t containsString:@"morong"])) ||
+                ([t containsString:@"diem nhan"] && ([t containsString:@"mo rong"] || [t containsString:@"morong"])) ||
                 [t containsString:@"da den diem nhan"] ||
                 [t containsString:@"den diem nhan"] ||
                 [t containsString:@"da den diem lay"] ||
@@ -550,11 +567,14 @@
                 cuocPhiBlock = b;
             }
         }
-        if (!acceptBlock && b.uiCenter.y > screenSize.height * 0.74) {
+        if (!acceptBlock && b.uiCenter.y > screenSize.height * 0.82) {
             BOOL isNotLobbyOrStop = (![t containsString:@"mo nhan"] &&
                                      ![t containsString:@"tat nhan"] &&
                                      ![t containsString:@"ngung nhan"] &&
-                                     ![t containsString:@"xac nhan hoan"] &&
+                                     ![t containsString:@"da nhan"] &&
+                                     ![t containsString:@"xac nhan"] &&
+                                     ![t containsString:@"nhan hang"] &&
+                                     ![t containsString:@"diem nhan"] &&
                                      ![t containsString:@"hoan thanh chuyen"] &&
                                      ![t containsString:@"chuyen cua toi"]);
             if (isNotLobbyOrStop &&

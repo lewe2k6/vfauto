@@ -89,7 +89,13 @@ static double estimateHanoiMotorbikeRoadKmOffline(double latA, double lngA, doub
     if (crossesHanoiRedRiver(latA, lngA, latB, lngB)) {
         return fmax(airKm * 1.55, airKm + 1.15);
     }
-    return airKm * 1.33;
+    if (airKm <= 2.2) {
+        return airKm * 1.29;
+    } else if (airKm <= 4.2) {
+        double t = (airKm - 2.2) / 2.0;
+        return airKm * (1.29 - t * 0.10); // Smooth taper 1.29 -> 1.19
+    }
+    return airKm * 1.18;
 }
 
 static inline BOOL isAsciiWordChar(unichar c) {
@@ -806,6 +812,7 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     NSString *streetName = nil;
     int targetNgo   = 0;
     int targetHouse = 0;
+    NSString *fallbackHamletStreet = nil;
 
     NSUInteger maxSegCheck = MIN((NSUInteger)3, normSegs.count);
     for (NSUInteger sIdx = 0; sIdx < maxSegCheck; sIdx++) {
@@ -815,13 +822,26 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
             continue;
         }
 
+        // Prevent "tổ dân phố <X>" ("to dan pho <X>") from tricking _plainStreetRegex into matching "pho <X>" as a street!
+        NSString *candForPlain = [cand stringByReplacingOccurrencesOfString:@"to dan pho " withString:@"tdp "];
+        if ([candForPlain containsString:@"van tri"]) {
+            fallbackHamletStreet = @"van tri";
+        } else if ([candForPlain containsString:@"ngoa long"]) {
+            fallbackHamletStreet = @"ngoa long";
+        } else if ([candForPlain containsString:@"nguyen xa"]) {
+            fallbackHamletStreet = @"nguyen xa";
+        }
+
         NSTextCheckingResult *mNgo = [_ngoStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
         if (mNgo && mNgo.numberOfRanges >= 3) {
             targetNgo  = [[cand substringWithRange:[mNgo rangeAtIndex:1]] intValue];
             streetName = [cand substringWithRange:[mNgo rangeAtIndex:2]];
             NSString *prefix = [cand substringToIndex:mNgo.range.location];
-            NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
-            if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
+            // Do not treat hamlet/TDP number (e.g. "Tổ dân phố Văn Trì 4") as an alley house number!
+            if (![prefix containsString:@"to dan pho"] && ![prefix containsString:@"tdp"] && ![prefix containsString:@"thon "]) {
+                NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
+                if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
+            }
             break;
         }
 
@@ -830,19 +850,22 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
             NSString *stCand = [[cand substringWithRange:[mNum rangeAtIndex:2]] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
             if (![stCand hasPrefix:@"tang "] && ![stCand hasPrefix:@"lo "] && ![stCand hasPrefix:@"kiot "] &&
                 ![stCand hasPrefix:@"toa "] && ![stCand hasPrefix:@"sanh "] && ![stCand hasPrefix:@"khu "] &&
-                ![stCand hasPrefix:@"cau thang "] && ![stCand hasPrefix:@"nha "]) {
+                ![stCand hasPrefix:@"cau thang "] && ![stCand hasPrefix:@"nha "] &&
+                ![stCand hasPrefix:@"to dan pho"] && ![stCand hasPrefix:@"tdp "]) {
                 targetHouse = [[cand substringWithRange:[mNum rangeAtIndex:1]] intValue];
                 streetName  = stCand;
                 break;
             }
         }
 
-        NSTextCheckingResult *mPl = [_plainStreetRegex firstMatchInString:cand options:0 range:NSMakeRange(0, cand.length)];
+        NSTextCheckingResult *mPl = [_plainStreetRegex firstMatchInString:candForPlain options:0 range:NSMakeRange(0, candForPlain.length)];
         if (mPl && mPl.numberOfRanges >= 2) {
-            streetName = [cand substringWithRange:[mPl rangeAtIndex:1]];
-            NSString *prefix = [cand substringToIndex:mPl.range.location];
-            NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
-            if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
+            streetName = [candForPlain substringWithRange:[mPl rangeAtIndex:1]];
+            NSString *prefix = [candForPlain substringToIndex:mPl.range.location];
+            if (![prefix containsString:@"tdp"] && ![prefix containsString:@"thon "]) {
+                NSTextCheckingResult *mh = [_firstNumberRegex firstMatchInString:prefix options:0 range:NSMakeRange(0, prefix.length)];
+                if (mh) targetHouse = [[prefix substringWithRange:[mh rangeAtIndex:1]] intValue];
+            }
             break;
         }
 
@@ -852,13 +875,18 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
                 NSString *stCand = [[cand substringWithRange:[mBare rangeAtIndex:2]] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
                 if (![stCand hasPrefix:@"tang "] && ![stCand hasPrefix:@"lo "] && ![stCand hasPrefix:@"kiot "] &&
                     ![stCand hasPrefix:@"toa "] && ![stCand hasPrefix:@"sanh "] && ![stCand hasPrefix:@"khu "] &&
-                    ![stCand hasPrefix:@"cau thang "] && ![stCand hasPrefix:@"nha "]) {
+                    ![stCand hasPrefix:@"cau thang "] && ![stCand hasPrefix:@"nha "] &&
+                    ![stCand hasPrefix:@"to dan pho"] && ![stCand hasPrefix:@"tdp "]) {
                     targetHouse = [[cand substringWithRange:[mBare rangeAtIndex:1]] intValue];
                     streetName  = stCand;
                     break;
                 }
             }
         }
+    }
+
+    if (!streetName && fallbackHamletStreet) {
+        streetName = fallbackHamletStreet;
     }
 
     if (streetName.length >= 2) {
@@ -1027,6 +1055,25 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
                                 outHouse:&targetHouse
                            outAdminHints:adminHints
                         outWardFullHints:wardFullHints];
+    if (rawTitle.length >= 4 && primary != rawTitle) {
+        NSString *titSt = nil;
+        int titNgo = 0, titHouse = 0;
+        [self extractAddressStructureFromRaw:rawTitle
+                                    outStKey:&titSt
+                                      outNgo:&titNgo
+                                    outHouse:&titHouse
+                               outAdminHints:nil
+                            outWardFullHints:nil];
+        if (!streetName && titSt.length >= 2) {
+            streetName  = titSt;
+            targetNgo   = titNgo;
+            targetHouse = titHouse;
+        } else if (titNgo > 0 && targetNgo == 0 && (!titSt || [titSt isEqualToString:streetName])) {
+            // Title explicitly specifies "Ngõ 136 Cầu Diễn" while subtitle omitted "Ngõ" ("136 Cầu Diễn")
+            if (targetHouse == titNgo) targetHouse = titHouse;
+            targetNgo = titNgo;
+        }
+    }
     if (!streetName && wardFullHints.count == 0) return NO;
 
     // If Dropoff title had a leading house number (e.g. "59 Ngõ 123 Phố Trung Kính") while subtitle omitted "59", recover it!
