@@ -37,7 +37,11 @@
 #define PROTECTION_CLASS_D 4
 #endif
 
+#ifdef MAP_RELAY_STANDALONE
+#define kDaemonControlLockPath "/var/mobile/Library/Preferences/com.vn.utility.maprelay.ctl.lock"
+#else
 #define kDaemonControlLockPath "/var/mobile/Library/Preferences/com.vn.utility.batterycheck.ctl.lock"
+#endif
 
 #define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 1
 typedef int (*persona_np_f)(const posix_spawnattr_t * __restrict, uid_t, uint32_t);
@@ -355,7 +359,11 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
 - (instancetype)init {
     self = [super init];
     if (self) {
+#ifdef MAP_RELAY_STANDALONE
+        _masterEnabled            = YES;
+#else
         _masterEnabled            = NO;
+#endif
         _autoAcceptBike           = YES;
         _rejectAllFood            = NO;
         _minFoodPriceVND          = 25000;
@@ -1199,6 +1207,7 @@ static NSArray<NSNumber *> *findRunningAppPIDs(NSString *bundleID, NSString *exe
         if (cmpLen > 0 &&
             strncmp(execCStr, "pind", 4) != 0 &&
             strncmp(execCStr, "PinNhietDo", 10) != 0 &&
+            strncmp(execCStr, "BanMapXanh", 10) != 0 &&
             strncmp(execCStr, "SpringBoard", 11) != 0) {
             int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
             size_t size = 0;
@@ -1261,13 +1270,14 @@ NSString *resolveLiveAppPindBinaryPath(void) {
         return res;
     }
 
-    // Priority 2: Direct filesystem scan of /var/containers/Bundle/Application/*/PinNhietDo.app/pind (<0.2ms, zero XPC to lsd!)
+    // Priority 2: Direct filesystem scan of /var/containers/Bundle/Application/*/<App>.app/pind (<0.2ms, zero XPC to lsd!)
     NSString *appsRoot = @"/var/containers/Bundle/Application";
     NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:appsRoot error:nil];
     NSString *newestPind = nil;
     time_t newestMtime = 0;
+    NSString *relTarget = [kAppBundleFolderName stringByAppendingPathComponent:@"pind"];
     for (NSString *u in uuids) {
-        NSString *cand = [[appsRoot stringByAppendingPathComponent:u] stringByAppendingPathComponent:@"PinNhietDo.app/pind"];
+        NSString *cand = [[appsRoot stringByAppendingPathComponent:u] stringByAppendingPathComponent:relTarget];
         struct stat st;
         if (stat([cand fileSystemRepresentation], &st) == 0 && S_ISREG(st.st_mode)) {
             if (!newestPind || st.st_mtime >= newestMtime) {

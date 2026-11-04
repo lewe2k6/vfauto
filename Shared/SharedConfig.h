@@ -4,7 +4,30 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 
+#ifdef MAP_RELAY_STANDALONE
+#define kAppBundleID            @"com.vn.utility.maprelay"
+#define kAppBundleFolderName    @"BanMapXanh.app"
+#define kCurrentDaemonVersion   @"5.1.2"
+#define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.plist"
+#define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.state.plist"
+#define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.maprelay.plist"
+#define kGmapsBundleCachePath   @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.gmaps_bundle.txt"
+#define kGmapsSyncStatePath     @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.gmaps_state.txt"
+#define kGmapsInfoBackupPath    @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.gmaps_info_backup.plist"
+#define kDaemonLogPath          @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.log"
+#define kDaemonPidPath          @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.pid"
+#define kWatchdogPidPath        @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.watchdog.pid"
+
+#define kNotifyReloadConfig     "com.vn.utility.maprelay.reload"
+#define kNotifyStopDaemon       "com.vn.utility.maprelay.stop"
+#define kNotifyStatsUpdated     "com.vn.utility.maprelay.stats"
+#define kNotifySkipPause        "com.vn.utility.maprelay.skippause"
+#define kNotifyResetCounters    "com.vn.utility.maprelay.resetcnt"
+#define kNotifyDiagCapture      "com.vn.utility.maprelay.diag"
+#define kNotifySendMapRelay     "com.vn.utility.maprelay.maprelay"
+#else
 #define kAppBundleID            @"com.vn.utility.batterycheck"
+#define kAppBundleFolderName    @"PinNhietDo.app"
 #define kCurrentDaemonVersion   @"5.1.2"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
@@ -23,6 +46,7 @@
 #define kNotifyResetCounters    "com.vn.utility.batterycheck.resetcnt"
 #define kNotifyDiagCapture      "com.vn.utility.batterycheck.diag"
 #define kNotifySendMapRelay     "com.vn.utility.batterycheck.maprelay"
+#endif
 
 #define kMapRelayViewerBaseURL  @"https://lewe2k6.github.io/vfauto/map.html"
 
