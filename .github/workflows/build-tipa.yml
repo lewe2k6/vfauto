@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.1.0-ts
-          name: "Pin & Nhiệt Độ v5.1.0 — Khôi Phục Lõi Ngầm Tự Nhận/Hủy Chuyến & Giữ Icon Google Maps"
-          body: "Bản v5.1.0 sửa triệt để lỗi Lõi Ngầm pind không tự động nhận/hủy chuyến ở bản v5.0.8/v5.0.9: (1) Khôi phục 100% daemon.entitlements chuẩn v5.0.6 cho tiến trình pind (xóa 4 quyền MobileInstallationHelperService của v5.0.7 làm iOS chặn chạy pind); (2) Bỏ lệnh gọi --stop thừa khi khởi động startFilterDaemonIfNeeded tránh tự giết Watchdog/Worker mới mở; (3) Đồng bộ Google Maps ngay trong tiến trình root Watchdog."
+          tag_name: v5.1.1-ts
+          name: "Pin & Nhiệt Độ v5.1.1 — Chuẩn Hóa Đo Km Tổ Dân Phố/Trục Đại Lộ & Chặn Bấm Nhầm Trong Chuyến"
+          body: "Bản v5.1.1 sửa triệt để: (1) Chặn bẫy regex chữ 'Tổ dân phố' làm nhảy sai tên đường và khớp chính xác Ngõ 136 Cầu Diễn / Văn Trì; (2) Tinh chỉnh hệ số đường bộ trục đại lộ dài (FastAir+) sát thực tế Google Maps/Xanh SM; (3) Chặn bấm nhầm thanh 'Điểm giao hàng Mở rộng' khi đang trong chuyến Food."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa
