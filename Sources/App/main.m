@@ -47,16 +47,16 @@ static NSString *gLastMapRelaySourceBid = nil;
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    self.window.rootViewController = [[StealthBatteryViewController alloc] init];
-    [self.window makeKeyAndVisible];
-
     NSURL *launchURL = launchOptions[UIApplicationLaunchOptionsURLKey];
     if ([launchURL isKindOfClass:[NSURL class]]) {
         NSString *srcApp = launchOptions[UIApplicationLaunchOptionsSourceApplicationKey];
         NSString *tag = ([srcApp isKindOfClass:[NSString class]] && srcApp.length > 0) ? srcApp : @"XanhSM";
         [self relayIncomingURLWithBackgroundAssertion:launchURL sourceTag:tag];
     }
+
+    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    self.window.rootViewController = [[StealthBatteryViewController alloc] init];
+    [self.window makeKeyAndVisible];
     return YES;
 }
 

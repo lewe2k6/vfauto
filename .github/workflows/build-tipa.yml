@@ -40,9 +40,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.1.1-ts
-          name: "Pin & Nhiệt Độ v5.1.1 — Chuẩn Hóa Đo Km Tổ Dân Phố/Trục Đại Lộ & Chặn Bấm Nhầm Trong Chuyến"
-          body: "Bản v5.1.1 sửa triệt để: (1) Chặn bẫy regex chữ 'Tổ dân phố' làm nhảy sai tên đường và khớp chính xác Ngõ 136 Cầu Diễn / Văn Trì; (2) Tinh chỉnh hệ số đường bộ trục đại lộ dài (FastAir+) sát thực tế Google Maps/Xanh SM; (3) Chặn bấm nhầm thanh 'Điểm giao hàng Mở rộng' khi đang trong chuyến Food."
+          tag_name: v5.1.2-ts
+          name: "Pin & Nhiệt Độ v5.1.2 — Khắc Phục Triệt Để Lỗi Treo/Ngủ Mát Sau Vài Cuốc & Đen Mắt OCR"
+          body: "Bản v5.1.2 sửa triệt để 5 lỗi khiến Lõi Ngầm dừng chạy sau vài cuốc: (1) Sửa lỗi logic chết (!canScan && frontBid.length == 0) khiến pind bị kẹt vĩnh viễn ở Ngủ mát 0% Nhiệt sau khi Bắn Map / nhận cuộc gọi / mở Camera; (2) Xóa khóa mù OCR 6.0 giây ở CASE B và mở rộng cảm biến nút Nhận chuyến đọc xuyên cả thanh đếm ngược màu xanh đậm; (3) Xóa nhánh tự bịa nút Nhận chuyến trên màn hình đang giao hàng và reset retryCount về 0; (4) Gắn Canary chống đơ bộ đệm chụp màn hình IOSurface; (5) Dùng chung Metal CIContext chống rò RAM Vision và chặn tự sát tiến trình khi đang trong chuyến."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

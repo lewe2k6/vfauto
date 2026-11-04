@@ -316,6 +316,21 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
 }
 
 - (void)saveStateAndNotify:(BOOL)sendNotify {
+    NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:kRuntimeStatePath];
+    if ([existing isKindOfClass:[NSDictionary class]]) {
+        double diskRelayEpoch = [existing[@"lastRelayedEpoch"] doubleValue];
+        if (diskRelayEpoch > self.lastRelayedEpoch) {
+            self.lastRelayedEpoch = diskRelayEpoch;
+            if ([existing[@"lastRelayedSummary"] isKindOfClass:[NSString class]]) {
+                self.lastRelayedSummary = existing[@"lastRelayedSummary"];
+            }
+        }
+        double diskHbEpoch = [existing[@"workerHeartbeatEpoch"] doubleValue];
+        if (self.workerHeartbeatEpoch > 0.0 && diskHbEpoch > self.workerHeartbeatEpoch) {
+            self.workerHeartbeatEpoch = diskHbEpoch;
+        }
+    }
+
     NSDictionary *d = @{
         @"statAcceptedCount":    @(self.statAcceptedCount),
         @"statRejectedCount":    @(self.statRejectedCount),
@@ -822,6 +837,17 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                     gAppStateMonitor, appStateSel, effectiveDriverBid);
                 if ((drvSt & 8U) != 0) {
                     return effectiveDriverBid;
+                }
+            }
+
+            // Always directly verify Xanh SM Driver bundle IDs (vn.gsm.md & vn.gsm.driver) in BKSApplicationStateMonitor
+            // so even if cachedAutoDetectedDriverBundleID() was nil at boot, foreground Xanh SM is detected in 0.05ms!
+            for (NSString *knownGsmBid in @[@"vn.gsm.md", @"vn.gsm.driver"]) {
+                if (effectiveDriverBid && [effectiveDriverBid isEqualToString:knownGsmBid]) continue;
+                unsigned int gsmSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    gAppStateMonitor, appStateSel, knownGsmBid);
+                if ((gsmSt & 8U) != 0) {
+                    return knownGsmBid;
                 }
             }
 
@@ -1433,7 +1459,6 @@ BOOL launchAppByBundleID(NSString *bundleID) {
         bundleID = det.bundleID;
     }
 
-    resetFrontmostAppMonitors();
     BOOL invokedAny = NO;
 
     // Layer 1: FrontBoardServices FBSOpenApplicationService with explicit foreground activation options
@@ -1472,7 +1497,6 @@ BOOL launchAppByBundleID(NSString *bundleID) {
 
     usleep(95000);
     if (isDriverAppTrulyFrontmostAndOursBackgrounded(bundleID)) {
-        resetFrontmostAppMonitors();
         return YES;
     }
 
@@ -1493,7 +1517,6 @@ BOOL launchAppByBundleID(NSString *bundleID) {
 
     usleep(95000);
     if (isDriverAppTrulyFrontmostAndOursBackgrounded(bundleID)) {
-        resetFrontmostAppMonitors();
         return YES;
     }
 
@@ -1508,7 +1531,6 @@ BOOL launchAppByBundleID(NSString *bundleID) {
         }
     }
 
-    resetFrontmostAppMonitors();
     return invokedAny || isDriverAppTrulyFrontmostAndOursBackgrounded(bundleID);
 }
 
@@ -1768,8 +1790,13 @@ BOOL startFilterDaemonIfNeeded(void) {
             }
         }
 
-        // Clear stale Food Pause & Heartbeat before spawning fresh Watchdog (do NOT run --stop here,
-        // as pind --watchdog already terminates old instances as root without flipping masterEnabled=NO!)
+        // Clear stale Food Pause & Heartbeat before spawning fresh Watchdog.
+        // CRITICAL: Do NOT call notify_post(kNotifyStopDaemon) before spawnRoot!
+        // If PinNhietDo is being suspended by SpringBoard (e.g. during a Map Relay bounce-back),
+        // posting kNotifyStopDaemon before spawnRoot would kill Watchdog & Worker without spawning a replacement!
+        // Instead, pind --watchdog calls killAllOtherPindProcesses() AFTER it is alive as root (uid=0).
+        pid_t prevWatchdog = getRunningWatchdogPID();
+        pid_t prevWorker   = getRunningDaemonPID();
         RuntimeDaemonState *preSt = [RuntimeDaemonState loadState];
         if (preSt.pauseEndEpoch > 0.0 || preSt.workerHeartbeatEpoch > 0.0) {
             preSt.pauseEndEpoch        = 0.0;
@@ -1777,10 +1804,6 @@ BOOL startFilterDaemonIfNeeded(void) {
             preSt.phaseDescription     = @"Đang trực tuyến / Canh đơn";
             [preSt saveStateAndNotify:NO];
         }
-        notify_post(kNotifyStopDaemon);
-        usleep(80000);
-        unlink([kWatchdogPidPath fileSystemRepresentation]);
-        unlink([kDaemonPidPath fileSystemRepresentation]);
 
         NSString *daemonPath = liveDaemonPath;
         if (!daemonPath || daemonPath.length == 0) {
@@ -1793,7 +1816,11 @@ BOOL startFilterDaemonIfNeeded(void) {
         if (res > 0) {
             for (int i = 0; i < 20; i++) {
                 usleep(60000);
-                if (getRunningWatchdogPID() > 0 || getRunningDaemonPID() > 0) {
+                pid_t curWd = getRunningWatchdogPID();
+                pid_t curWk = getRunningDaemonPID();
+                if ((curWd > 0 && curWd != prevWatchdog) ||
+                    (curWk > 0 && curWk != prevWorker) ||
+                    (i >= 4 && (curWd > 0 || curWk > 0))) {
                     finalResult = YES;
                     return finalResult;
                 }
@@ -2461,7 +2488,7 @@ BOOL forceRestoreGoogleMapsIconNow(void) {
     // Register ONLY Maps.app (NEVER touch PinNhietDo.app!) so Google Maps icon is 100% visible on the iPhone 8 Home Screen!
     BOOL ok = registerGoogleMapsBundleInLS(gmapsPath, shouldIntercept);
 
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.1|intercept=%d|gmaps=%@",
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.2|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
                                    normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     writeStringUnprotectedAtomically(desiredStateToken, kGmapsSyncStatePath);
@@ -2550,7 +2577,7 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     }
 
     // Version-stamped state token (normalized so uid=501 and uid=0 always match!)
-    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.1|intercept=%d|gmaps=%@",
+    NSString *desiredStateToken = [NSString stringWithFormat:@"ver=5.1.2|intercept=%d|gmaps=%@",
                                    shouldIntercept ? 1 : 0,
                                    normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     NSString *savedStateToken = [[NSString stringWithContentsOfFile:kGmapsSyncStatePath encoding:NSUTF8StringEncoding error:nil]
@@ -2568,7 +2595,7 @@ BOOL syncGoogleMapsSchemeInterceptionForConfig(FilterConfig *config) {
     // Re-check gmapsPath now that we are running as root (uid=0)
     if (!gmapsPath || gmapsPath.length == 0) {
         gmapsPath = findLocalGoogleMapsBundlePath();
-        desiredStateToken = [NSString stringWithFormat:@"ver=5.1.1|intercept=%d|gmaps=%@",
+        desiredStateToken = [NSString stringWithFormat:@"ver=5.1.2|intercept=%d|gmaps=%@",
                              shouldIntercept ? 1 : 0,
                              normalizeBundlePathForToken(gmapsPath) ?: @"none"];
     }

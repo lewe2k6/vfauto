@@ -27,6 +27,7 @@
 @end
 
 @implementation OrderScanner {
+    CIContext *_ciContext;
     NSRegularExpression *_thousandsFareRegex;
     NSRegularExpression *_plainFareRegex;
     NSRegularExpression *_bareThousandsRegex;
@@ -47,6 +48,10 @@
 - (instancetype)init {
     self = [super init];
     if (self) {
+        _ciContext = [CIContext contextWithOptions:@{
+            kCIContextCacheIntermediates: @NO,
+            kCIContextUseSoftwareRenderer: @NO
+        }];
         _thousandsFareRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:^|[^0-9])([1-9][0-9]{0,2})[., ]([0-9]{3})"
                                                                         options:0
                                                                           error:nil];
@@ -333,37 +338,40 @@
 
     __block NSMutableArray<OCRTextBlock *> *blocks = [NSMutableArray array];
 
-    VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
-        if (error) return;
-        for (VNRecognizedTextObservation *obs in request.results) {
-            VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-            if (!top || top.string.length == 0) continue;
+    @autoreleasepool {
+        VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
+            if (error) return;
+            for (VNRecognizedTextObservation *obs in request.results) {
+                VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+                if (!top || top.string.length == 0) continue;
 
-            CGRect bb = obs.boundingBox;
-            CGFloat uiX = bb.origin.x * screenSize.width;
-            CGFloat uiW = bb.size.width * screenSize.width;
-            CGFloat uiH = bb.size.height * screenSize.height;
-            CGFloat uiY = (1.0 - (bb.origin.y + bb.size.height)) * screenSize.height;
+                CGRect bb = obs.boundingBox;
+                CGFloat uiX = bb.origin.x * screenSize.width;
+                CGFloat uiW = bb.size.width * screenSize.width;
+                CGFloat uiH = bb.size.height * screenSize.height;
+                CGFloat uiY = (1.0 - (bb.origin.y + bb.size.height)) * screenSize.height;
 
-            OCRTextBlock *blk = [[OCRTextBlock alloc] init];
-            blk.rawText  = top.string;
-            blk.normText = NormalizeVNText(top.string);
-            blk.uiRect   = CGRectMake(uiX, uiY, uiW, uiH);
-            blk.uiCenter = CGPointMake(uiX + uiW * 0.5, uiY + uiH * 0.5);
-            [blocks addObject:blk];
+                OCRTextBlock *blk = [[OCRTextBlock alloc] init];
+                blk.rawText  = top.string;
+                blk.normText = NormalizeVNText(top.string);
+                blk.uiRect   = CGRectMake(uiX, uiY, uiW, uiH);
+                blk.uiCenter = CGPointMake(uiX + uiW * 0.5, uiY + uiH * 0.5);
+                [blocks addObject:blk];
+            }
+        }];
+
+        req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+        req.usesLanguageCorrection = NO;
+        if (@available(iOS 16.0, *)) {
+            req.recognitionLanguages = @[@"vi-VN", @"en-US"];
+        } else {
+            req.recognitionLanguages = @[@"en-US"];
         }
-    }];
 
-    req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-    req.usesLanguageCorrection = NO;
-    if (@available(iOS 16.0, *)) {
-        req.recognitionLanguages = @[@"vi-VN", @"en-US"];
-    } else {
-        req.recognitionLanguages = @[@"en-US"];
+        NSDictionary *vnOpts = _ciContext ? @{ VNImageOptionCIContext: _ciContext } : @{};
+        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ciImage options:vnOpts];
+        [handler performRequests:@[req] error:nil];
     }
-
-    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ciImage options:@{}];
-    [handler performRequests:@[req] error:nil];
 
     if (blocks.count == 0) {
         res.ocrBlockCount = 0;
@@ -545,6 +553,8 @@
         }
         if (b.uiCenter.y > screenSize.height * 0.72) {
             if ([t containsString:@"da den diem"] ||
+                [t containsString:@"da den quan"] ||
+                [t containsString:@"da den nha hang"] ||
                 [t containsString:@"don khach"] ||
                 [t containsString:@"bat dau chuyen"] ||
                 [t containsString:@"da lay hang"] ||
@@ -552,7 +562,12 @@
                 [t containsString:@"hoan thanh chuyen"] ||
                 [t containsString:@"hoan thanh don"] ||
                 [t containsString:@"giao hang thanh cong"] ||
-                [t containsString:@"xac nhan giao"]) {
+                [t containsString:@"xac nhan giao"] ||
+                [t containsString:@"chup anh"] ||
+                [t containsString:@"cap nhat"] ||
+                [t containsString:@"lien he"] ||
+                [t containsString:@"huy don"] ||
+                [t containsString:@"huy chuyen"]) {
                 hasAnyTripBottomBtn = YES;
             }
         }
@@ -575,7 +590,12 @@
                                      ![t containsString:@"xac nhan"] &&
                                      ![t containsString:@"nhan hang"] &&
                                      ![t containsString:@"diem nhan"] &&
-                                     ![t containsString:@"hoan thanh chuyen"] &&
+                                     ![t containsString:@"da den"] &&
+                                     ![t containsString:@"bat dau"] &&
+                                     ![t containsString:@"giao hang"] &&
+                                     ![t containsString:@"lay hang"] &&
+                                     ![t containsString:@"huy chuyen"] &&
+                                     ![t containsString:@"hoan thanh"] &&
                                      ![t containsString:@"chuyen cua toi"]);
             if (isNotLobbyOrStop &&
                 ([t containsString:@"nhan chuyen"] ||
@@ -591,12 +611,13 @@
                 acceptBlock = b;
             } else if (!bottomPartialAcceptBlk &&
                        isNotLobbyOrStop &&
-                       b.uiCenter.y > screenSize.height * 0.86 &&
-                       b.uiCenter.x > screenSize.width * 0.22 &&
-                       b.uiCenter.x < screenSize.width * 0.78 &&
+                       b.uiCenter.y > screenSize.height * 0.88 &&
+                       b.uiCenter.x > screenSize.width * 0.25 &&
+                       b.uiCenter.x < screenSize.width * 0.75 &&
                        ([t isEqualToString:@"nhan"] ||
                         [t hasPrefix:@"nhan "] ||
-                        [t containsString:@"chuyen"])) {
+                        [t isEqualToString:@"chuyen"] ||
+                        [t hasPrefix:@"chuyen ("])) {
                 bottomPartialAcceptBlk = b;
             }
         }
@@ -629,28 +650,24 @@
         }
     }
 
-    // If countdown sweep partially obscured half of 'Nhận chuyến' (or blurred button text for 1 frame while bottom teal bar + 'Cước phí' + route markers are 100% present):
+    // If countdown sweep split 'Nhận' | 'chuyến (5)' and only half was recognized on an actual Order Popup
+    // (STRICTLY guarded against active delivery/passenger trip screens — NEVER synthesize a fake acceptBlock without OCR text!):
     if (!acceptBlock &&
+        bottomPartialAcceptBlk != nil &&
         !daDenDiemDonBlk &&
         !hoanThanhChuyenBlk &&
         !hasAnyTripBottomBtn &&
+        !hasDeliveryTripOnly &&
+        !hasTripActorLabel &&
         !hanhKhachBlk &&
         !dieuHuongBlk &&
         !moNhanChuyenBlock &&
         !dangTrucTuyenBlk &&
         !hasLobbyCardTxt &&
+        !(hasNhanTinBtn && hasGoiDienBtn) &&
         cuocPhiBlock != nil &&
         (hasPassengerRoute || hasDeliveryRoute || hasPaymentTag)) {
-        if (bottomPartialAcceptBlk) {
-            acceptBlock = bottomPartialAcceptBlk;
-        } else if (hasBottomTealBar) {
-            OCRTextBlock *synth = [[OCRTextBlock alloc] init];
-            synth.rawText  = @"Nhận chuyến";
-            synth.normText = @"nhan chuyen";
-            synth.uiRect   = CGRectMake(20.0, screenSize.height * 0.915, screenSize.width - 40.0, 48.0);
-            synth.uiCenter = CGPointMake(screenSize.width * 0.5, 640.0);
-            acceptBlock    = synth;
-        }
+        acceptBlock = bottomPartialAcceptBlk;
     }
 
     // 2. Populate Active Trip state first so Lobby check never conflicts with an Active Trip (chained-order safety!)

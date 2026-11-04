@@ -323,12 +323,32 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     BOOL nonZero = NO;
     const uint32_t *u32 = (const uint32_t *)base;
     size_t count = totalBytes / sizeof(uint32_t);
-    size_t step = count / 97;
-    if (step == 0) step = 1;
-    for (size_t i = step; i < count; i += step) {
-        if ((u32[i] & 0x00FFFFFF) != 0) {
-            nonZero = YES;
-            break;
+
+    // Verify at least 1 canary pixel was freshly written by CARenderServerRenderDisplay (prevents stale frozen IOSurface!)
+    BOOL canaryWritten = NO;
+    if (_pixelW > 16 && _pixelH > 16) {
+        static const double kCanaryY[4] = { 0.12, 0.35, 0.62, 0.88 };
+        int cx = _pixelW / 2;
+        for (int k = 0; k < 4; k++) {
+            int cy = (int)(kCanaryY[k] * (double)(_pixelH - 1));
+            uint32_t pxVal = *((const uint32_t *)(base + (size_t)cy * _bytesPerRow + (size_t)cx * 4));
+            if (pxVal != 0) {
+                canaryWritten = YES;
+                break;
+            }
+        }
+    } else {
+        canaryWritten = YES;
+    }
+
+    if (canaryWritten) {
+        size_t step = count / 97;
+        if (step == 0) step = 1;
+        for (size_t i = step; i < count; i += step) {
+            if ((u32[i] & 0x00FFFFFF) != 0) {
+                nonZero = YES;
+                break;
+            }
         }
     }
 
@@ -365,20 +385,22 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameChangedSamples = changed;
 
         // 2. Multi-Row Order Popup Sensor (0.02ms):
-        //    Scans 4 horizontal rows across the bottom pill button (y = 91.8%..97.2%) so white 'Nhận chuyến (7)' text
-        //    or AssistiveTouch on one line can NEVER mask the teal button, plus 4 card body rows for full/mid-sheet cards!
-        static const double kAcceptRows[4] = { 0.920, 0.938, 0.958, 0.972 };
+        //    Scans 6 horizontal rows across the bottom pill button (y = 89.5%..97.4%) matching BOTH bright teal (#00B5A5)
+        //    AND the darker countdown-bar teal (#00685E) so the 7s countdown sweep NEVER blinds the popup sensor!
+        static const double kAcceptRows[6] = { 0.895, 0.915, 0.932, 0.948, 0.962, 0.974 };
         static const double kCardRows[4]   = { 0.155, 0.255, 0.355, 0.465 };
         int maxTealRowHits = 0;
-        for (int rIdx = 0; rIdx < 4; rIdx++) {
+        for (int rIdx = 0; rIdx < 6; rIdx++) {
             int yRow = (int)(kAcceptRows[rIdx] * (double)(_pixelH - 1));
             const uint8_t *rowPtr = base + (size_t)yRow * _bytesPerRow;
             int rowTeal = 0;
             for (int s = 0; s < 16; s++) {
-                int px = (int)((0.12 + (0.76 * (double)s / 15.0)) * (double)(_pixelW - 1));
+                int px = (int)((0.10 + (0.80 * (double)s / 15.0)) * (double)(_pixelW - 1));
                 uint32_t pAcc = *((const uint32_t *)(rowPtr + (size_t)px * 4));
                 uint8_t bA = pAcc & 0xFF, gA = (pAcc >> 8) & 0xFF, rA = (pAcc >> 16) & 0xFF;
-                if (gA >= 102 && bA >= 102 && (int)gA - (int)rA >= 38 && (int)bA - (int)rA >= 38) {
+                BOOL isBrightTeal = (gA >= 100 && bA >= 95 && (int)gA - (int)rA >= 36 && (int)bA - (int)rA >= 32);
+                BOOL isDarkCountdownTeal = (gA >= 78 && bA >= 72 && rA <= 68 && (int)gA - (int)rA >= 28 && (int)bA - (int)rA >= 22);
+                if (isBrightTeal || isDarkCountdownTeal) {
                     rowTeal++;
                 }
             }
@@ -401,8 +423,8 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
                 int yC = (int)(kCardRows[cIdx] * (double)(_pixelH - 1));
                 uint32_t pC = *((const uint32_t *)(base + (size_t)yC * _bytesPerRow + (size_t)px * 4));
                 uint8_t bC = pC & 0xFF, gC = (pC >> 8) & 0xFF, rC = (pC >> 16) & 0xFF;
-                if (rC >= 232 && gC >= 232 && bC >= 232 &&
-                    abs((int)rC - (int)gC) <= 10 && abs((int)gC - (int)bC) <= 10) {
+                if (rC >= 228 && gC >= 228 && bC >= 228 &&
+                    abs((int)rC - (int)gC) <= 12 && abs((int)gC - (int)bC) <= 12) {
                     anyCardWhite = YES;
                     break;
                 }
@@ -421,8 +443,8 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
                 gmapsGreenHit++;
             }
         }
-        _lastFrameHasBottomTealButton    = (maxTealRowHits >= 7);
-        _lastFrameLikelyHasOrderPopup    = (maxTealRowHits >= 6 && whiteHits >= 5);
+        _lastFrameHasBottomTealButton    = (maxTealRowHits >= 5);
+        _lastFrameLikelyHasOrderPopup    = (maxTealRowHits >= 4 && whiteHits >= 4);
         _lastFrameLooksLikeGoogleMapsNav = (!_lastFrameLikelyHasOrderPopup && gmapsGreenHit >= 8);
 
         // 3. Top Header Flush Sensor + Top-Left Service Icon Color Sensor (0.01ms):
@@ -535,6 +557,22 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastOrderYellowDotY                = 0.0;
         return nil;
+    }
+
+    // Clear 4 canary pixels (and bump IOSurface seed) BEFORE rendering so a silent CARenderServerRenderDisplay no-op is detected 100%!
+    if (_fnSurfaceLock && _fnSurfaceUnlock && _fnSurfaceBase && _pixelW > 16 && _pixelH > 16) {
+        if (_fnSurfaceLock(_srcSurface, 0, NULL) == KERN_SUCCESS) {
+            uint8_t *wBase = (uint8_t *)_fnSurfaceBase(_srcSurface);
+            if (wBase) {
+                static const double kCanaryY[4] = { 0.12, 0.35, 0.62, 0.88 };
+                int cx = _pixelW / 2;
+                for (int k = 0; k < 4; k++) {
+                    int cy = (int)(kCanaryY[k] * (double)(_pixelH - 1));
+                    *((uint32_t *)(wBase + (size_t)cy * _bytesPerRow + (size_t)cx * 4)) = 0;
+                }
+            }
+            _fnSurfaceUnlock(_srcSurface, 0, NULL);
+        }
     }
 
     _fnRenderDisplay(0, CFSTR("LCD"), _srcSurface, 0, 0);

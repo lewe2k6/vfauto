@@ -37,7 +37,7 @@ typedef int (*memorystatus_control_f)(uint32_t command, int32_t pid, uint32_t fl
 #define MEMSTAT_CMD_SET_IS_FREEZABLE     18
 #define JETSAM_PRIO_CRITICAL             19
 #define JETSAM_PRIO_IMPORTANT            18
-#define JETSAM_PRIO_WORKER_SAFE          12
+#define JETSAM_PRIO_WORKER_SAFE          14
 
 #define kExitCodeProactiveRAMTrim        42
 
@@ -311,13 +311,17 @@ static int runWatchdogMain(const char *execPath) {
         NSString *myExecStr = workerExecPath ? [NSString stringWithUTF8String:workerExecPath] : @"";
         writeStringUnprotectedAtomically(wdPidStr, kWatchdogPidPath);
 
-        // Sync Google Maps scheme interception while running as root (uid=0) so Worker (uid=501) never needs to spawn a child
-        FilterConfig *bootCfg = [FilterConfig loadFromDisk];
-        if (!bootCfg.masterEnabled && readMasterEnabledSafely(YES)) {
-            bootCfg.masterEnabled = YES;
-        }
-        syncGoogleMapsSchemeInterceptionForConfig(bootCfg);
-        ensureSharedFilesPermissions();
+        // Sync Google Maps scheme interception asynchronously on background queue so Watchdog spawns Worker immediately (0ms)!
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            @autoreleasepool {
+                FilterConfig *bootCfg = [FilterConfig loadFromDisk];
+                if (!bootCfg.masterEnabled && readMasterEnabledSafely(YES)) {
+                    bootCfg.masterEnabled = YES;
+                }
+                syncGoogleMapsSchemeInterceptionForConfig(bootCfg);
+                ensureSharedFilesPermissions();
+            }
+        });
 
         dispatch_queue_t wdQ = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
         int stopTok = 0;
@@ -411,8 +415,10 @@ static int runWatchdogMain(const char *execPath) {
                     lastLoopWallEpoch = nowWall;
 
                     tickCount++;
-                    if (tickCount % 20 == 0) { // Every ~5s self-heal PID file, check TrollStore update, master switch & heartbeat
+                    if (tickCount % 20 == 0) { // Every ~5s self-heal PID file, Jetsam band, TrollStore update, master switch & heartbeat
                         @autoreleasepool {
+                            applyWatchdogJetsamToPid(me);
+                            applyWorkerJetsamToPid(workerPid);
                             if (readRawPidValueFromFile(kWatchdogPidPath) != me) {
                                 writeStringUnprotectedAtomically(wdPidStr, kWatchdogPidPath);
                             }
@@ -1220,9 +1226,12 @@ static int runWorkerMain(void) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 double now = [[NSDate date] timeIntervalSince1970];
 
-                if (now - lastHeartbeatSaveEpoch >= 10.0) {
+                if (now - lastHeartbeatSaveEpoch >= 5.0) {
                     if (readRawPidValueFromFile(kDaemonPidPath) != myPid) {
                         writeStringUnprotectedAtomically(myPidStr, kDaemonPidPath);
+                    }
+                    if (config.masterEnabled && getRunningWatchdogPID() <= 0 && myLiveBinPath.length > 0) {
+                        spawnRoot(myLiveBinPath, @[@"--daemonize"]);
                     }
                     processPendingMapRelayQueueIfAny(config);
                     state.workerHeartbeatEpoch = now;
@@ -1237,6 +1246,9 @@ static int runWorkerMain(void) {
                     }
                     config = reloaded;
                     gNeedsReload = NO;
+                    state.workerHeartbeatEpoch = now;
+                    [state saveStateAndNotify:NO];
+                    lastHeartbeatSaveEpoch = now;
                     syncGoogleMapsSchemeInterceptionForConfig(config);
                     resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
@@ -1277,7 +1289,10 @@ static int runWorkerMain(void) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:YES];
                     }
-                    if (!isMapRelayInFlight() && ((now - bootEpoch) > 3600.0 || currentProcessFootprintMB() > sleepTrimMB)) {
+                    if (!isMapRelayInFlight() &&
+                        !inActiveTripSession &&
+                        getRunningWatchdogPID() > 0 &&
+                        ((now - bootEpoch) > 3600.0 || currentProcessFootprintMB() > sleepTrimMB)) {
                         state.workerHeartbeatEpoch = now;
                         [state saveStateAndNotify:NO];
                         _exit(kExitCodeProactiveRAMTrim);
@@ -1287,7 +1302,13 @@ static int runWorkerMain(void) {
                 } else if (lockedSinceEpoch > 0.0) {
                     double lockedDuration = now - lockedSinceEpoch;
                     lockedSinceEpoch = 0.0;
-                    if (!isMapRelayInFlight() && lockedDuration >= 300.0) {
+                    resetFrontmostAppMonitors();
+                    [engine invalidateAnalyzedBaseline];
+                    turboUntilEpoch = now + 3.0;
+                    if (!isMapRelayInFlight() &&
+                        !inActiveTripSession &&
+                        getRunningWatchdogPID() > 0 &&
+                        lockedDuration >= 300.0) {
                         state.workerHeartbeatEpoch = now;
                         state.phaseDescription = @"Đang trực tuyến / Canh đơn (Mới mở khóa)";
                         [state saveStateAndNotify:NO];
@@ -1297,21 +1318,32 @@ static int runWorkerMain(void) {
 
                 CIImage *preCapturedImg = nil;
 
-                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG Ở NGOÀI APP TÀI XẾ (0% GPU / 0% CHỤP MÀN HÌNH KHI DÙNG APP KHÁC) ---
+                // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG Ở NGOÀI APP TÀI XẾ (TỰ PHỤC HỒI NẾU MONITOR KẸT) ---
                 if (config.smartCoolMode) {
                     NSString *frontBid = currentFrontmostAppBundleIDForConfig(config);
                     BOOL canScan = isFrontmostAppAllowedForScan(frontBid, config);
 
-                    // Only probe pixels if neither monitor identified the foreground app (frontBid.length == 0).
-                    // When frontBid is known to be Safari/Zalo/HomeScreen/Maps, do NOT call CARenderServerRenderDisplay at all!
-                    if (!canScan && frontBid.length == 0) {
+                    // SELF-HEAL PIXEL PROBE:
+                    // Even if BKSApplicationStateMonitor / FBSDisplayLayoutMonitor got stuck reporting a stale app
+                    // (e.g. PinNhietDo after Map Relay bounce-back, SpringBoard banner, phone call, or Camera),
+                    // probe screen pixels every 2 ticks (~1.2s) in 0.02ms to wake up immediately when Xanh SM is on screen!
+                    if (!canScan) {
                         coolSleepTickCounter++;
-                        if ((coolSleepTickCounter % 5) == 0) {
+                        BOOL isGoogleMapsFront = [frontBid isEqualToString:@"com.google.Maps"];
+                        int probeMod = isGoogleMapsFront ? 4 : 2;
+                        if ((coolSleepTickCounter % probeMod) == 0) {
                             CIImage *probe = [engine captureScreenCIImage];
-                            if (probe && (engine.lastFrameLikelyHasOrderPopup || engine.lastFrameLikelyHasLobbyPowerButton)) {
+                            if (probe && !engine.lastFrameLooksLikeGoogleMapsNav &&
+                                (engine.lastFrameLikelyHasOrderPopup ||
+                                 engine.lastFrameHasBottomTealButton ||
+                                 (!isGoogleMapsFront && engine.lastFrameLikelyHasLobbyPowerButton))) {
                                 canScan = YES;
                                 preCapturedImg = probe;
+                                resetFrontmostAppMonitors();
                             }
+                        }
+                        if (!canScan && (coolSleepTickCounter % 8) == 0) {
+                            resetFrontmostAppMonitors();
                         }
                     }
 
@@ -1329,6 +1361,8 @@ static int runWorkerMain(void) {
                         }
 
                         if (!isMapRelayInFlight() &&
+                            !inActiveTripSession &&
+                            getRunningWatchdogPID() > 0 &&
                             ![frontBid isEqualToString:kAppBundleID] &&
                             (((now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > sleepTrimMB) ||
                              (now - bootEpoch) > 7200.0)) {
@@ -1337,7 +1371,7 @@ static int runWorkerMain(void) {
                             _exit(kExitCodeProactiveRAMTrim);
                         }
 
-                        usleep(750000);
+                        usleep(600000);
                         continue;
                     } else if (wasInCoolSleep) {
                         wasInCoolSleep = NO;
@@ -1357,7 +1391,7 @@ static int runWorkerMain(void) {
                     [state saveStateAndNotify:YES];
                 }
 
-                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: CẢM BIẾN PIXEL 0.02ms CHẶN 98% VISION OCR KHI CHƯA NỔ ĐƠN ---
+                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: CẢM BIẾN PIXEL 0.02ms CHẶN VISION OCR KHI MÀN HÌNH ĐỨNG YÊN ---
                 CIImage *screenImg = preCapturedImg ?: [engine captureScreenCIImage];
                 if (!screenImg) {
                     usleep((useconds_t)(MAX(250, config.scanIntervalMs) * 1000));
@@ -1366,7 +1400,8 @@ static int runWorkerMain(void) {
 
                 if (config.smartCoolMode &&
                     engine.lastFrameLooksLikeGoogleMapsNav &&
-                    !engine.lastFrameLikelyHasOrderPopup) {
+                    !engine.lastFrameLikelyHasOrderPopup &&
+                    !engine.lastFrameHasBottomTealButton) {
                     usleep(600000);
                     continue;
                 }
@@ -1379,9 +1414,15 @@ static int runWorkerMain(void) {
 
                 if (config.smartCoolMode && !hasPopupOrActionCandidate) {
                     // CASE A: Uncovered bright teal Lobby [Power] circle is visible at (40, 455) in 0.01ms!
-                    // We know with 100% certainty: in Lobby Online, NO order popup, NO '0.0/8' modal sheet -> SKIP Vision OCR 100%!
-                    if (engine.lastFrameLikelyHasLobbyPowerButton) {
-                        inActiveTripSession = NO;
+                    // We know with 100% certainty: in Lobby Online, NO order popup, NO '0.0/8' modal sheet -> SKIP Vision OCR!
+                    if (engine.lastFrameLikelyHasLobbyPowerButton && frameChangedBeforeMark < 28) {
+                        if (inActiveTripSession ||
+                            ![state.phaseDescription isEqualToString:@"Đang trực tuyến / Canh đơn"]) {
+                            inActiveTripSession = NO;
+                            state.phaseDescription = @"Đang trực tuyến / Canh đơn";
+                            state.workerHeartbeatEpoch = now;
+                            [state saveStateAndNotify:YES];
+                        }
                         consecutiveOfflineInterrupts = 0;
                         [engine markCurrentFrameAnalyzed];
                         NSInteger idleMs = MAX(260, config.scanIntervalMs);
@@ -1389,11 +1430,21 @@ static int runWorkerMain(void) {
                         continue;
                     }
 
-                    // CASE B: Inside Green SM without order popup or bottom teal bar (e.g. moving map / active trip).
-                    // Only run background OCR at most once every 6.0s when the UI layout actually changes (>= 8 grid cells),
-                    // preventing 3x/sec Neural Engine / GPU thermal throttling while driving!
-                    if (frameChangedBeforeMark < 8 || (now - lastFullOCREpoch) < 6.0) {
-                        if (!isMapRelayInFlight() && (now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > idleActiveTrimMB) {
+                    // CASE B: Inside Green SM without detected bottom teal bar.
+                    // - If a big visual transition happened (frameChangedBeforeMark >= 16, e.g. order popup or modal sliding in),
+                    //   run Vision OCR IMMEDIATELY (0ms delay) even if countdown bar darkened the teal button!
+                    // - If screen is completely static (frameChangedBeforeMark <= 4), skip OCR for 2.2s.
+                    // - If map tiles are drifting slightly (5..15 cells), throttle OCR to once every 0.65s.
+                    BOOL shouldSkipIdleOCR = (now >= turboUntilEpoch &&
+                                              now >= postTransitionUntilEpoch &&
+                                              ((frameChangedBeforeMark <= 4 && (now - lastFullOCREpoch) < 2.2) ||
+                                               (frameChangedBeforeMark < 16 && (now - lastFullOCREpoch) < 0.65)));
+                    if (shouldSkipIdleOCR) {
+                        if (!isMapRelayInFlight() &&
+                            !inActiveTripSession &&
+                            getRunningWatchdogPID() > 0 &&
+                            (now - bootEpoch) > 1800.0 &&
+                            currentProcessFootprintMB() > idleActiveTrimMB) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:NO];
                             _exit(kExitCodeProactiveRAMTrim);
@@ -1471,6 +1522,8 @@ static int runWorkerMain(void) {
                     }
 
                     if (ana.orderAction == OrderActionSkipDisabled) {
+                        retryCount = 0;
+                        bannerSwipeCountForPopup = 0;
                         NSString *sig = ana.orderReason ?: @"skip";
                         if (![lastSkippedPopupSignature isEqualToString:sig]) {
                             lastSkippedPopupSignature = sig;

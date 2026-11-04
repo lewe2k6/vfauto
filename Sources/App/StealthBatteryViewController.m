@@ -23,6 +23,10 @@
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         upgradeSharedFilesProtectionNone();
+        if (isMapRelayInFlight() && getRunningWatchdogPID() > 0 && getRunningDaemonPID() > 0) {
+            // Cold-launched via comgooglemaps:// interception while Watchdog & Worker are already running -> do not touch!
+            return;
+        }
         FilterConfig *cfg = [FilterConfig loadFromDisk];
         if (cfg.masterEnabled || readMasterEnabledSafely(NO)) {
             startFilterDaemonIfNeeded();
