@@ -415,7 +415,51 @@
 - (void)refreshQRAndViewerURL {
     NSString *urlStr = buildMapRelayViewerURLString(_cfg.mapRelayTopic);
     _lblViewerURL.text = urlStr;
-    _qrImageView.image = generatePureQRImageForString(urlStr, 6.0);
+
+    const char *utf8 = [urlStr UTF8String];
+    if (!utf8) return;
+    int len = (int)strlen(utf8);
+    uint8_t modules[37][37];
+    memset(modules, 0, sizeof(modules));
+    int dim = PureQR_EncodeUTF8((const uint8_t *)utf8, len, modules);
+    if (dim <= 0) return;
+
+    const int quiet = 3;
+    const int scale = 8;
+    const int pxSize = (dim + quiet * 2) * scale;
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (!cs) return;
+    CGContextRef ctx = CGBitmapContextCreate(NULL,
+                                             (size_t)pxSize,
+                                             (size_t)pxSize,
+                                             8,
+                                             (size_t)(pxSize * 4),
+                                             cs,
+                                             (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return;
+
+    CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
+    CGContextFillRect(ctx, CGRectMake(0, 0, pxSize, pxSize));
+
+    CGContextSetRGBFillColor(ctx, 0.0, 0.0, 0.0, 1.0);
+    for (int r = 0; r < dim; r++) {
+        CGFloat y = (CGFloat)(pxSize - (quiet + r + 1) * scale);
+        for (int c = 0; c < dim; c++) {
+            if (modules[r][c]) {
+                CGFloat x = (CGFloat)((quiet + c) * scale);
+                CGContextFillRect(ctx, CGRectMake(x, y, scale, scale));
+            }
+        }
+    }
+
+    CGImageRef cgImg = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if (cgImg) {
+        _qrImageView.image = [UIImage imageWithCGImage:cgImg];
+        CGImageRelease(cgImg);
+    }
 }
 
 - (void)switchChanged {
