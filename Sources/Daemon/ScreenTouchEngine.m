@@ -560,9 +560,9 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     }
 
     // Clear 4 canary pixels (and bump IOSurface seed) BEFORE rendering so a silent CARenderServerRenderDisplay no-op is detected 100%!
-    if (_fnSurfaceLock && _fnSurfaceUnlock && _fnSurfaceBase && _pixelW > 16 && _pixelH > 16) {
+    if (_fnSurfaceLock && _fnSurfaceUnlock && _fnSurfaceBaseAddr && _pixelW > 16 && _pixelH > 16) {
         if (_fnSurfaceLock(_srcSurface, 0, NULL) == KERN_SUCCESS) {
-            uint8_t *wBase = (uint8_t *)_fnSurfaceBase(_srcSurface);
+            uint8_t *wBase = (uint8_t *)_fnSurfaceBaseAddr(_srcSurface);
             if (wBase) {
                 static const double kCanaryY[4] = { 0.12, 0.35, 0.62, 0.88 };
                 int cx = _pixelW / 2;
