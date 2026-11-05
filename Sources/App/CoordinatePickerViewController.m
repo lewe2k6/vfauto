@@ -33,6 +33,21 @@
 
 - (void)updateBadgeWithPoint:(CGPoint)pt {
     self.badgeLabel.text = [NSString stringWithFormat:@" %@ (%.0f,%.0f) ", self.titleText, pt.x, pt.y];
+    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+    if (screenW < 200.0) screenW = 375.0;
+    CGFloat boxW = self.bounds.size.width;
+    CGFloat badgeW = boxW + 56.0;
+    CGFloat idealX = -28.0;
+    CGFloat worldLeft = pt.x - boxW * 0.5 + idealX;
+    CGFloat worldRight = worldLeft + badgeW;
+    if (worldRight > screenW - 4.0) {
+        idealX -= (worldRight - (screenW - 4.0));
+    }
+    if (pt.x - boxW * 0.5 + idealX < 4.0) {
+        idealX = 4.0 - (pt.x - boxW * 0.5);
+    }
+    CGFloat badgeY = (pt.y < 36.0) ? (self.bounds.size.height + 2.0) : -22.0;
+    self.badgeLabel.frame = CGRectMake(idealX, badgeY, badgeW, 19.0);
 }
 
 - (void)drawRect:(CGRect)rect {
@@ -102,9 +117,6 @@
 - (CrosshairPinView *)spawnPin:(NSString *)title color:(UIColor *)color at:(CGPoint)pt {
     CrosshairPinView *p = [[CrosshairPinView alloc] initWithTitle:title color:color jitter:_jitterRadius];
     p.center = pt;
-    if (pt.y < 36) {
-        p.badgeLabel.frame = CGRectMake(-28, p.bounds.size.height + 2, p.bounds.size.width + 56, 19);
-    }
     [p updateBadgeWithPoint:pt];
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinPan:)];
     [p addGestureRecognizer:pan];
@@ -127,17 +139,22 @@
     _pinOffline = [self spawnPin:@"3.Tắt ⏻"     color:[UIColor systemOrangeColor] at:_offlinePt];
     _pinOnline  = [self spawnPin:@"4.Mở nhận"   color:[UIColor systemPurpleColor] at:_onlinePt];
 
-    UIView *hud = [[UIView alloc] initWithFrame:CGRectMake(20, 115, self.view.bounds.size.width - 40, 102)];
+    UIView *hud = [[UIView alloc] initWithFrame:CGRectMake(14, 115, self.view.bounds.size.width - 28, 102)];
+    hud.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     hud.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.84];
     hud.layer.cornerRadius = 14;
     hud.layer.borderWidth = 1.0;
     hud.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.22].CGColor;
+    hud.clipsToBounds = YES;
 
     UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(8, 8, hud.bounds.size.width - 16, 40)];
+    hint.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     hint.text = @"Kéo 4 hồng tâm đè khít lên từng nút tương ứng.\n(Hộp đen này kéo đi chỗ khác được)";
     hint.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightMedium];
     hint.textColor = [UIColor colorWithWhite:0.92 alpha:1.0];
     hint.numberOfLines = 2;
+    hint.adjustsFontSizeToFitWidth = YES;
+    hint.minimumScaleFactor = 0.75;
     hint.textAlignment = NSTextAlignmentCenter;
     [hud addSubview:hint];
 
@@ -147,6 +164,8 @@
     [cancelBtn setTitle:@"Hủy" forState:UIControlStateNormal];
     [cancelBtn setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
     cancelBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    cancelBtn.titleLabel.adjustsFontSizeToFitWidth = YES;
+    cancelBtn.titleLabel.minimumScaleFactor = 0.75;
     cancelBtn.backgroundColor = [UIColor colorWithWhite:0.18 alpha:1.0];
     cancelBtn.layer.cornerRadius = 8;
     [cancelBtn addTarget:self action:@selector(cancelTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -157,6 +176,8 @@
     [saveBtn setTitle:@"Lưu Cả 4 Tọa Độ" forState:UIControlStateNormal];
     [saveBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     saveBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+    saveBtn.titleLabel.adjustsFontSizeToFitWidth = YES;
+    saveBtn.titleLabel.minimumScaleFactor = 0.75;
     saveBtn.backgroundColor = [UIColor systemGreenColor];
     saveBtn.layer.cornerRadius = 8;
     [saveBtn addTarget:self action:@selector(saveTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -176,11 +197,6 @@
     pin.center = CGPointMake(nx, ny);
     [gr setTranslation:CGPointZero inView:self.view];
 
-    if (ny < 36) {
-        pin.badgeLabel.frame = CGRectMake(-28, pin.bounds.size.height + 2, pin.bounds.size.width + 56, 19);
-    } else {
-        pin.badgeLabel.frame = CGRectMake(-28, -22, pin.bounds.size.width + 56, 19);
-    }
     [pin updateBadgeWithPoint:pin.center];
 
     if (pin == _pinClose)        _closePt   = pin.center;

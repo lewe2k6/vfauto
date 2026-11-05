@@ -65,16 +65,21 @@
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = [UIColor colorWithRed:0.13 green:0.14 blue:0.18 alpha:1.0];
     card.layer.cornerRadius = 14;
+    card.clipsToBounds = YES;
 
     UILabel *t = [[UILabel alloc] init];
     t.text = title;
     t.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     t.textColor = [UIColor colorWithWhite:0.65 alpha:1.0];
+    t.adjustsFontSizeToFitWidth = YES;
+    t.minimumScaleFactor = 0.75;
     t.translatesAutoresizingMaskIntoConstraints = NO;
 
     UILabel *v = [[UILabel alloc] init];
     v.font = [UIFont monospacedDigitSystemFontOfSize:18 weight:UIFontWeightBold];
     v.textColor = [UIColor whiteColor];
+    v.adjustsFontSizeToFitWidth = YES;
+    v.minimumScaleFactor = 0.72;
     v.translatesAutoresizingMaskIntoConstraints = NO;
 
     [card addSubview:t];
@@ -84,8 +89,10 @@
         [card.heightAnchor constraintEqualToConstant:72],
         [t.topAnchor constraintEqualToAnchor:card.topAnchor constant:14],
         [t.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
+        [t.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
         [v.topAnchor constraintEqualToAnchor:t.bottomAnchor constant:6],
-        [v.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16]
+        [v.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
+        [v.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16]
     ]];
 
     if (outLbl) *outLbl = v;
@@ -95,15 +102,16 @@
 - (void)buildDisguiseUI {
     UIStackView *root = [[UIStackView alloc] init];
     root.axis = UILayoutConstraintAxisVertical;
-    root.spacing = 16;
+    root.alignment = UIStackViewAlignmentFill;
+    root.spacing = 14;
     root.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:root];
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [root.topAnchor constraintEqualToAnchor:safe.topAnchor constant:20],
-        [root.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
-        [root.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20]
+        [root.topAnchor constraintEqualToAnchor:safe.topAnchor constant:16],
+        [root.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
+        [root.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16]
     ]];
 
     // SECRET GATE HEADER: Long-press 2.0s on "Trạng thái Pin" opens hidden config!
@@ -111,6 +119,8 @@
     header.text = @"Trạng thái Pin";
     header.font = [UIFont systemFontOfSize:26 weight:UIFontWeightHeavy];
     header.textColor = [UIColor whiteColor];
+    header.adjustsFontSizeToFitWidth = YES;
+    header.minimumScaleFactor = 0.75;
     header.userInteractionEnabled = YES;
 
     UILongPressGestureRecognizer *secretHold = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleSecretGate:)];
@@ -124,27 +134,34 @@
     hero.layer.cornerRadius = 18;
     hero.layer.borderWidth = 1.0;
     hero.layer.borderColor = [[UIColor systemGreenColor] colorWithAlphaComponent:0.35].CGColor;
+    hero.clipsToBounds = YES;
     [hero.heightAnchor constraintEqualToConstant:150].active = YES;
 
     _percentLabel = [[UILabel alloc] init];
     _percentLabel.font = [UIFont monospacedDigitSystemFontOfSize:54 weight:UIFontWeightBold];
     _percentLabel.textColor = [UIColor systemGreenColor];
     _percentLabel.textAlignment = NSTextAlignmentCenter;
+    _percentLabel.adjustsFontSizeToFitWidth = YES;
+    _percentLabel.minimumScaleFactor = 0.70;
     _percentLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
     _stateLabel = [[UILabel alloc] init];
     _stateLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     _stateLabel.textColor = [UIColor colorWithWhite:0.85 alpha:1.0];
     _stateLabel.textAlignment = NSTextAlignmentCenter;
+    _stateLabel.adjustsFontSizeToFitWidth = YES;
+    _stateLabel.minimumScaleFactor = 0.75;
     _stateLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
     [hero addSubview:_percentLabel];
     [hero addSubview:_stateLabel];
 
     [NSLayoutConstraint activateConstraints:@[
-        [_percentLabel.centerXAnchor constraintEqualToAnchor:hero.centerXAnchor],
+        [_percentLabel.leadingAnchor constraintEqualToAnchor:hero.leadingAnchor constant:12],
+        [_percentLabel.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-12],
         [_percentLabel.topAnchor constraintEqualToAnchor:hero.topAnchor constant:28],
-        [_stateLabel.centerXAnchor constraintEqualToAnchor:hero.centerXAnchor],
+        [_stateLabel.leadingAnchor constraintEqualToAnchor:hero.leadingAnchor constant:12],
+        [_stateLabel.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor constant:-12],
         [_stateLabel.topAnchor constraintEqualToAnchor:_percentLabel.bottomAnchor constant:8]
     ]];
     [root addArrangedSubview:hero];

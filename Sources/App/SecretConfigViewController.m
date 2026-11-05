@@ -98,7 +98,16 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = [NSString stringWithFormat:@"Tinh Chỉnh Lọc Đơn v%@", kCurrentDaemonVersion];
+    NSString *navTitleText = [NSString stringWithFormat:@"Tinh Chỉnh Lọc Đơn v%@", kCurrentDaemonVersion];
+    self.title = navTitleText;
+    UILabel *navTitleLbl = [[UILabel alloc] init];
+    navTitleLbl.text = navTitleText;
+    navTitleLbl.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightBold];
+    navTitleLbl.textColor = [UIColor whiteColor];
+    navTitleLbl.adjustsFontSizeToFitWidth = YES;
+    navTitleLbl.minimumScaleFactor = 0.72;
+    navTitleLbl.textAlignment = NSTextAlignmentCenter;
+    self.navigationItem.titleView = navTitleLbl;
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.09 alpha:1.0];
 
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc] initWithTitle:@"Đóng"
@@ -210,18 +219,21 @@
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = [UIColor colorWithRed:0.12 green:0.13 blue:0.16 alpha:1.0];
     card.layer.cornerRadius = 14;
+    card.clipsToBounds = YES;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
 
     UIStackView *vStack = [[UIStackView alloc] init];
     vStack.axis = UILayoutConstraintAxisVertical;
+    vStack.alignment = UIStackViewAlignmentFill;
     vStack.spacing = 12;
     vStack.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:vStack];
 
     [NSLayoutConstraint activateConstraints:@[
-        [vStack.topAnchor constraintEqualToAnchor:card.topAnchor constant:14],
-        [vStack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14],
-        [vStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14],
-        [vStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14]
+        [vStack.topAnchor constraintEqualToAnchor:card.topAnchor constant:12],
+        [vStack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12],
+        [vStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
+        [vStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12]
     ]];
 
     if (title.length > 0) {
@@ -229,6 +241,9 @@
         hdr.text = title.uppercaseString;
         hdr.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
         hdr.textColor = [UIColor colorWithRed:0.0 green:0.78 blue:0.72 alpha:1.0];
+        hdr.numberOfLines = 0;
+        hdr.lineBreakMode = NSLineBreakByWordWrapping;
+        [hdr setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
         [vStack addArrangedSubview:hdr];
     }
 
@@ -237,21 +252,39 @@
     return card;
 }
 
+- (void)configureResponsiveLabel:(UILabel *)lbl {
+    lbl.numberOfLines = 0;
+    lbl.lineBreakMode = NSLineBreakByWordWrapping;
+    [lbl setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+}
+
+- (void)configureResponsiveButton:(UIButton *)b {
+    b.titleLabel.adjustsFontSizeToFitWidth = YES;
+    b.titleLabel.minimumScaleFactor = 0.70;
+    b.titleLabel.numberOfLines = 2;
+    b.titleLabel.textAlignment = NSTextAlignmentCenter;
+    b.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    b.contentEdgeInsets = UIEdgeInsetsMake(4, 6, 4, 6);
+    b.clipsToBounds = YES;
+    [b setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+}
+
 - (UISwitch *)addSwitchRowTo:(UIStackView *)stack title:(NSString *)title subtitle:(NSString *)sub action:(SEL)sel {
-    UIStackView *row = [[UIStackView alloc] init];
-    row.axis = UILayoutConstraintAxisHorizontal;
-    row.alignment = UIStackViewAlignmentCenter;
-    row.spacing = 8;
+    UIView *row = [[UIView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
 
     UIStackView *txtStack = [[UIStackView alloc] init];
     txtStack.axis = UILayoutConstraintAxisVertical;
+    txtStack.alignment = UIStackViewAlignmentFill;
     txtStack.spacing = 2;
+    txtStack.translatesAutoresizingMaskIntoConstraints = NO;
+    [txtStack setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
 
     UILabel *lbl = [[UILabel alloc] init];
     lbl.text = title;
-    lbl.font = [UIFont systemFontOfSize:14.5 weight:UIFontWeightSemibold];
+    lbl.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
     lbl.textColor = [UIColor whiteColor];
-    lbl.numberOfLines = 0;
+    [self configureResponsiveLabel:lbl];
     [txtStack addArrangedSubview:lbl];
 
     if (sub.length > 0) {
@@ -259,16 +292,31 @@
         sLbl.text = sub;
         sLbl.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightRegular];
         sLbl.textColor = [UIColor colorWithWhite:0.65 alpha:1.0];
-        sLbl.numberOfLines = 0;
+        [self configureResponsiveLabel:sLbl];
         [txtStack addArrangedSubview:sLbl];
     }
 
     UISwitch *sw = [[UISwitch alloc] init];
     sw.onTintColor = [UIColor colorWithRed:0.0 green:0.75 blue:0.68 alpha:1.0];
+    sw.translatesAutoresizingMaskIntoConstraints = NO;
+    [sw setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [sw setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [sw addTarget:self action:sel forControlEvents:UIControlEventValueChanged];
 
-    [row addArrangedSubview:txtStack];
-    [row addArrangedSubview:sw];
+    [row addSubview:txtStack];
+    [row addSubview:sw];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:36],
+        [sw.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-2],
+        [sw.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [sw.widthAnchor constraintEqualToConstant:51],
+        [txtStack.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [txtStack.trailingAnchor constraintEqualToAnchor:sw.leadingAnchor constant:-10],
+        [txtStack.topAnchor constraintEqualToAnchor:row.topAnchor constant:2],
+        [txtStack.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-2]
+    ]];
+
     [stack addArrangedSubview:row];
     return sw;
 }
@@ -280,18 +328,20 @@
                       action:(SEL)sel {
     UIStackView *wrap = [[UIStackView alloc] init];
     wrap.axis = UILayoutConstraintAxisVertical;
+    wrap.alignment = UIStackViewAlignmentFill;
     wrap.spacing = 4;
 
     UILabel *lbl = [[UILabel alloc] init];
-    lbl.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightMedium];
+    lbl.font = [UIFont monospacedDigitSystemFontOfSize:12.2 weight:UIFontWeightMedium];
     lbl.textColor = [UIColor colorWithWhite:0.90 alpha:1.0];
-    lbl.numberOfLines = 0;
+    [self configureResponsiveLabel:lbl];
     [wrap addArrangedSubview:lbl];
 
     UISlider *sl = [[UISlider alloc] init];
     sl.minimumValue = minVal;
     sl.maximumValue = maxVal;
     sl.minimumTrackTintColor = [UIColor colorWithRed:0.0 green:0.75 blue:0.68 alpha:1.0];
+    [sl setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
     [sl addTarget:self action:sel forControlEvents:UIControlEventValueChanged];
     [wrap addArrangedSubview:sl];
 
@@ -304,33 +354,48 @@
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     [b setTitle:title forState:UIControlStateNormal];
     [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightBold];
+    b.titleLabel.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightBold];
     b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1.0];
     b.layer.cornerRadius = 8;
     b.tag = tag;
-    [b.heightAnchor constraintEqualToConstant:36].active = YES;
+    [self configureResponsiveButton:b];
+    [b.heightAnchor constraintGreaterThanOrEqualToConstant:38].active = YES;
     [b addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
     return b;
 }
 
 - (void)buildScrollLayout {
-    _scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
-    _scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _scrollView = [[UIScrollView alloc] init];
+    _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     _scrollView.alwaysBounceVertical = YES;
+    _scrollView.alwaysBounceHorizontal = NO;
+    _scrollView.showsHorizontalScrollIndicator = NO;
+    _scrollView.directionalLockEnabled = YES;
     [self.view addSubview:_scrollView];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [_scrollView.topAnchor constraintEqualToAnchor:safe.topAnchor],
+        [_scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_scrollView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [_scrollView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor]
+    ]];
 
     _stackView = [[UIStackView alloc] init];
     _stackView.axis = UILayoutConstraintAxisVertical;
+    _stackView.alignment = UIStackViewAlignmentFill;
     _stackView.spacing = 14;
     _stackView.translatesAutoresizingMaskIntoConstraints = NO;
     [_scrollView addSubview:_stackView];
 
+    UILayoutGuide *contentG = _scrollView.contentLayoutGuide;
+    UILayoutGuide *frameG   = _scrollView.frameLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [_stackView.topAnchor constraintEqualToAnchor:_scrollView.topAnchor constant:14],
-        [_stackView.bottomAnchor constraintEqualToAnchor:_scrollView.bottomAnchor constant:-32],
-        [_stackView.leadingAnchor constraintEqualToAnchor:_scrollView.leadingAnchor constant:12],
-        [_stackView.trailingAnchor constraintEqualToAnchor:_scrollView.trailingAnchor constant:-12],
-        [_stackView.widthAnchor constraintEqualToAnchor:_scrollView.widthAnchor constant:-24]
+        [_stackView.topAnchor constraintEqualToAnchor:contentG.topAnchor constant:12],
+        [_stackView.bottomAnchor constraintEqualToAnchor:contentG.bottomAnchor constant:-32],
+        [_stackView.leadingAnchor constraintEqualToAnchor:contentG.leadingAnchor constant:10],
+        [_stackView.trailingAnchor constraintEqualToAnchor:contentG.trailingAnchor constant:-10],
+        [_stackView.widthAnchor constraintEqualToAnchor:frameG.widthAnchor constant:-20]
     ]];
 
     // --- CARD 0: LIVE STATUS, MAP RELAY & COUNTDOWN ---
@@ -338,22 +403,24 @@
     [self makeCardWithTitle:@"Trạng Thái Trực Tiếp & Cầu Nối Map" addTo:_stackView outBody:&statBody];
 
     _daemonStatusLabel = [[UILabel alloc] init];
-    _daemonStatusLabel.font = [UIFont monospacedDigitSystemFontOfSize:14 weight:UIFontWeightBold];
+    _daemonStatusLabel.font = [UIFont monospacedDigitSystemFontOfSize:13.5 weight:UIFontWeightBold];
+    [self configureResponsiveLabel:_daemonStatusLabel];
     [statBody addArrangedSubview:_daemonStatusLabel];
 
     _phaseLabel = [[UILabel alloc] init];
     _phaseLabel.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightSemibold];
     _phaseLabel.textColor = [UIColor systemYellowColor];
-    _phaseLabel.numberOfLines = 0;
+    [self configureResponsiveLabel:_phaseLabel];
     [statBody addArrangedSubview:_phaseLabel];
 
     _skipPauseBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [_skipPauseBtn setTitle:@"Bỏ Qua Đếm Ngược Nghỉ — Bật Lại Ngay!" forState:UIControlStateNormal];
     [_skipPauseBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    _skipPauseBtn.titleLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightBold];
+    _skipPauseBtn.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightBold];
     _skipPauseBtn.backgroundColor = [UIColor systemOrangeColor];
     _skipPauseBtn.layer.cornerRadius = 8;
-    [_skipPauseBtn.heightAnchor constraintEqualToConstant:38].active = YES;
+    [self configureResponsiveButton:_skipPauseBtn];
+    [_skipPauseBtn.heightAnchor constraintGreaterThanOrEqualToConstant:40].active = YES;
     _skipPauseBtn.hidden = YES;
     [_skipPauseBtn addTarget:self action:@selector(skipPauseTapped) forControlEvents:UIControlEventTouchUpInside];
     [statBody addArrangedSubview:_skipPauseBtn];
@@ -361,22 +428,26 @@
     _lastMapRelayLabel = [[UILabel alloc] init];
     _lastMapRelayLabel.font = [UIFont monospacedDigitSystemFontOfSize:11.8 weight:UIFontWeightMedium];
     _lastMapRelayLabel.textColor = [UIColor colorWithRed:0.35 green:0.92 blue:0.86 alpha:1.0];
-    _lastMapRelayLabel.numberOfLines = 0;
+    [self configureResponsiveLabel:_lastMapRelayLabel];
     [statBody addArrangedSubview:_lastMapRelayLabel];
 
     UIStackView *statRow = [[UIStackView alloc] init];
     statRow.axis = UILayoutConstraintAxisHorizontal;
     statRow.alignment = UIStackViewAlignmentCenter;
+    statRow.spacing = 8;
 
     _statsLabel = [[UILabel alloc] init];
-    _statsLabel.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightMedium];
+    _statsLabel.font = [UIFont monospacedDigitSystemFontOfSize:12.2 weight:UIFontWeightMedium];
     _statsLabel.textColor = [UIColor colorWithWhite:0.88 alpha:1.0];
+    [self configureResponsiveLabel:_statsLabel];
     [statRow addArrangedSubview:_statsLabel];
 
     UIButton *resetStatBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [resetStatBtn setTitle:@"Reset số" forState:UIControlStateNormal];
     [resetStatBtn setTitleColor:[UIColor systemOrangeColor] forState:UIControlStateNormal];
     resetStatBtn.titleLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    [resetStatBtn setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [resetStatBtn setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [resetStatBtn addTarget:self action:@selector(resetStatsTapped) forControlEvents:UIControlEventTouchUpInside];
     [statRow addArrangedSubview:resetStatBtn];
     [statBody addArrangedSubview:statRow];
@@ -389,19 +460,21 @@
     UIButton *diagBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [diagBtn setTitle:@"Test Quét Màn (4s)" forState:UIControlStateNormal];
     [diagBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    diagBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+    diagBtn.titleLabel.font = [UIFont systemFontOfSize:12.8 weight:UIFontWeightBold];
     diagBtn.backgroundColor = [UIColor colorWithRed:0.16 green:0.45 blue:0.82 alpha:1.0];
     diagBtn.layer.cornerRadius = 8;
-    [diagBtn.heightAnchor constraintEqualToConstant:40].active = YES;
+    [self configureResponsiveButton:diagBtn];
+    [diagBtn.heightAnchor constraintGreaterThanOrEqualToConstant:40].active = YES;
     [diagBtn addTarget:self action:@selector(diagCaptureTapped) forControlEvents:UIControlEventTouchUpInside];
 
     UIButton *restartDaemonBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [restartDaemonBtn setTitle:@"Làm Mới Lõi Ngầm" forState:UIControlStateNormal];
     [restartDaemonBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    restartDaemonBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+    restartDaemonBtn.titleLabel.font = [UIFont systemFontOfSize:12.8 weight:UIFontWeightBold];
     restartDaemonBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.58 blue:0.50 alpha:1.0];
     restartDaemonBtn.layer.cornerRadius = 8;
-    [restartDaemonBtn.heightAnchor constraintEqualToConstant:40].active = YES;
+    [self configureResponsiveButton:restartDaemonBtn];
+    [restartDaemonBtn.heightAnchor constraintGreaterThanOrEqualToConstant:40].active = YES;
     [restartDaemonBtn addTarget:self action:@selector(forceRestartDaemonTapped) forControlEvents:UIControlEventTouchUpInside];
 
     [actionRow addArrangedSubview:diagBtn];
@@ -434,12 +507,13 @@
 
     UIStackView *priceWrap = [[UIStackView alloc] init];
     priceWrap.axis = UILayoutConstraintAxisVertical;
+    priceWrap.alignment = UIStackViewAlignmentFill;
     priceWrap.spacing = 8;
 
     _lblMinFoodPrice = [[UILabel alloc] init];
-    _lblMinFoodPrice.font = [UIFont monospacedDigitSystemFontOfSize:14 weight:UIFontWeightBold];
+    _lblMinFoodPrice.font = [UIFont monospacedDigitSystemFontOfSize:13.5 weight:UIFontWeightBold];
     _lblMinFoodPrice.textColor = [UIColor systemGreenColor];
-    _lblMinFoodPrice.numberOfLines = 0;
+    [self configureResponsiveLabel:_lblMinFoodPrice];
     _lblMinFoodPrice.userInteractionEnabled = YES;
     [_lblMinFoodPrice addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(promptExactFoodPrice)]];
     [priceWrap addArrangedSubview:_lblMinFoodPrice];
@@ -527,7 +601,7 @@
     _lblDriverApp = [[UILabel alloc] init];
     _lblDriverApp.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
     _lblDriverApp.textColor = [UIColor systemTealColor];
-    _lblDriverApp.numberOfLines = 0;
+    [self configureResponsiveLabel:_lblDriverApp];
     [sec2 addArrangedSubview:_lblDriverApp];
 
     UIStackView *appBtnRow = [[UIStackView alloc] init];
@@ -548,7 +622,7 @@
 
     _lblGmapsStatus = [[UILabel alloc] init];
     _lblGmapsStatus.font = [UIFont systemFontOfSize:12.2 weight:UIFontWeightSemibold];
-    _lblGmapsStatus.numberOfLines = 0;
+    [self configureResponsiveLabel:_lblGmapsStatus];
     [sec3 addArrangedSubview:_lblGmapsStatus];
 
     UIButton *restoreGmapsBtn = [self makeStepButton:@"Khôi Phục Icon Google Maps Lên Màn Hình" tag:0 action:@selector(restoreGoogleMapsIconTapped:)];
@@ -581,11 +655,12 @@
     [qrRow addArrangedSubview:_qrImageView];
 
     _lblMapTopic = [[UILabel alloc] init];
-    _lblMapTopic.font = [UIFont monospacedSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    _lblMapTopic.font = [UIFont monospacedSystemFontOfSize:11.8 weight:UIFontWeightSemibold];
     _lblMapTopic.textColor = [UIColor colorWithWhite:0.90 alpha:1.0];
     _lblMapTopic.textAlignment = NSTextAlignmentCenter;
-    _lblMapTopic.numberOfLines = 0;
+    [self configureResponsiveLabel:_lblMapTopic];
     [qrRow addArrangedSubview:_lblMapTopic];
+    [_lblMapTopic.widthAnchor constraintLessThanOrEqualToAnchor:qrRow.widthAnchor].active = YES;
     [sec3 addArrangedSubview:qrRow];
 
     UIStackView *relayRow1 = [[UIStackView alloc] init];
@@ -615,7 +690,7 @@
     _lblBarkStatus = [[UILabel alloc] init];
     _lblBarkStatus.font = [UIFont monospacedDigitSystemFontOfSize:11.8 weight:UIFontWeightSemibold];
     _lblBarkStatus.textColor = [UIColor colorWithRed:0.98 green:0.78 blue:0.32 alpha:1.0];
-    _lblBarkStatus.numberOfLines = 0;
+    [self configureResponsiveLabel:_lblBarkStatus];
     [sec3 addArrangedSubview:_lblBarkStatus];
 
     UIStackView *barkRow = [[UIStackView alloc] init];
@@ -636,23 +711,29 @@
 
     _segCoordMode = [[UISegmentedControl alloc] initWithItems:@[@"Bám Chữ + Bù Lệch", @"Tọa Độ Tĩnh / Ảnh"]];
     _segCoordMode.selectedSegmentTintColor = [UIColor colorWithRed:0.0 green:0.65 blue:0.60 alpha:1.0];
-    [_segCoordMode setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor whiteColor]} forState:UIControlStateNormal];
+    [_segCoordMode setTitleTextAttributes:@{
+        NSForegroundColorAttributeName: [UIColor whiteColor],
+        NSFontAttributeName: [UIFont systemFontOfSize:12.2 weight:UIFontWeightSemibold]
+    } forState:UIControlStateNormal];
+    [_segCoordMode setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
     [_segCoordMode addTarget:self action:@selector(generalControlChanged) forControlEvents:UIControlEventValueChanged];
     [sec4 addArrangedSubview:_segCoordMode];
 
     UIButton *pickImgBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [pickImgBtn setTitle:@"Mở Ảnh Màn Hình Kéo 4 Hồng Tâm" forState:UIControlStateNormal];
     [pickImgBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    pickImgBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+    pickImgBtn.titleLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightBold];
     pickImgBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.52 blue:0.85 alpha:1.0];
     pickImgBtn.layer.cornerRadius = 10;
-    [pickImgBtn.heightAnchor constraintEqualToConstant:42].active = YES;
+    [self configureResponsiveButton:pickImgBtn];
+    [pickImgBtn.heightAnchor constraintGreaterThanOrEqualToConstant:42].active = YES;
     [pickImgBtn addTarget:self action:@selector(openScreenshotPicker) forControlEvents:UIControlEventTouchUpInside];
     [sec4 addArrangedSubview:pickImgBtn];
 
     // Group A: Auto OCR + Offset (plus Offline Power X/Y since [⏻] is an icon)
     _autoCoordGroup = [[UIStackView alloc] init];
     _autoCoordGroup.axis = UILayoutConstraintAxisVertical;
+    _autoCoordGroup.alignment = UIStackViewAlignmentFill;
     _autoCoordGroup.spacing = 10;
     _slCloseRatio = [self addSliderRowTo:_autoCoordGroup min:0.82f max:0.97f outLabel:&_lblCloseRatio action:@selector(sliderChanged)];
     _slCloseOffX  = [self addSliderRowTo:_autoCoordGroup min:-40.0f max:40.0f outLabel:&_lblCloseOffX action:@selector(sliderChanged)];
@@ -666,6 +747,7 @@
     // Group B: Manual Fixed X/Y for all 4 buttons
     _manualCoordGroup = [[UIStackView alloc] init];
     _manualCoordGroup.axis = UILayoutConstraintAxisVertical;
+    _manualCoordGroup.alignment = UIStackViewAlignmentFill;
     _manualCoordGroup.spacing = 10;
     _slManCloseX   = [self addSliderRowTo:_manualCoordGroup min:10.0f max:365.0f outLabel:&_lblManCloseX action:@selector(sliderChanged)];
     _slManCloseY   = [self addSliderRowTo:_manualCoordGroup min:15.0f max:200.0f outLabel:&_lblManCloseY action:@selector(sliderChanged)];
@@ -706,6 +788,7 @@
     UIButton *clearLogBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [clearLogBtn setTitle:@"Xóa sạch Nhật ký" forState:UIControlStateNormal];
     [clearLogBtn setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
+    [self configureResponsiveButton:clearLogBtn];
     [clearLogBtn addTarget:self action:@selector(clearLogsTapped) forControlEvents:UIControlEventTouchUpInside];
     [sec5 addArrangedSubview:clearLogBtn];
 }
@@ -1084,6 +1167,7 @@
     [resetDefaultBtn setTitle:@"Khôi Phục Danh Sách Gốc Mặc Định" forState:UIControlStateNormal];
     [resetDefaultBtn setTitleColor:[UIColor systemOrangeColor] forState:UIControlStateNormal];
     resetDefaultBtn.titleLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightBold];
+    [self configureResponsiveButton:resetDefaultBtn];
     [editorVC.view addSubview:resetDefaultBtn];
 
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editorVC];
@@ -1141,6 +1225,8 @@
         [tv.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-14],
         [tv.heightAnchor constraintEqualToConstant:168],
         [resetDefaultBtn.topAnchor constraintEqualToAnchor:tv.bottomAnchor constant:10],
+        [resetDefaultBtn.leadingAnchor constraintGreaterThanOrEqualToAnchor:g.leadingAnchor constant:14],
+        [resetDefaultBtn.trailingAnchor constraintLessThanOrEqualToAnchor:g.trailingAnchor constant:-14],
         [resetDefaultBtn.centerXAnchor constraintEqualToAnchor:g.centerXAnchor]
     ]];
 
