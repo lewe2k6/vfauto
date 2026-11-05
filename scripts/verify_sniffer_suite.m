@@ -58,7 +58,7 @@ int main(int argc, const char *argv[]) {
         // TEST 1: ULID 48-bit Timestamp Decoder
         // ---------------------------------------------------------------------
         double ts = [GSMOrderPayloadSniffer decodeULIDTimestampEpoch:@"01HJN66X4T48BY3M7NA34XZZJW"];
-        ASSERT_TRUE(llround(ts) == 1703665693, "ULID timestamp expected 1703665693, got %.3f", ts);
+        ASSERT_TRUE(fabs(ts - 1703665693.850) < 0.001, "ULID timestamp expected 1703665693.850, got %.3f", ts);
 
         // ---------------------------------------------------------------------
         // TEST 2: Real GSM Express Order with package_types [{"id":"food"}]
