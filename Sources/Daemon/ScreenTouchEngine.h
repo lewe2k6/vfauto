@@ -17,6 +17,7 @@
 @property (nonatomic, readonly) BOOL lastFrameHeaderIconCoolRide;       // 0.01ms pixel sensor: top-left icon is pure cool cyan (Bike/Express)
 @property (nonatomic, readonly) BOOL lastFrameLikelyHasLobbyPowerButton;// 0.01ms pixel sensor: uncovered teal [Power] circle around (40, 455)
 @property (nonatomic, readonly) BOOL lastFrameLooksLikeGoogleMapsNav;   // 0.01ms pixel sensor: Google Maps top green turn banner
+@property (nonatomic, readonly) BOOL lastFrameLooksLikeCameraViewfinder;// 0.01ms pixel sensor: in-app Camera confirmation viewfinder ("Chụp ảnh xác nhận")
 @property (nonatomic, readonly) double lastOrderYellowDotY;             // 0.005ms pixel sensor: logical Y (pt) of yellow dropoff ring ◉ on order popup
 @property (nonatomic, readonly) NSInteger lastFrameChangedSamples;      // Out of 256 grid samples vs last OCR-analyzed frame
 

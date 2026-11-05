@@ -135,6 +135,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHeaderIconCoolRide        = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
+        _lastFrameLooksLikeCameraViewfinder = NO;
         _lastOrderYellowDotY                = 0.0;
         _lastFrameChangedSamples            = kGridCount;
         _hasAnalyzedBaseline                = NO;
@@ -353,6 +354,10 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     }
 
     if (canaryWritten) {
+        // CARenderServerRenderDisplay overwrote our 0x00000000 canary with a fresh BGRA pixel (alpha 0xFF).
+        // Even on a dark night-time Camera viewfinder (0xFF000000), treat as valid so we NEVER trigger false rebuilds or _dstSurface VRAM churn!
+        nonZero = YES;
+    } else {
         size_t step = count / 97;
         if (step == 0) step = 1;
         for (size_t i = step; i < count; i += step) {
@@ -539,6 +544,49 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
             }
         }
         _lastFrameLikelyHasLobbyPowerButton = (!_lastFrameLikelyHasOrderPopup && pwrRingHits >= 4);
+
+        // 5. In-App Camera Confirmation Viewfinder Sensor ("Chụp ảnh xác nhận", 0.01ms):
+        //    Detects dark top camera bar (y~7.2%) + dark bottom shutter bar wings (y~88.5% & 93.5%, left/right of center shutter button)
+        //    when NO order popup, NO bottom teal button, and NO lobby power button is present -> skips Vision OCR during 280MB Camera ISP spike!
+        if (!_lastFrameLikelyHasOrderPopup &&
+            !_lastFrameHasBottomTealButton &&
+            !_lastFrameHasOrderHeaderAtTop &&
+            !_lastFrameLikelyHasLobbyPowerButton &&
+            !_lastFrameLooksLikeGoogleMapsNav) {
+            int yCamTop  = (int)(0.072 * (double)(_pixelH - 1));
+            int yCamBot1 = (int)(0.885 * (double)(_pixelH - 1));
+            int yCamBot2 = (int)(0.935 * (double)(_pixelH - 1));
+            const uint8_t *rowCamTop  = base + (size_t)yCamTop  * _bytesPerRow;
+            const uint8_t *rowCamBot1 = base + (size_t)yCamBot1 * _bytesPerRow;
+            const uint8_t *rowCamBot2 = base + (size_t)yCamBot2 * _bytesPerRow;
+            static const double kWingX[12] = {
+                0.08, 0.13, 0.18, 0.23, 0.28, 0.33,
+                0.67, 0.72, 0.77, 0.82, 0.87, 0.92
+            };
+            int darkTopHits = 0;
+            int darkBotWingHits = 0;
+            for (int k = 0; k < 12; k++) {
+                int pxT = (int)((0.08 + (0.84 * (double)k / 11.0)) * (double)(_pixelW - 1));
+                uint32_t pT = *((const uint32_t *)(rowCamTop + (size_t)pxT * 4));
+                uint8_t bT = pT & 0xFF, gT = (pT >> 8) & 0xFF, rT = (pT >> 16) & 0xFF;
+                if (rT <= 42 && gT <= 42 && bT <= 42) {
+                    darkTopHits++;
+                }
+
+                int pxW = (int)(kWingX[k] * (double)(_pixelW - 1));
+                uint32_t pB1 = *((const uint32_t *)(rowCamBot1 + (size_t)pxW * 4));
+                uint8_t bB1 = pB1 & 0xFF, gB1 = (pB1 >> 8) & 0xFF, rB1 = (pB1 >> 16) & 0xFF;
+                uint32_t pB2 = *((const uint32_t *)(rowCamBot2 + (size_t)pxW * 4));
+                uint8_t bB2 = pB2 & 0xFF, gB2 = (pB2 >> 8) & 0xFF, rB2 = (pB2 >> 16) & 0xFF;
+                if (rB1 <= 38 && gB1 <= 38 && bB1 <= 38 &&
+                    rB2 <= 38 && gB2 <= 38 && bB2 <= 38) {
+                    darkBotWingHits++;
+                }
+            }
+            _lastFrameLooksLikeCameraViewfinder = (darkBotWingHits >= 10 && darkTopHits >= 9);
+        } else {
+            _lastFrameLooksLikeCameraViewfinder = NO;
+        }
     }
 
     _fnSurfaceUnlock(surface, kIOSurfaceLockReadOnlyFlag, NULL);
@@ -567,6 +615,8 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHeaderIconWarmFood        = NO;
         _lastFrameHeaderIconCoolRide        = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
+        _lastFrameLooksLikeGoogleMapsNav    = NO;
+        _lastFrameLooksLikeCameraViewfinder = NO;
         _lastOrderYellowDotY                = 0.0;
         return NO;
     }
@@ -624,6 +674,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHeaderIconCoolRide        = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastFrameLooksLikeGoogleMapsNav    = NO;
+        _lastFrameLooksLikeCameraViewfinder = NO;
         _lastOrderYellowDotY                = 0.0;
         _consecutiveEmptyCaptures++;
         if (_consecutiveEmptyCaptures >= 3) {

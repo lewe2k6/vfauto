@@ -705,8 +705,13 @@ BOOL bundleIDMatchesDriverApp(NSString *bid, FilterConfig *config) {
 static BOOL isSystemOverlayIdentifier(NSString *ident) {
     if (!ident || ident.length == 0) return YES;
     NSString *lower = ident.lowercaseString;
-    if ([lower isEqualToString:@"com.apple.springboard"]) {
-        return NO; // Real home screen
+    if ([lower isEqualToString:@"com.apple.springboard"] ||
+        [lower containsString:@"home-screen"] ||
+        [lower containsString:@"homescreen"] ||
+        [lower containsString:@"app-switcher"] ||
+        [lower containsString:@"spotlight"] ||
+        [lower containsString:@"today-view"]) {
+        return NO; // Real iOS Home Screen / App Switcher surface (NOT a transparent overlay)
     }
     NSArray<NSString *> *overlays = @[
         @"accessibilityuiserver",
@@ -745,6 +750,13 @@ static NSString *normalizeSceneIdentifierToBundleID(NSString *raw) {
     if (!raw || raw.length == 0) return nil;
     if ([raw containsString:@"com.google.Maps"]) {
         return @"com.google.Maps";
+    }
+    NSString *lower = raw.lowercaseString;
+    if ([lower isEqualToString:@"com.apple.springboard"] ||
+        ([lower hasPrefix:@"com.apple.springboard"] && !isSystemOverlayIdentifier(raw)) ||
+        [lower isEqualToString:@"home-screen"] ||
+        [lower isEqualToString:@"homescreen"]) {
+        return @"com.apple.springboard";
     }
     NSString *s = raw;
     if ([s hasPrefix:@"sceneID:"]) {
@@ -792,20 +804,106 @@ static void invalidateMonitorSafely(id mon) {
     }
 }
 
+static id ensureSharedBKSMonitorLocked(NSTimeInterval nowUp, id __strong *outOldToInvalidate) {
+    if (!gAppStateMonitor || (nowUp - gLastBKSInitUp) > 45.0) {
+        if (outOldToInvalidate) {
+            *outOldToInvalidate = gAppStateMonitor;
+        }
+        gAppStateMonitor = nil;
+        Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
+        if (bksMonCls) {
+            gAppStateMonitor = [[bksMonCls alloc] init];
+            gLastBKSInitUp = nowUp;
+        }
+    }
+    return gAppStateMonitor;
+}
+
 void resetFrontmostAppMonitors(void) {
+    // CRITICAL: Never call -[FBSDisplayLayoutMonitor invalidate] while holding frontMonitorLock()!
+    // FBSDisplayLayoutMonitor's internal serial queue runs handlerBlock (which acquires frontMonitorLock()),
+    // so invalidating inside frontMonitorLock() can cause an AB-BA deadlock during app kill or Camera scene transitions.
+    // Clearing cached layout state forces an immediate fresh query on the next tick with zero XPC teardown/deadlock risk!
     NSRecursiveLock *lk = frontMonitorLock();
     [lk lock];
-    invalidateMonitorSafely(gLayoutMonitor);
-    gLayoutMonitor = nil;
-    gLatestLayout  = nil;
-    gLatestLayoutUp = 0.0;
-    gLastLayoutInitUp = 0.0;
+    gLatestLayout    = nil;
+    gLatestLayoutUp  = 0.0;
     gNilLayoutStreak = 0;
-
-    invalidateMonitorSafely(gAppStateMonitor);
-    gAppStateMonitor = nil;
-    gLastBKSInitUp   = 0.0;
     [lk unlock];
+}
+
+BOOL isDriverAppCurrentlyForeground(FilterConfig *config) {
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.001, false);
+
+    NSRecursiveLock *lk = frontMonitorLock();
+    NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
+    id oldBksToInvalidate = nil;
+    BOOL isForeground = NO;
+
+    [lk lock];
+    @try {
+        id bksMon = ensureSharedBKSMonitorLocked(nowUp, &oldBksToInvalidate);
+        SEL appStateSel = NSSelectorFromString(@"applicationStateForApplication:");
+        if (bksMon && [bksMon respondsToSelector:appStateSel]) {
+            if (config && config.dryRunMode) {
+                unsigned int photoSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    bksMon, appStateSel, @"com.apple.mobileslideshow");
+                if ((photoSt & 8U) != 0) {
+                    isForeground = YES;
+                    return YES;
+                }
+            }
+
+            NSString *effectiveDriverBid = (config && config.driverAppBundleID.length > 0)
+                ? config.driverAppBundleID
+                : cachedAutoDetectedDriverBundleID();
+            if (effectiveDriverBid.length > 0) {
+                unsigned int drvSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    bksMon, appStateSel, effectiveDriverBid);
+                if ((drvSt & 8U) != 0) {
+                    isForeground = YES;
+                    return YES;
+                }
+            }
+
+            for (NSString *knownGsmBid in @[@"vn.gsm.md", @"vn.gsm.driver"]) {
+                if (effectiveDriverBid && [effectiveDriverBid isEqualToString:knownGsmBid]) continue;
+                unsigned int gsmSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                    bksMon, appStateSel, knownGsmBid);
+                if ((gsmSt & 8U) != 0) {
+                    isForeground = YES;
+                    return YES;
+                }
+            }
+        }
+
+        if (gLayoutMonitor) {
+            id layout = [gLayoutMonitor valueForKey:@"currentLayout"];
+            if (!layout && gLatestLayout && (nowUp - gLatestLayoutUp) <= 1.5) {
+                layout = gLatestLayout;
+            }
+            if (layout) {
+                NSArray *elements = [layout valueForKey:@"elements"];
+                for (id elem in elements) {
+                    NSString *bid   = nil;
+                    NSString *ident = nil;
+                    @try { bid   = [elem valueForKey:@"bundleIdentifier"]; } @catch (NSException *e) {}
+                    @try { ident = [elem valueForKey:@"identifier"]; }       @catch (NSException *e) {}
+                    if (bundleIDMatchesDriverApp(bid, config) || bundleIDMatchesDriverApp(ident, config)) {
+                        isForeground = YES;
+                        return YES;
+                    }
+                }
+            }
+        }
+    } @catch (NSException *ex) {
+    } @finally {
+        [lk unlock];
+        if (oldBksToInvalidate) {
+            invalidateMonitorSafely(oldBksToInvalidate);
+        }
+    }
+    return isForeground;
 }
 
 NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
@@ -815,26 +913,21 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
     NSRecursiveLock *lk = frontMonitorLock();
     NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
     BOOL mapsInForeground = NO;
+    BOOL springBoardInForeground = NO;
+    id oldBksToInvalidate = nil;
+    id oldLayoutToInvalidate = nil;
 
     [lk lock];
     @try {
         // 1. Refresh BKSApplicationStateMonitor every 45s (reduces BackBoard XPC load >73% on iPhone 8 A11)
-        if (!gAppStateMonitor || (nowUp - gLastBKSInitUp) > 45.0) {
-            invalidateMonitorSafely(gAppStateMonitor);
-            gAppStateMonitor = nil;
-            Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
-            if (bksMonCls) {
-                gAppStateMonitor = [[bksMonCls alloc] init];
-                gLastBKSInitUp = nowUp;
-            }
-        }
+        id bksMon = ensureSharedBKSMonitorLocked(nowUp, &oldBksToInvalidate);
 
         // Layer B1: Check foreground bitmask (bit 3 == 8 == BKSApplicationStateForeground; can be 8|32 == 40 on iOS 16!)
         SEL appStateSel = NSSelectorFromString(@"applicationStateForApplication:");
-        if (gAppStateMonitor && [gAppStateMonitor respondsToSelector:appStateSel]) {
+        if (bksMon && [bksMon respondsToSelector:appStateSel]) {
             if (config && config.dryRunMode) {
                 unsigned int photoSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                    gAppStateMonitor, appStateSel, @"com.apple.mobileslideshow");
+                    bksMon, appStateSel, @"com.apple.mobileslideshow");
                 if ((photoSt & 8U) != 0) {
                     return @"com.apple.mobileslideshow";
                 }
@@ -845,7 +938,7 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                 : cachedAutoDetectedDriverBundleID();
             if (effectiveDriverBid.length > 0) {
                 unsigned int drvSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                    gAppStateMonitor, appStateSel, effectiveDriverBid);
+                    bksMon, appStateSel, effectiveDriverBid);
                 if ((drvSt & 8U) != 0) {
                     return effectiveDriverBid;
                 }
@@ -856,22 +949,28 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
             for (NSString *knownGsmBid in @[@"vn.gsm.md", @"vn.gsm.driver"]) {
                 if (effectiveDriverBid && [effectiveDriverBid isEqualToString:knownGsmBid]) continue;
                 unsigned int gsmSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                    gAppStateMonitor, appStateSel, knownGsmBid);
+                    bksMon, appStateSel, knownGsmBid);
                 if ((gsmSt & 8U) != 0) {
                     return knownGsmBid;
                 }
             }
 
             unsigned int mapsSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
-                gAppStateMonitor, appStateSel, @"com.google.Maps");
+                bksMon, appStateSel, @"com.google.Maps");
             if ((mapsSt & 8U) != 0) {
                 mapsInForeground = YES;
             }
+
+            unsigned int sbSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(
+                bksMon, appStateSel, @"com.apple.springboard");
+            if ((sbSt & 8U) != 0) {
+                springBoardInForeground = YES;
+            }
         }
 
-        // 2. Periodically recycle FBSDisplayLayoutMonitor every 90s (cuts SpringBoard XPC churn on 2GB devices while gNilLayoutStreak self-heals instantly)
+        // 2. Periodically recycle FBSDisplayLayoutMonitor every 90s (invalidate OUTSIDE lock to prevent AB-BA deadlock!)
         if (gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 90.0) {
-            invalidateMonitorSafely(gLayoutMonitor);
+            oldLayoutToInvalidate = gLayoutMonitor;
             gLayoutMonitor = nil;
         }
         if (!gLayoutMonitor && (nowUp - gLastLayoutInitUp) > 2.0) {
@@ -916,7 +1015,9 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
             if (!layout) {
                 gNilLayoutStreak++;
                 if (gNilLayoutStreak >= 3) {
-                    invalidateMonitorSafely(gLayoutMonitor);
+                    if (!oldLayoutToInvalidate) {
+                        oldLayoutToInvalidate = gLayoutMonitor;
+                    }
                     gLayoutMonitor = nil;
                     gNilLayoutStreak = 0;
                 }
@@ -943,9 +1044,12 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                         return eff.length > 0 ? eff : @"vn.gsm.md";
                     }
 
+                    if (ident.length > 0 && isSystemOverlayIdentifier(ident)) {
+                        continue;
+                    }
                     NSString *cand = (bid.length > 0) ? bid : normalizeSceneIdentifierToBundleID(ident);
                     if (!cand || cand.length == 0) continue;
-                    if (isSystemOverlayIdentifier(cand) || isSystemOverlayIdentifier(ident)) {
+                    if (isSystemOverlayIdentifier(cand)) {
                         continue;
                     }
 
@@ -961,15 +1065,29 @@ NSString *currentFrontmostAppBundleIDForConfig(FilterConfig *config) {
                 if (topAppBundle.length > 0) {
                     return topAppBundle;
                 }
+                // If layout is valid (elements != nil) and there are 0 non-overlay app scenes while neither Xanh SM nor Maps has bit 8,
+                // the phone is sitting on the iOS Home Screen (SpringBoard)!
+                if (elements != nil && !mapsInForeground) {
+                    return @"com.apple.springboard";
+                }
             }
         }
     } @catch (NSException *ex) {
     } @finally {
         [lk unlock];
+        if (oldBksToInvalidate) {
+            invalidateMonitorSafely(oldBksToInvalidate);
+        }
+        if (oldLayoutToInvalidate) {
+            invalidateMonitorSafely(oldLayoutToInvalidate);
+        }
     }
 
     if (mapsInForeground) {
         return @"com.google.Maps";
+    }
+    if (springBoardInForeground) {
+        return @"com.apple.springboard";
     }
 
     // Fail-open (nil -> canScan = YES) if neither monitor identified a foreign app
@@ -1170,34 +1288,40 @@ static NSArray<NSNumber *> *findRunningAppPIDs(NSString *bundleID, NSString *exe
     NSMutableSet<NSNumber *> *pidSet = [NSMutableSet set];
     pid_t selfPid = getpid();
 
-    // Source 1: Exact PID from BackBoardServices applicationInfoForApplication:
+    // Source 1: Exact PID from shared BackBoardServices applicationInfoForApplication: (zero per-call XPC monitor churn!)
     if (bundleID.length > 0) {
         void *bks = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
-        Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
-        if (bksMonCls) {
-            @try {
-                id mon = [[bksMonCls alloc] init];
-                SEL infoSel = NSSelectorFromString(@"applicationInfoForApplication:");
-                if (mon && [mon respondsToSelector:infoSel]) {
-                    NSDictionary *info = ((NSDictionary * (*)(id, SEL, NSString *))objc_msgSend)(mon, infoSel, bundleID);
-                    if ([info isKindOfClass:[NSDictionary class]]) {
-                        NSNumber *pidNum = info[@"SBApplicationStateProcessIDKey"] ?: info[@"BKSApplicationStateProcessIDKey"];
-                        if (!pidNum && bks) {
-                            NSString * const *symKey = (NSString * const *)dlsym(bks, "BKSApplicationStateProcessIDKey");
-                            if (symKey && *symKey) {
-                                pidNum = info[*symKey];
-                            }
+        NSRecursiveLock *lk = frontMonitorLock();
+        NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
+        id oldBksToInvalidate = nil;
+        [lk lock];
+        @try {
+            id mon = ensureSharedBKSMonitorLocked(nowUp, &oldBksToInvalidate);
+            SEL infoSel = NSSelectorFromString(@"applicationInfoForApplication:");
+            if (mon && [mon respondsToSelector:infoSel]) {
+                NSDictionary *info = ((NSDictionary * (*)(id, SEL, NSString *))objc_msgSend)(mon, infoSel, bundleID);
+                if ([info isKindOfClass:[NSDictionary class]]) {
+                    NSNumber *pidNum = info[@"SBApplicationStateProcessIDKey"] ?: info[@"BKSApplicationStateProcessIDKey"];
+                    if (!pidNum && bks) {
+                        NSString * const *symKey = (NSString * const *)dlsym(bks, "BKSApplicationStateProcessIDKey");
+                        if (symKey && *symKey) {
+                            pidNum = info[*symKey];
                         }
-                        if ([pidNum respondsToSelector:@selector(intValue)]) {
-                            pid_t p = (pid_t)[pidNum intValue];
-                            if (p > 1 && p != selfPid && isUserAppPidAlive(p)) {
-                                [pidSet addObject:@(p)];
-                            }
+                    }
+                    if ([pidNum respondsToSelector:@selector(intValue)]) {
+                        pid_t p = (pid_t)[pidNum intValue];
+                        if (p > 1 && p != selfPid && isUserAppPidAlive(p)) {
+                            [pidSet addObject:@(p)];
                         }
                     }
                 }
-                invalidateMonitorSafely(mon);
-            } @catch (NSException *ex) {}
+            }
+        } @catch (NSException *ex) {
+        } @finally {
+            [lk unlock];
+            if (oldBksToInvalidate) {
+                invalidateMonitorSafely(oldBksToInvalidate);
+            }
         }
     }
 
@@ -1409,6 +1533,13 @@ BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName) {
     }
 
     NSString *pindBin = resolvePindBinaryPath();
+    uid_t savedEuid = geteuid();
+    BOOL elevatedToRoot = NO;
+    if (savedEuid != 0 && getuid() == 0) {
+        if (seteuid(0) == 0) {
+            elevatedToRoot = YES;
+        }
+    }
     for (NSNumber *n in remaining) {
         pid_t targetPid = (pid_t)[n intValue];
         if (targetPid <= 1) continue;
@@ -1422,6 +1553,9 @@ BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName) {
             usleep(80000);
         }
     }
+    if (elevatedToRoot) {
+        seteuid(savedEuid);
+    }
 
     resetFrontmostAppMonitors();
     NSArray<NSNumber *> *afterKill = findRunningAppPIDs(bundleID, execName);
@@ -1430,28 +1564,37 @@ BOOL killAppByBundleIDAndExec(NSString *bundleID, NSString *execName) {
 
 static BOOL isAppCurrentlyForeground(NSString *bundleID) {
     if (!bundleID || bundleID.length == 0) return NO;
-    Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
-    if (!bksMonCls) return NO;
+    NSRecursiveLock *lk = frontMonitorLock();
+    NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
+    id oldBksToInvalidate = nil;
     BOOL fg = NO;
+    [lk lock];
     @try {
-        id mon = [[bksMonCls alloc] init];
+        id mon = ensureSharedBKSMonitorLocked(nowUp, &oldBksToInvalidate);
         SEL stSel = NSSelectorFromString(@"applicationStateForApplication:");
         if (mon && [mon respondsToSelector:stSel]) {
             unsigned int st = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(mon, stSel, bundleID);
             fg = ((st & 8U) != 0);
         }
-        invalidateMonitorSafely(mon);
-    } @catch (NSException *ex) {}
+    } @catch (NSException *ex) {
+    } @finally {
+        [lk unlock];
+        if (oldBksToInvalidate) {
+            invalidateMonitorSafely(oldBksToInvalidate);
+        }
+    }
     return fg;
 }
 
 BOOL isDriverAppTrulyFrontmostAndOursBackgrounded(NSString *targetBid) {
     if (!targetBid || targetBid.length == 0) return NO;
-    Class bksMonCls = NSClassFromString(@"BKSApplicationStateMonitor");
-    if (!bksMonCls) return NO;
+    NSRecursiveLock *lk = frontMonitorLock();
+    NSTimeInterval nowUp = [NSProcessInfo processInfo].systemUptime;
+    id oldBksToInvalidate = nil;
     BOOL ok = NO;
+    [lk lock];
     @try {
-        id mon = [[bksMonCls alloc] init];
+        id mon = ensureSharedBKSMonitorLocked(nowUp, &oldBksToInvalidate);
         SEL stSel = NSSelectorFromString(@"applicationStateForApplication:");
         if (mon && [mon respondsToSelector:stSel]) {
             unsigned int targetSt = ((unsigned int (*)(id, SEL, NSString *))objc_msgSend)(mon, stSel, targetBid);
@@ -1460,8 +1603,13 @@ BOOL isDriverAppTrulyFrontmostAndOursBackgrounded(NSString *targetBid) {
             // Only consider the bounce-back complete when targetBid is Foreground (bit 8) AND PinNhietDo is NOT Foreground!
             ok = (((targetSt & 8U) != 0) && ((ourSt & 8U) == 0));
         }
-        invalidateMonitorSafely(mon);
-    } @catch (NSException *ex) {}
+    } @catch (NSException *ex) {
+    } @finally {
+        [lk unlock];
+        if (oldBksToInvalidate) {
+            invalidateMonitorSafely(oldBksToInvalidate);
+        }
+    }
     return ok;
 }
 
@@ -1585,11 +1733,21 @@ int spawnRoot(NSString *path, NSArray<NSString *> *args) {
     posix_spawnattr_setflags(&attr, flags);
 
     pid_t pid = 0;
+    uid_t savedEuid = geteuid();
+    BOOL elevatedToRoot = NO;
+    if (savedEuid != 0 && getuid() == 0) {
+        if (seteuid(0) == 0) {
+            elevatedToRoot = YES;
+        }
+    }
     int ret = posix_spawn(&pid, [path fileSystemRepresentation], &fileActions, &attr, argv, environ);
     if (ret != 0) {
         // Fallback without CLOEXEC_DEFAULT in case an older kernel rejects the flag
         posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
         ret = posix_spawn(&pid, [path fileSystemRepresentation], &fileActions, &attr, argv, environ);
+    }
+    if (elevatedToRoot) {
+        seteuid(savedEuid);
     }
 
     posix_spawn_file_actions_destroy(&fileActions);

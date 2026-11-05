@@ -381,9 +381,9 @@
 
     double now = [[NSDate date] timeIntervalSince1970];
 
-    // If a new order popup is actively on screen being evaluated, immediately collapse any previous toast
-    // so the pill stays locked in its compact 92x16pt slot at x=215..307, y=2..18pt!
-    if (orderPopupVisible && _activeToastExpireEpoch > 0.0) {
+    // If a new order popup is actively on screen OR the 120s Food Pause countdown just started,
+    // immediately collapse any previous toast so the compact pill (or 'NGHỈ 120s') renders at 0ms!
+    if ((orderPopupVisible || mode == StealthPillModePausingFood) && _activeToastExpireEpoch > 0.0) {
         _activeToastText = nil;
         _activeToastExpireEpoch = 0.0;
     }

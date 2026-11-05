@@ -31,18 +31,75 @@ typedef struct {
     uint64_t user_data;
 } jetsam_priority_props_t;
 
+typedef struct {
+    int32_t memlimit_active;
+    uint32_t memlimit_active_attr;
+    int32_t memlimit_inactive;
+    uint32_t memlimit_inactive_attr;
+} jetsam_memlimit_props_t;
+
 typedef int (*memorystatus_control_f)(uint32_t command, int32_t pid, uint32_t flags, void *buffer, size_t buffersize);
+typedef int (*posix_spawnattr_setjetsam_ext_f)(posix_spawnattr_t *attr, short flags, int priority, int memlimit_active, int memlimit_inactive);
 
 #define MEMSTAT_CMD_SET_PRIORITY_PROPS   2
 #define MEMSTAT_CMD_SET_HIGH_WATER_MARK  5
-#define MEMSTAT_CMD_SET_TASK_LIMIT       6
-#define MEMSTAT_CMD_SET_IS_MANAGED       16
-#define MEMSTAT_CMD_SET_IS_FREEZABLE     18
+#define MEMSTAT_CMD_SET_MEMLIMIT_PROPS   7
+#define MEMSTAT_CMD_SET_IS_MANAGED_V1    15
+#define MEMSTAT_CMD_SET_IS_MANAGED_V2    16
+#define MEMSTAT_CMD_SET_IS_FREEZABLE_V1  17
+#define MEMSTAT_CMD_SET_IS_FREEZABLE_V2  18
+#define MEMSTAT_FLAG_SET_PRIORITY_ASSERT 0x1
+#define POSIX_SPAWN_JETSAM_SET_FLAG      0x0001
 #define JETSAM_PRIO_CRITICAL             19
 #define JETSAM_PRIO_IMPORTANT            18
-#define JETSAM_PRIO_WORKER_SAFE          14
+#define JETSAM_PRIO_WORKER_SAFE          18
 
 #define kExitCodeProactiveRAMTrim        42
+
+static void configureSpawnAttrJetsam(posix_spawnattr_t *attr, int priority) {
+    if (!attr) return;
+    static posix_spawnattr_setjetsam_ext_f sFnSetJetsam = NULL;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        sFnSetJetsam = (posix_spawnattr_setjetsam_ext_f)dlsym(RTLD_DEFAULT, "posix_spawnattr_setjetsam_ext");
+    });
+    if (sFnSetJetsam) {
+        sFnSetJetsam(attr, POSIX_SPAWN_JETSAM_SET_FLAG, priority, -1, -1);
+    }
+}
+
+static void applyJetsamBandAndUnlimitedNonFatalMemlimitToPid(pid_t targetPid, int32_t priority) {
+    memorystatus_control_f fnMemCtl = (memorystatus_control_f)dlsym(RTLD_DEFAULT, "memorystatus_control");
+    if (!fnMemCtl) return;
+
+    uid_t savedEuid = geteuid();
+    BOOL elevated = NO;
+    if (savedEuid != 0 && getuid() == 0) {
+        if (seteuid(0) == 0) {
+            elevated = YES;
+        }
+    }
+
+    // XNU kern_memorystatus.c requires flags = MEMORYSTATUS_SET_PRIORITY_ASSERTION (0x1) for command 2; also call flags = 0 as fallback.
+    jetsam_priority_props_t prioProps = { priority, 0 };
+    fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, MEMSTAT_FLAG_SET_PRIORITY_ASSERT, &prioProps, sizeof(prioProps));
+    fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &prioProps, sizeof(prioProps));
+
+    // Set non-fatal unlimited (-1) active/inactive memory limits (NEVER call command 6 SET_TASK_LIMIT which is fatal under Camera ISP spikes!)
+    jetsam_memlimit_props_t limProps = { -1, 0, -1, 0 };
+    fnMemCtl(MEMSTAT_CMD_SET_MEMLIMIT_PROPS,  targetPid, 0, &limProps, sizeof(limProps));
+    fnMemCtl(MEMSTAT_CMD_SET_HIGH_WATER_MARK, targetPid, (uint32_t)-1, NULL, 0);
+
+    // Unmanage from RunningBoard / AppSwitcher Jetsam freezing across iOS 15 & iOS 16 command numbers
+    fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED_V1,   targetPid, 0, NULL, 0);
+    fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED_V2,   targetPid, 0, NULL, 0);
+    fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE_V1, targetPid, 0, NULL, 0);
+    fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE_V2, targetPid, 0, NULL, 0);
+
+    if (elevated) {
+        seteuid(savedEuid);
+    }
+}
 
 static void ignoreBenignDaemonSignals(void) {
     signal(SIGHUP,  SIG_IGN);
@@ -67,32 +124,11 @@ static void unlinkPidFileIfOwnedByMe(NSString *path) {
 }
 
 static void applyWatchdogJetsamToPid(pid_t targetPid) {
-    memorystatus_control_f fnMemCtl = (memorystatus_control_f)dlsym(RTLD_DEFAULT, "memorystatus_control");
-    if (fnMemCtl) {
-        // Watchdog is only ~0.8 MB pure C supervisor -> safe to keep at band 18 so it never dies
-        jetsam_priority_props_t props = { JETSAM_PRIO_IMPORTANT, 0 };
-        fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props));
-        fnMemCtl(MEMSTAT_CMD_SET_HIGH_WATER_MARK, targetPid, (uint32_t)-1, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      targetPid, (uint32_t)512, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED,      targetPid, 0, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE,    targetPid, 0, NULL, 0);
-    }
+    applyJetsamBandAndUnlimitedNonFatalMemlimitToPid(targetPid, JETSAM_PRIO_CRITICAL);
 }
 
 static void applyWorkerJetsamToPid(pid_t targetPid) {
-    memorystatus_control_f fnMemCtl = (memorystatus_control_f)dlsym(RTLD_DEFAULT, "memorystatus_control");
-    if (fnMemCtl) {
-        // CRITICAL FOR IPHONE 8 (2GB RAM):
-        // Keep Worker at band 12 (strictly BELOW mDNSResponder, wifid, symptomsd, configd, SpringBoard at 14-17)
-        // so Apple networking & UI daemons are NEVER Jetsam-reaped under 2GB RAM pressure!
-        jetsam_priority_props_t props = { JETSAM_PRIO_WORKER_SAFE, 0 };
-        fnMemCtl(MEMSTAT_CMD_SET_PRIORITY_PROPS, targetPid, 0, &props, sizeof(props));
-        int32_t workerLimitMB = isLowRAMDevice() ? 340 : 768;
-        fnMemCtl(MEMSTAT_CMD_SET_HIGH_WATER_MARK, targetPid, (uint32_t)-1, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_TASK_LIMIT,      targetPid, (uint32_t)workerLimitMB, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_IS_MANAGED,      targetPid, 0, NULL, 0);
-        fnMemCtl(MEMSTAT_CMD_SET_IS_FREEZABLE,    targetPid, 0, NULL, 0);
-    }
+    applyJetsamBandAndUnlimitedNonFatalMemlimitToPid(targetPid, JETSAM_PRIO_IMPORTANT);
 }
 
 static void ensureSharedFilesPermissions(void) {
@@ -263,6 +299,7 @@ static int runDaemonizeMain(const char *execPath) {
             posix_spawnattr_t attr;
             posix_spawnattr_init(&attr);
             posix_spawnattr_setpgroup(&attr, 0);
+            configureSpawnAttrJetsam(&attr, JETSAM_PRIO_CRITICAL);
             posix_spawnattr_setflags(&attr, (short)(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT));
 
             char *cArgv[3] = { (char *)finalPath, "--watchdog", NULL };
@@ -373,6 +410,7 @@ static int runWatchdogMain(const char *execPath) {
 
                 posix_spawnattr_t attr;
                 posix_spawnattr_init(&attr);
+                configureSpawnAttrJetsam(&attr, JETSAM_PRIO_IMPORTANT);
                 posix_spawnattr_setflags(&attr, (short)POSIX_SPAWN_CLOEXEC_DEFAULT);
 
                 char *childArgv[3];
@@ -917,6 +955,16 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         state.phaseDescription     = [NSString stringWithFormat:@"Đang nghỉ xả Food (%lds)...", (long)pauseSec];
         [state saveStateAndNotify:YES];
 
+        // Update top-bar status pill to 'NGHỈ 120s' IMMEDIATELY (0ms) before the 1.2s network-flush delay & app kill!
+        if (!isDeviceScreenLocked() && config.masterEnabled && config.statusPillHUDEnabled) {
+            [[StealthStatusPillHUD sharedHUD] updateWithMode:StealthPillModePausingFood
+                                               acceptedCount:state.statAcceptedCount
+                                               rejectedCount:state.statRejectedCount
+                                           pauseRemainingSec:pauseSec
+                                           orderPopupVisible:NO
+                                                     enabled:YES];
+        }
+
         appendDaemonLog(@"Đã Offline thành công! Bắt đầu nghỉ %ld giây trước khi bật lại nhận chuyến.",
                         (long)pauseSec);
 
@@ -926,9 +974,10 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                 // Allow 1.2s for Xanh SM's Offline network packet to flush cleanly before terminating process
                 usleep(1200000);
                 BOOL killed = killAppByBundleIDAndExec(config.driverAppBundleID, config.driverAppExecName);
-                didKillApp = killed;
+                // Always mark didKillApp = YES once termination was issued so pre-relaunch at end of pause is guaranteed!
+                didKillApp = YES;
                 appendDaemonLog(@"%@ tiến trình Xanh SM để xả sạch RAM & làm mới phiên.",
-                                killed ? @"Đã tự động Kill sạch" : @"[CHÚ Ý] Lệnh Kill chưa dứt điểm");
+                                killed ? @"Đã tự động Kill sạch" : @"Đã gửi lệnh đóng");
             }
         }
     } else {
@@ -984,30 +1033,56 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                                          enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
             }
 
-            // LIVE PIXEL WAKEUP DURING PAUSE (0% Vision OCR, 0 CIImage alloc, 0.02ms):
-            // If driver manually pressed 'Mở nhận chuyến' to go back Online early, OR an order popped up -> cancel pause immediately!
+            // LIVE WAKEUP DURING PAUSE (WITH STRICT FOREGROUND + VISION OCR VERIFICATION):
+            // 1. NEVER probe during the first 4.5s after killing Xanh SM (while SpringBoard animates back to the Home Screen).
+            // 2. NEVER probe unless Xanh SM is strictly confirmed in the foreground by BKSApplicationStateMonitor / FBSDisplayLayoutMonitor
+            //    (isDriverAppCurrentlyForeground(config) == YES). Sitting on the iOS Home Screen MUST NEVER trigger a false wakeup!
+            // 3. Even if the driver manually reopened Xanh SM during the pause and a pixel sensor triggers, ALWAYS verify with Vision OCR
+            //    (ana.hasOrderPopup or ana.isLobbyOnline && !ana.isLobbyOffline) before canceling the countdown!
             pauseTick++;
-            if ((pauseTick % 2 == 0) && !config.dryRunMode && !isDeviceScreenLocked()) {
-                NSString *fgDuringPause = currentFrontmostAppBundleIDForConfig(config);
-                if (isFrontmostAppAllowedForScan(fgDuringPause, config)) {
-                    BOOL pauseProbeOk = [engine captureScreenSensorsOnly];
-                    if (pauseProbeOk && engine.lastFrameLikelyHasOrderPopup) {
-                        state.pauseEndEpoch        = 0.0;
-                        state.workerHeartbeatEpoch = cur;
-                        state.phaseDescription     = @"Đang trực tuyến / Canh đơn (Turbo)";
-                        [state saveStateAndNotify:YES];
-                        appendDaemonLog(@"Phát hiện có đơn nổ giữa lúc nghỉ -> Hủy đếm ngược vào bắt đơn ngay!");
-                        [engine invalidateAnalyzedBaseline];
-                        return YES;
-                    }
-                    if (pauseProbeOk && !didRelaunchApp && (cur - pauseLoopStartEpoch) >= 4.0 && engine.lastFrameLikelyHasLobbyPowerButton) {
-                        state.pauseEndEpoch        = 0.0;
-                        state.workerHeartbeatEpoch = cur;
-                        state.phaseDescription     = @"Đang trực tuyến / Canh đơn";
-                        [state saveStateAndNotify:YES];
-                        appendDaemonLog(@"Phát hiện bạn vừa bật lại Trực tuyến sớm -> Tự kết thúc nghỉ, canh đơn ngay!");
-                        [engine invalidateAnalyzedBaseline];
-                        return NO;
+            BOOL pastKillSettleWindow = (!didKillApp || didRelaunchApp || (cur - pauseLoopStartEpoch) >= 4.5);
+            if ((pauseTick % 2 == 0) &&
+                !config.dryRunMode &&
+                !isDeviceScreenLocked() &&
+                pastKillSettleWindow &&
+                isDriverAppCurrentlyForeground(config)) {
+                BOOL pauseProbeOk = [engine captureScreenSensorsOnly];
+                if (pauseProbeOk &&
+                    (engine.lastFrameLikelyHasOrderPopup ||
+                     (!didRelaunchApp && (cur - pauseLoopStartEpoch) >= 5.0 && engine.lastFrameLikelyHasLobbyPowerButton))) {
+                    CIImage *pauseImg = [engine currentCapturedCIImage];
+                    if (pauseImg) {
+                        ScreenAnalysis *pauseAna = [scanner analyzeScreenImage:pauseImg
+                                                                    screenSize:engine.logicalScreenSize
+                                                                    yellowDotY:engine.lastOrderYellowDotY
+                                                              hasBottomTealBar:engine.lastFrameHasBottomTealButton
+                                                             hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
+                                                            headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
+                                                            headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                                                        config:config
+                                                               priceRetryCount:0];
+                        if (!pauseAna.isLobbyOffline && pauseAna.hasOrderPopup && pauseAna.orderAction != OrderActionSkipDisabled) {
+                            state.pauseEndEpoch        = 0.0;
+                            state.workerHeartbeatEpoch = cur;
+                            state.phaseDescription     = @"Đang trực tuyến / Canh đơn (Turbo)";
+                            [state saveStateAndNotify:YES];
+                            appendDaemonLog(@"Phát hiện có đơn nổ thật giữa lúc nghỉ -> Hủy đếm ngược vào bắt đơn ngay!");
+                            [engine invalidateAnalyzedBaseline];
+                            return YES;
+                        }
+                        if (!didRelaunchApp &&
+                            (cur - pauseLoopStartEpoch) >= 5.0 &&
+                            pauseAna.isLobbyOnline &&
+                            !pauseAna.isLobbyOffline &&
+                            !pauseAna.hasOrderPopup) {
+                            state.pauseEndEpoch        = 0.0;
+                            state.workerHeartbeatEpoch = cur;
+                            state.phaseDescription     = @"Đang trực tuyến / Canh đơn";
+                            [state saveStateAndNotify:YES];
+                            appendDaemonLog(@"Phát hiện bạn vừa bật lại Trực tuyến sớm -> Tự kết thúc nghỉ, canh đơn ngay!");
+                            [engine invalidateAnalyzedBaseline];
+                            return NO;
+                        }
                     }
                 }
             }
@@ -1294,6 +1369,7 @@ static int runWorkerMain(void) {
         double postTransitionUntilEpoch       = 0.0;
         double lastFullOCREpoch               = 0.0;
         double lastHeartbeatSaveEpoch         = bootEpoch;
+        double lastPressureReliefEpoch        = bootEpoch;
 
         while (!gShouldExit) {
             @autoreleasepool {
@@ -1367,33 +1443,20 @@ static int runWorkerMain(void) {
                         [state saveStateAndNotify:YES];
                     }
                     if (!isMapRelayInFlight() &&
-                        !inActiveTripSession &&
-                        getRunningWatchdogPID() > 0 &&
-                        ((now - bootEpoch) > 3600.0 || currentProcessFootprintMB() > sleepTrimMB)) {
+                        (now - lastPressureReliefEpoch) >= 45.0 &&
+                        currentProcessFootprintMB() > sleepTrimMB) {
                         malloc_zone_pressure_relief(NULL, 0);
-                        if ((now - bootEpoch) > 3600.0 || currentProcessFootprintMB() > sleepTrimMB) {
-                            state.workerHeartbeatEpoch = now;
-                            [state saveStateAndNotify:NO];
-                            _exit(kExitCodeProactiveRAMTrim);
-                        }
+                        lastPressureReliefEpoch = now;
                     }
                     usleep(750000);
                     continue;
                 } else if (lockedSinceEpoch > 0.0) {
-                    double lockedDuration = now - lockedSinceEpoch;
                     lockedSinceEpoch = 0.0;
                     resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
                     turboUntilEpoch = now + 3.0;
-                    if (!isMapRelayInFlight() &&
-                        !inActiveTripSession &&
-                        getRunningWatchdogPID() > 0 &&
-                        lockedDuration >= 300.0) {
-                        state.workerHeartbeatEpoch = now;
-                        state.phaseDescription = @"Đang trực tuyến / Canh đơn (Mới mở khóa)";
-                        [state saveStateAndNotify:NO];
-                        _exit(kExitCodeProactiveRAMTrim);
-                    }
+                    malloc_zone_pressure_relief(NULL, 0);
+                    lastPressureReliefEpoch = now;
                 }
 
                 BOOL preCapturedSensors = NO;
@@ -1447,19 +1510,10 @@ static int runWorkerMain(void) {
                                                                  enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
 
                         if (!isMapRelayInFlight() &&
-                            !inActiveTripSession &&
-                            getRunningWatchdogPID() > 0 &&
-                            ![frontBid isEqualToString:kAppBundleID] &&
-                            (((now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > sleepTrimMB) ||
-                             (now - bootEpoch) > 7200.0)) {
+                            (now - lastPressureReliefEpoch) >= 45.0 &&
+                            currentProcessFootprintMB() > sleepTrimMB) {
                             malloc_zone_pressure_relief(NULL, 0);
-                            if (((now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > sleepTrimMB) ||
-                                (now - bootEpoch) > 7200.0) {
-                                [[StealthStatusPillHUD sharedHUD] hideImmediately];
-                                state.workerHeartbeatEpoch = now;
-                                [state saveStateAndNotify:NO];
-                                _exit(kExitCodeProactiveRAMTrim);
-                            }
+                            lastPressureReliefEpoch = now;
                         }
 
                         usleep(600000);
@@ -1503,6 +1557,28 @@ static int runWorkerMain(void) {
                     continue;
                 }
 
+                // --- TẦNG BẢO VỆ CAMERA XÁC NHẬN ĐƠN HÀNG ("Chụp ảnh xác nhận" trên iPhone 8 2GB RAM) ---
+                // Khi tài xế mở Camera trong app để chụp ảnh nhận/giao hàng, cameracaptured + mediaserverd ngốn ~280MB RAM.
+                // Giữ nguyên viên thuốc trạng thái trên thanh đỉnh, NHƯNG ngắt 100% Vision OCR (0 CIImage alloc) trên khung ngắm Camera!
+                if (engine.lastFrameLooksLikeCameraViewfinder &&
+                    !engine.lastFrameLikelyHasOrderPopup &&
+                    !engine.lastFrameHasBottomTealButton &&
+                    !engine.lastFrameHasOrderHeaderAtTop) {
+                    [[StealthStatusPillHUD sharedHUD] updateWithMode:(inActiveTripSession ? StealthPillModeActiveTrip : StealthPillModeScanning)
+                                                       acceptedCount:state.statAcceptedCount
+                                                       rejectedCount:state.statRejectedCount
+                                                   pauseRemainingSec:0
+                                                   orderPopupVisible:NO
+                                                             enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
+                    [engine markCurrentFrameAnalyzed];
+                    if ((now - lastPressureReliefEpoch) >= 20.0) {
+                        malloc_zone_pressure_relief(NULL, 0);
+                        lastPressureReliefEpoch = now;
+                    }
+                    usleep(480000);
+                    continue;
+                }
+
                 NSInteger frameChangedBeforeMark = engine.lastFrameChangedSamples;
                 BOOL hasPopupOrActionCandidate = engine.lastFrameLikelyHasOrderPopup ||
                                                  engine.lastFrameHasBottomTealButton ||
@@ -1533,15 +1609,18 @@ static int runWorkerMain(void) {
                         continue;
                     }
 
-                    // CASE B: Inside Green SM without detected bottom teal bar.
-                    // - If a big visual transition happened (frameChangedBeforeMark >= 16, e.g. order popup or modal sliding in),
-                    //   run Vision OCR IMMEDIATELY (0ms delay) even if countdown bar darkened the teal button!
-                    // - If screen is completely static (frameChangedBeforeMark <= 4), skip OCR for 2.2s.
-                    // - If map tiles are drifting slightly (5..15 cells), throttle OCR to once every 0.65s.
+                    // CASE B: Inside Green SM without any order popup candidate (!hasPopupOrActionCandidate).
+                    // - Static screen (frameChangedBeforeMark <= 4): skip OCR for 2.4s.
+                    // - Minor map drift (frameChangedBeforeMark < 16): throttle OCR to once every 0.85s.
+                    // - High motion without any order popup candidate (e.g. moving Camera preview in "Chụp ảnh xác nhận" or panning map):
+                    //   throttle OCR to once every 1.6s during an active trip (or 0.85s in Lobby) so live Camera video NEVER triggers a 5.5x/sec OCR storm!
+                    //   The millisecond a real order popup appears, hasPopupOrActionCandidate flips to YES in 0.02ms and runs OCR in 0ms!
+                    double highMotionInterval = inActiveTripSession ? 1.60 : 0.85;
                     BOOL shouldSkipIdleOCR = (now >= turboUntilEpoch &&
                                               now >= postTransitionUntilEpoch &&
-                                              ((frameChangedBeforeMark <= 4 && (now - lastFullOCREpoch) < 2.2) ||
-                                               (frameChangedBeforeMark < 16 && (now - lastFullOCREpoch) < 0.65)));
+                                              ((frameChangedBeforeMark <= 4 && (now - lastFullOCREpoch) < 2.4) ||
+                                               (frameChangedBeforeMark < 16 && (now - lastFullOCREpoch) < 0.85) ||
+                                               (frameChangedBeforeMark >= 16 && (now - lastFullOCREpoch) < highMotionInterval)));
                     if (shouldSkipIdleOCR) {
                         [[StealthStatusPillHUD sharedHUD] updateWithMode:(inActiveTripSession ? StealthPillModeActiveTrip : StealthPillModeScanning)
                                                            acceptedCount:state.statAcceptedCount
@@ -1550,17 +1629,10 @@ static int runWorkerMain(void) {
                                                        orderPopupVisible:NO
                                                                  enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
                         if (!isMapRelayInFlight() &&
-                            !inActiveTripSession &&
-                            getRunningWatchdogPID() > 0 &&
-                            (now - bootEpoch) > 1800.0 &&
+                            (now - lastPressureReliefEpoch) >= 45.0 &&
                             currentProcessFootprintMB() > idleActiveTrimMB) {
                             malloc_zone_pressure_relief(NULL, 0);
-                            if (currentProcessFootprintMB() > idleActiveTrimMB) {
-                                [[StealthStatusPillHUD sharedHUD] hideImmediately];
-                                state.workerHeartbeatEpoch = now;
-                                [state saveStateAndNotify:NO];
-                                _exit(kExitCodeProactiveRAMTrim);
-                            }
+                            lastPressureReliefEpoch = now;
                         }
                         NSInteger idleMs = MAX(260, config.scanIntervalMs);
                         usleep((useconds_t)(idleMs * 1000));
@@ -1587,9 +1659,9 @@ static int runWorkerMain(void) {
                                                            config:config
                                                   priceRetryCount:retryCount];
 
-                if (!ana.hasOrderPopup && frameChangedBeforeMark >= 18) {
-                    // Screen just underwent a big visual transition (e.g., order card sliding up at 40ms):
-                    // force a fast 180ms follow-up OCR scan so we NEVER settle onto a 2.2s static skip!
+                if (!ana.hasOrderPopup && hasPopupOrActionCandidate && frameChangedBeforeMark >= 18) {
+                    // An actual order popup candidate (bottom teal bar or top white header) just slid in at 40ms:
+                    // force a fast 180ms follow-up OCR scan! Never trigger this on pure Camera video or map panning (!hasPopupOrActionCandidate).
                     postTransitionUntilEpoch = now + 0.85;
                 }
 
