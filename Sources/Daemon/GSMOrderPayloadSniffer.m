@@ -1,6 +1,7 @@
 #import "GSMOrderPayloadSniffer.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <mach/mach.h>
+#import <dlfcn.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
 #import <signal.h>
@@ -11,8 +12,13 @@
 #import <string.h>
 #import <math.h>
 
-// Explicit Mach VM prototypes exported by libsystem_kernel.dylib on arm64 iOS
-extern kern_return_t mach_vm_region_recurse(
+typedef kern_return_t (*task_for_pid_f)(
+    mach_port_name_t target_tport,
+    int pid,
+    mach_port_name_t *t
+);
+
+typedef kern_return_t (*mach_vm_region_recurse_f)(
     vm_map_read_t target_task,
     mach_vm_address_t *address,
     mach_vm_size_t *size,
@@ -21,7 +27,7 @@ extern kern_return_t mach_vm_region_recurse(
     mach_msg_type_number_t *infoCnt
 );
 
-extern kern_return_t mach_vm_read_overwrite(
+typedef kern_return_t (*mach_vm_read_overwrite_f)(
     vm_map_read_t target_task,
     mach_vm_address_t address,
     mach_vm_size_t size,
@@ -719,80 +725,143 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     }
 }
 
+- (void)scanFileTailAtPath:(NSString *)filePath
+                 maxAgeSec:(double)maxAgeSec
+                  nowEpoch:(double)now
+               targetULIDs:(NSArray<NSString *> *)targetULIDs
+                 sourceTag:(NSString *)sourceTag
+            intoCandidates:(NSMutableArray<GSMSniffedOrder *> *)candidates {
+    const char *cPath = [filePath fileSystemRepresentation];
+    if (!cPath) return;
+    struct stat st;
+    if (stat(cPath, &st) != 0 || !S_ISREG(st.st_mode)) return;
+    if (st.st_size < 64) return;
+    if (maxAgeSec > 0.0 && (now - (double)st.st_mtimespec.tv_sec) > maxAgeSec) return;
+
+    int fd = open(cPath, O_RDONLY);
+    if (fd < 0) return;
+    size_t maxRead = 4 * 1024 * 1024;
+    size_t readLen = ((size_t)st.st_size > maxRead) ? maxRead : (size_t)st.st_size;
+    off_t startOff = ((size_t)st.st_size > maxRead) ? (st.st_size - (off_t)maxRead) : 0;
+
+    uint8_t *buf = (uint8_t *)malloc(readLen);
+    if (buf) {
+        ssize_t n = pread(fd, buf, readLen, startOff);
+        if (n > 64) {
+            [self scanRawBuffer:buf length:(size_t)n targetULIDs:targetULIDs sourceTag:sourceTag intoCandidates:candidates];
+        }
+        free(buf);
+    }
+    close(fd);
+}
+
+- (void)scanRecentFilesInDirectory:(NSString *)dirPath
+                         maxAgeSec:(double)maxAgeSec
+                          maxDepth:(int)maxDepth
+                          nowEpoch:(double)now
+                       targetULIDs:(NSArray<NSString *> *)targetULIDs
+                         sourceTag:(NSString *)sourceTag
+                    intoCandidates:(NSMutableArray<GSMSniffedOrder *> *)candidates {
+    const char *dirC = [dirPath fileSystemRepresentation];
+    if (!dirC) return;
+    DIR *dir = opendir(dirC);
+    if (!dir) return;
+
+    struct dirent *ent = NULL;
+    while ((ent = readdir(dir)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        NSString *name = [NSString stringWithUTF8String:ent->d_name];
+        if (!name) continue;
+        NSString *fullPath = [dirPath stringByAppendingPathComponent:name];
+        struct stat st;
+        if (stat([fullPath fileSystemRepresentation], &st) != 0) continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            if (maxDepth > 0) {
+                [self scanRecentFilesInDirectory:fullPath
+                                       maxAgeSec:maxAgeSec
+                                        maxDepth:(maxDepth - 1)
+                                        nowEpoch:now
+                                     targetULIDs:targetULIDs
+                                       sourceTag:sourceTag
+                                  intoCandidates:candidates];
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            if (st.st_size >= 64 && (now - (double)st.st_mtimespec.tv_sec) <= maxAgeSec) {
+                [self scanFileTailAtPath:fullPath
+                               maxAgeSec:maxAgeSec
+                                nowEpoch:now
+                             targetULIDs:targetULIDs
+                               sourceTag:sourceTag
+                          intoCandidates:candidates];
+            }
+        }
+    }
+    closedir(dir);
+}
+
 - (void)scanDiskCachesWithConfig:(FilterConfig *)config
                      targetULIDs:(NSArray<NSString *> *)targetULIDs
                   intoCandidates:(NSMutableArray<GSMSniffedOrder *> *)candidates {
     [self ensureGSMContainerPathsResolvedWithConfig:config];
-    if (_cachedCacheDirPath.length == 0) return;
+    if (_cachedContainerPath.length == 0 && _cachedCacheDirPath.length == 0) return;
 
     void (^scanDiskBlock)(void) = ^{
         double now = [[NSDate date] timeIntervalSince1970];
 
-        // 1. Scan Cache.db-wal & Cache.db (read last 4 MB if file is large so it finishes in <0.3ms)
-        NSArray<NSArray<NSString *> *> *dbFiles = @[
-            @[ [self->_cachedCacheDirPath stringByAppendingPathComponent:@"Cache.db-wal"], @"CacheWAL" ],
-            @[ [self->_cachedCacheDirPath stringByAppendingPathComponent:@"Cache.db"],     @"CacheDB"  ]
-        ];
-
-        for (NSArray<NSString *> *entry in dbFiles) {
-            const char *cPath = [entry[0] fileSystemRepresentation];
-            if (!cPath) continue;
-            struct stat st;
-            if (stat(cPath, &st) != 0 || st.st_size < 64) continue;
-            // Only scan Cache.db / Cache.db-wal if modified within the last 120 seconds (or if we have a target ULID)
-            if (targetULIDs.count == 0 && (now - (double)st.st_mtimespec.tv_sec) > 120.0) continue;
-
-            int fd = open(cPath, O_RDONLY);
-            if (fd < 0) continue;
-            size_t maxRead = 4 * 1024 * 1024;
-            size_t readLen = ((size_t)st.st_size > maxRead) ? maxRead : (size_t)st.st_size;
-            off_t startOff = ((size_t)st.st_size > maxRead) ? (st.st_size - (off_t)maxRead) : 0;
-
-            uint8_t *buf = (uint8_t *)malloc(readLen);
-            if (buf) {
-                ssize_t n = pread(fd, buf, readLen, startOff);
-                if (n > 64) {
-                    [self scanRawBuffer:buf length:(size_t)n targetULIDs:targetULIDs sourceTag:entry[1] intoCandidates:candidates];
-                }
-                free(buf);
-            }
-            close(fd);
+        // 1. Scan Cache.db-wal & Cache.db & fsCachedData in Library/Caches/vn.gsm.md
+        if (self->_cachedCacheDirPath.length > 0) {
+            double dbMaxAge = (targetULIDs.count > 0) ? 300.0 : 120.0;
+            [self scanFileTailAtPath:[self->_cachedCacheDirPath stringByAppendingPathComponent:@"Cache.db-wal"]
+                           maxAgeSec:dbMaxAge
+                            nowEpoch:now
+                         targetULIDs:targetULIDs
+                           sourceTag:@"CacheWAL"
+                      intoCandidates:candidates];
+            [self scanFileTailAtPath:[self->_cachedCacheDirPath stringByAppendingPathComponent:@"Cache.db"]
+                           maxAgeSec:dbMaxAge
+                            nowEpoch:now
+                         targetULIDs:targetULIDs
+                           sourceTag:@"CacheDB"
+                      intoCandidates:candidates];
+            [self scanRecentFilesInDirectory:[self->_cachedCacheDirPath stringByAppendingPathComponent:@"fsCachedData"]
+                                   maxAgeSec:60.0
+                                    maxDepth:0
+                                    nowEpoch:now
+                                 targetULIDs:targetULIDs
+                                   sourceTag:@"FSCache"
+                              intoCandidates:candidates];
         }
 
-        // 2. Scan recent files in Library/Caches/vn.gsm.md/fsCachedData (modified within last 45s)
-        NSString *fsCacheDir = [self->_cachedCacheDirPath stringByAppendingPathComponent:@"fsCachedData"];
-        const char *fsDirC = [fsCacheDir fileSystemRepresentation];
-        if (fsDirC) {
-            DIR *dir = opendir(fsDirC);
-            if (dir) {
-                struct dirent *ent = NULL;
-                while ((ent = readdir(dir)) != NULL) {
-                    if (ent->d_name[0] == '.') continue;
-                    NSString *fPath = [fsCacheDir stringByAppendingPathComponent:[NSString stringWithUTF8String:ent->d_name]];
-                    struct stat st;
-                    if (stat([fPath fileSystemRepresentation], &st) != 0) continue;
-                    if (st.st_size < 64 || st.st_size > 256 * 1024) continue;
-                    if ((now - (double)st.st_mtimespec.tv_sec) > 45.0) continue;
-
-                    NSData *d = [NSData dataWithContentsOfFile:fPath options:NSDataReadingUncached error:nil];
-                    if (d.length >= 64) {
-                        [self scanRawBuffer:(const uint8_t *)d.bytes length:d.length targetULIDs:targetULIDs sourceTag:@"FSCache" intoCandidates:candidates];
-                    }
-                }
-                closedir(dir);
+        // 2. Scan any recently modified files (within last 60s) across Library/Caches, Documents, Application Support & tmp
+        if (self->_cachedContainerPath.length > 0) {
+            NSArray<NSArray<NSString *> *> *containerDirs = @[
+                @[ [self->_cachedContainerPath stringByAppendingPathComponent:@"Library/Caches"],              @"LibCache" ],
+                @[ [self->_cachedContainerPath stringByAppendingPathComponent:@"Documents"],                   @"Docs"     ],
+                @[ [self->_cachedContainerPath stringByAppendingPathComponent:@"Library/Application Support"], @"AppSupp"  ],
+                @[ [self->_cachedContainerPath stringByAppendingPathComponent:@"tmp"],                         @"Tmp"      ]
+            ];
+            for (NSArray<NSString *> *dEntry in containerDirs) {
+                [self scanRecentFilesInDirectory:dEntry[0]
+                                       maxAgeSec:60.0
+                                        maxDepth:1
+                                        nowEpoch:now
+                                     targetULIDs:targetULIDs
+                                       sourceTag:dEntry[1]
+                                  intoCandidates:candidates];
             }
         }
     };
 
-    // Container files belong to mobile (501); read directly without flipping process-wide euid unless access fails
-    if (access([_cachedCacheDirPath fileSystemRepresentation], R_OK) == 0) {
+    NSString *probePath = _cachedContainerPath.length > 0 ? _cachedContainerPath : _cachedCacheDirPath;
+    if (probePath.length > 0 && access([probePath fileSystemRepresentation], R_OK) == 0) {
         scanDiskBlock();
     } else {
         [self performWithRootPrivileges:scanDiskBlock];
     }
 }
 
-#pragma mark - Layer 2: Passive Mach VM Heap Reader (100% Invisible to bshield.framework)
+#pragma mark - Layer 2: Passive Mach VM Heap Reader (Opportunistic via dlsym when kernel permits)
 
 - (pid_t)findRunningDriverPIDWithConfig:(FilterConfig *)config {
     double now = [[NSDate date] timeIntervalSince1970];
@@ -837,6 +906,17 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                          intoCandidates:(NSMutableArray<GSMSniffedOrder *> *)candidates {
     if (!_reusableScanBuf) return;
 
+    static task_for_pid_f sTaskForPid = NULL;
+    static mach_vm_region_recurse_f sVmRegionRecurse = NULL;
+    static mach_vm_read_overwrite_f sVmReadOverwrite = NULL;
+    static dispatch_once_t sMachSymOnce;
+    dispatch_once(&sMachSymOnce, ^{
+        sTaskForPid      = (task_for_pid_f)dlsym(RTLD_DEFAULT, "task_for_pid");
+        sVmRegionRecurse = (mach_vm_region_recurse_f)dlsym(RTLD_DEFAULT, "mach_vm_region_recurse");
+        sVmReadOverwrite = (mach_vm_read_overwrite_f)dlsym(RTLD_DEFAULT, "mach_vm_read_overwrite");
+    });
+    if (!sTaskForPid || !sVmRegionRecurse || !sVmReadOverwrite) return;
+
     double now = [[NSDate date] timeIntervalSince1970];
     // Throttle full heap scan to at most once every 140ms to keep CPU/thermal impact at ~0%
     if ((now - _lastHeapScanEpoch) < 0.14) return;
@@ -847,10 +927,10 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 
     // Acquire Mach task port right; only elevate euid(0) for the ~2us task_for_pid syscall if euid(501) wasn't enough!
     __block mach_port_t task = MACH_PORT_NULL;
-    kern_return_t kr = task_for_pid(mach_task_self(), driverPid, &task);
+    kern_return_t kr = sTaskForPid(mach_task_self(), driverPid, &task);
     if (kr != KERN_SUCCESS || !MACH_PORT_VALID(task)) {
         [self performWithRootPrivileges:^{
-            task_for_pid(mach_task_self(), driverPid, &task);
+            sTaskForPid(mach_task_self(), driverPid, &task);
         }];
     }
     if (!MACH_PORT_VALID(task)) {
@@ -867,7 +947,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         while (totalBytesScanned < kMaxHeapScanPerTick) {
             vm_region_submap_info_data_64_t info;
             mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-            kr = mach_vm_region_recurse(task, &addr, &size, &depth, (vm_region_recurse_info_t)&info, &count);
+            kr = sVmRegionRecurse(task, &addr, &size, &depth, (vm_region_recurse_info_t)&info, &count);
             if (kr != KERN_SUCCESS) break;
 
             if (info.is_submap) {
@@ -921,11 +1001,11 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                 if (toRead < 64) break;
 
                 mach_vm_size_t outSize = 0;
-                kern_return_t rkr = mach_vm_read_overwrite(task,
-                                                           regionStart + curOffset,
-                                                           toRead,
-                                                           (mach_vm_address_t)self->_reusableScanBuf,
-                                                           &outSize);
+                kern_return_t rkr = sVmReadOverwrite(task,
+                                                     regionStart + curOffset,
+                                                     toRead,
+                                                     (mach_vm_address_t)self->_reusableScanBuf,
+                                                     &outSize);
                 if (rkr == KERN_SUCCESS && outSize >= 64) {
                     totalBytesScanned += (size_t)outSize;
                     [self scanRawBuffer:self->_reusableScanBuf
