@@ -895,7 +895,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                 continue;
             }
 
-            // Only scan MALLOC / Foundation / CFNetwork / anonymous heap tags where Swift/ObjC JSON buffers reside
+            // Only scan MALLOC / Foundation / anonymous heap tags where Swift/ObjC JSON buffers reside
             unsigned int tag = info.user_tag;
             BOOL isHeapTag = (tag == 0 ||
                               tag == VM_MEMORY_MALLOC ||
@@ -908,7 +908,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                               tag == VM_MEMORY_MALLOC_NANO ||
                               tag == VM_MEMORY_MALLOC_MEDIUM ||
                               tag == VM_MEMORY_FOUNDATION ||
-                              tag == VM_MEMORY_CFNETWORK);
+                              tag == 40);
             if (!isHeapTag) {
                 continue;
             }
