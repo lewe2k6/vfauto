@@ -10,6 +10,7 @@
 #import <sys/wait.h>
 #import <unistd.h>
 #import <stdlib.h>
+#import <malloc/malloc.h>
 #import <math.h>
 #import <string.h>
 #import "SharedConfig.h"
@@ -551,8 +552,10 @@ static BOOL isSameSpinningOrderOnWeak4G(ScreenAnalysis *ana,
                                         double nowEpoch) {
     if (!ana || !ana.hasOrderPopup || !lastFingerprint || lastFingerprint.length == 0) return NO;
     // CRITICAL: For [Nhận chuyến], cap weak-4G spin window to 0.85s so if a tap ever dropped or GSM didn't ACK,
-    // pind taps [Nhận chuyến] AGAIN within <1s before the 7s countdown expires! Keep full 4.2s ONLY for [X] Reject Food!
-    double maxSpinWindowSec = lastWasAccept ? 0.85 : 4.2;
+    // pind taps [Nhận chuyến] AGAIN within <1s before the 7s countdown expires!
+    // For [X] Reject Food, cap weak-4G spin window to 1.65s so if a sudden banner/lag ever swallowed [X],
+    // pind retries [X] after 1.65s well before the 7s popup timer expires!
+    double maxSpinWindowSec = lastWasAccept ? 0.85 : 1.65;
     if (lastHandledEpoch <= 0.0 || (nowEpoch - lastHandledEpoch) > maxSpinWindowSec) return NO;
 
     NSString *lastType = nil, *lastPickup = nil;
@@ -1212,6 +1215,7 @@ static int runWorkerMain(void) {
         int bannerSwipeCountForPopup          = 0;
         NSString *lastSkippedPopupSignature   = nil;
         NSString *lastHandledOrderFingerprint = nil;
+        NSString *pendingHandledSniffedOrderId = nil;
         double lastHandledOrderEpoch          = 0.0;
         BOOL lastHandledWasAccept             = NO;
         BOOL wasInCoolSleep                   = NO;
@@ -1295,9 +1299,12 @@ static int runWorkerMain(void) {
                         !inActiveTripSession &&
                         getRunningWatchdogPID() > 0 &&
                         ((now - bootEpoch) > 3600.0 || currentProcessFootprintMB() > sleepTrimMB)) {
-                        state.workerHeartbeatEpoch = now;
-                        [state saveStateAndNotify:NO];
-                        _exit(kExitCodeProactiveRAMTrim);
+                        malloc_zone_pressure_relief(NULL, 0);
+                        if ((now - bootEpoch) > 3600.0 || currentProcessFootprintMB() > sleepTrimMB) {
+                            state.workerHeartbeatEpoch = now;
+                            [state saveStateAndNotify:NO];
+                            _exit(kExitCodeProactiveRAMTrim);
+                        }
                     }
                     usleep(750000);
                     continue;
@@ -1368,9 +1375,13 @@ static int runWorkerMain(void) {
                             ![frontBid isEqualToString:kAppBundleID] &&
                             (((now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > sleepTrimMB) ||
                              (now - bootEpoch) > 7200.0)) {
-                            state.workerHeartbeatEpoch = now;
-                            [state saveStateAndNotify:NO];
-                            _exit(kExitCodeProactiveRAMTrim);
+                            malloc_zone_pressure_relief(NULL, 0);
+                            if (((now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > sleepTrimMB) ||
+                                (now - bootEpoch) > 7200.0) {
+                                state.workerHeartbeatEpoch = now;
+                                [state saveStateAndNotify:NO];
+                                _exit(kExitCodeProactiveRAMTrim);
+                            }
                         }
 
                         usleep(600000);
@@ -1447,9 +1458,12 @@ static int runWorkerMain(void) {
                             getRunningWatchdogPID() > 0 &&
                             (now - bootEpoch) > 1800.0 &&
                             currentProcessFootprintMB() > idleActiveTrimMB) {
-                            state.workerHeartbeatEpoch = now;
-                            [state saveStateAndNotify:NO];
-                            _exit(kExitCodeProactiveRAMTrim);
+                            malloc_zone_pressure_relief(NULL, 0);
+                            if (currentProcessFootprintMB() > idleActiveTrimMB) {
+                                state.workerHeartbeatEpoch = now;
+                                [state saveStateAndNotify:NO];
+                                _exit(kExitCodeProactiveRAMTrim);
+                            }
                         }
                         NSInteger idleMs = MAX(260, config.scanIntervalMs);
                         usleep((useconds_t)(idleMs * 1000));
@@ -1490,6 +1504,12 @@ static int runWorkerMain(void) {
                 // 2. XỬ LÝ BẢNG NỔ ĐƠN ('Bike' / 'Express' / 'Express 2H' vs 'Green Food')
                 if (ana.hasOrderPopup) {
                     turboUntilEpoch = now + 4.0;
+                    if (pendingHandledSniffedOrderId.length > 0 &&
+                        ana.sniffedOrderId.length > 0 &&
+                        ![ana.sniffedOrderId isEqualToString:pendingHandledSniffedOrderId]) {
+                        [[GSMOrderPayloadSniffer sharedSniffer] markOrderHandled:pendingHandledSniffedOrderId];
+                        pendingHandledSniffedOrderId = nil;
+                    }
 
                     // WEAK-4G SPINNING POPUP GUARD:
                     // If we JUST confirmed-tapped [Nhận] (0.85s) or [X] (4.2s) on this exact order and 4G lag keeps it spinning,
@@ -1764,8 +1784,18 @@ static int runWorkerMain(void) {
                                     lastHandledOrderEpoch       = doneNow;
                                     lastHandledWasAccept        = isAccept;
                                 }
-                                if (ana.sniffedOrderId.length > 0 && (!isAccept || confirmedGone)) {
-                                    [[GSMOrderPayloadSniffer sharedSniffer] markOrderHandled:ana.sniffedOrderId];
+                                if (ana.sniffedOrderId.length > 0) {
+                                    if (confirmedGone) {
+                                        [[GSMOrderPayloadSniffer sharedSniffer] markOrderHandled:ana.sniffedOrderId];
+                                        if (pendingHandledSniffedOrderId.length > 0) {
+                                            [[GSMOrderPayloadSniffer sharedSniffer] markOrderHandled:pendingHandledSniffedOrderId];
+                                            pendingHandledSniffedOrderId = nil;
+                                        }
+                                    } else {
+                                        // Popup is still on screen (e.g. spinning on weak 4G or tap missed);
+                                        // keep ULID readable while visible and blacklist it as soon as the card closes!
+                                        pendingHandledSniffedOrderId = ana.sniffedOrderId;
+                                    }
                                 }
                                 if (isAccept) {
                                     if (confirmedGone) {
@@ -1813,6 +1843,10 @@ static int runWorkerMain(void) {
                         // CASE 3: Ở sảnh chờ rảnh rỗi vừa hủy Food -> Vào quy trình Tắt nhận chuyến + Kill App (nếu nổ chèn đơn mới thì tự ngắt quay ra ngay!)
                         if (!isAccept && ana.isGreenFood && config.pauseAfterRejectFood) {
                             BOOL interruptedByNewOrder = runOfflinePauseAndRestartCycle(&config, state, engine, scanner, NO, &inActiveTripSession, lastHandledOrderFingerprint, lastHandledOrderEpoch);
+                            if (!interruptedByNewOrder && pendingHandledSniffedOrderId.length > 0) {
+                                [[GSMOrderPayloadSniffer sharedSniffer] markOrderHandled:pendingHandledSniffedOrderId];
+                                pendingHandledSniffedOrderId = nil;
+                            }
                             if (interruptedByNewOrder && consecutiveOfflineInterrupts < 8) {
                                 consecutiveOfflineInterrupts++;
                                 turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 6.5;
@@ -1830,6 +1864,10 @@ static int runWorkerMain(void) {
                     retryCount = 0;
                     bannerSwipeCountForPopup = 0;
                     lastSkippedPopupSignature = nil;
+                    if (pendingHandledSniffedOrderId.length > 0) {
+                        [[GSMOrderPayloadSniffer sharedSniffer] markOrderHandled:pendingHandledSniffedOrderId];
+                        pendingHandledSniffedOrderId = nil;
+                    }
                     if (lastHandledOrderFingerprint && (now - lastHandledOrderEpoch) > 0.55) {
                         // Card has cleanly left the screen -> reset fingerprint immediately!
                         lastHandledOrderFingerprint = nil;

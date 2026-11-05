@@ -3,6 +3,7 @@
 #import <mach/mach.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <signal.h>
 #import <dirent.h>
 #import <fcntl.h>
 #import <unistd.h>
@@ -103,6 +104,8 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 
     GSMSniffedOrder *_latestSniffedOrder;
     double _lastHeapScanEpoch;
+    pid_t _cachedDriverPid;
+    double _lastPidLookupEpoch;
     uint8_t *_reusableScanBuf;
 }
 
@@ -476,7 +479,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     }
     _lastContainerLookupEpoch = now;
 
-    [self performWithRootPrivileges:^{
+    void (^resolveBlock)(void) = ^{
         NSFileManager *fm = [NSFileManager defaultManager];
         NSString *dataRoot = @"/var/mobile/Containers/Data/Application";
         NSArray<NSString *> *uuids = [fm contentsOfDirectoryAtPath:dataRoot error:nil];
@@ -520,7 +523,13 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                 }
             }
         }
-    }];
+    };
+
+    // Try directly as mobile (euid 501) first so process-wide euid stays untouched; only elevate if needed
+    resolveBlock();
+    if (_cachedContainerPath.length == 0) {
+        [self performWithRootPrivileges:resolveBlock];
+    }
 }
 
 - (void)collectULIDsRecursivelyFromObject:(id)obj intoArray:(NSMutableArray<NSString *> *)outArr {
@@ -716,7 +725,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     [self ensureGSMContainerPathsResolvedWithConfig:config];
     if (_cachedCacheDirPath.length == 0) return;
 
-    [self performWithRootPrivileges:^{
+    void (^scanDiskBlock)(void) = ^{
         double now = [[NSDate date] timeIntervalSince1970];
 
         // 1. Scan Cache.db-wal & Cache.db (read last 4 MB if file is large so it finishes in <0.3ms)
@@ -773,12 +782,27 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                 closedir(dir);
             }
         }
-    }];
+    };
+
+    // Container files belong to mobile (501); read directly without flipping process-wide euid unless access fails
+    if (access([_cachedCacheDirPath fileSystemRepresentation], R_OK) == 0) {
+        scanDiskBlock();
+    } else {
+        [self performWithRootPrivileges:scanDiskBlock];
+    }
 }
 
 #pragma mark - Layer 2: Passive Mach VM Heap Reader (100% Invisible to bshield.framework)
 
 - (pid_t)findRunningDriverPIDWithConfig:(FilterConfig *)config {
+    double now = [[NSDate date] timeIntervalSince1970];
+    if (_cachedDriverPid > 1 && (now - _lastPidLookupEpoch) < 2.0) {
+        if (kill(_cachedDriverPid, 0) == 0) {
+            return _cachedDriverPid;
+        }
+    }
+    _lastPidLookupEpoch = now;
+
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
     size_t len = 0;
     if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0 || len == 0) return 0;
@@ -804,6 +828,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         }
     }
     free(procs);
+    _cachedDriverPid = foundPid;
     return foundPid;
 }
 
@@ -820,88 +845,110 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     pid_t driverPid = [self findRunningDriverPIDWithConfig:config];
     if (driverPid <= 1) return;
 
-    [self performWithRootPrivileges:^{
-        mach_port_t task = MACH_PORT_NULL;
-        kern_return_t kr = task_for_pid(mach_task_self(), driverPid, &task);
-        if (kr != KERN_SUCCESS || !MACH_PORT_VALID(task)) {
-            return;
-        }
+    // Acquire Mach task port right; only elevate euid(0) for the ~2us task_for_pid syscall if euid(501) wasn't enough!
+    __block mach_port_t task = MACH_PORT_NULL;
+    kern_return_t kr = task_for_pid(mach_task_self(), driverPid, &task);
+    if (kr != KERN_SUCCESS || !MACH_PORT_VALID(task)) {
+        [self performWithRootPrivileges:^{
+            task_for_pid(mach_task_self(), driverPid, &task);
+        }];
+    }
+    if (!MACH_PORT_VALID(task)) {
+        return;
+    }
 
-        @try {
-            mach_vm_address_t addr = 0;
-            mach_vm_size_t size    = 0;
-            natural_t depth        = 0;
-            size_t totalBytesScanned = 0;
-            const size_t kMaxHeapScanPerTick = 28 * 1024 * 1024; // Cap to 28 MB of active MALLOC heap per scan (~6ms)
+    @try {
+        mach_vm_address_t addr = 0;
+        mach_vm_size_t size    = 0;
+        natural_t depth        = 0;
+        size_t totalBytesScanned = 0;
+        const size_t kMaxHeapScanPerTick = 28 * 1024 * 1024; // Cap to 28 MB of active MALLOC heap per scan (~2-5ms)
 
-            while (totalBytesScanned < kMaxHeapScanPerTick) {
-                vm_region_submap_info_data_64_t info;
-                mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-                kr = mach_vm_region_recurse(task, &addr, &size, &depth, (vm_region_recurse_info_t)&info, &count);
-                if (kr != KERN_SUCCESS) break;
+        while (totalBytesScanned < kMaxHeapScanPerTick) {
+            vm_region_submap_info_data_64_t info;
+            mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+            kr = mach_vm_region_recurse(task, &addr, &size, &depth, (vm_region_recurse_info_t)&info, &count);
+            if (kr != KERN_SUCCESS) break;
 
-                if (info.is_submap) {
-                    depth++;
-                    continue;
-                }
+            if (info.is_submap) {
+                depth++;
+                continue;
+            }
 
-                mach_vm_address_t regionStart = addr;
-                mach_vm_size_t regionSize     = size;
-                addr += size;
+            mach_vm_address_t regionStart = addr;
+            mach_vm_size_t regionSize     = size;
+            addr += size;
 
-                // Stop before shared dyld system cache (0x180000000+)
-                if (regionStart >= 0x180000000ULL) break;
+            // Stop before shared dyld system cache (0x180000000+)
+            if (regionStart >= 0x180000000ULL) break;
 
-                // Only inspect readable + writable, non-executable user heap/data regions (<= 16 MB each)
-                BOOL isRWData = ((info.protection & VM_PROT_READ) != 0) &&
-                                ((info.protection & VM_PROT_WRITE) != 0) &&
-                                ((info.protection & VM_PROT_EXECUTE) == 0);
-                if (!isRWData || regionSize < 4096 || regionSize > (16 * 1024 * 1024)) {
-                    continue;
-                }
+            // Skip unpopulated virtual reservations (0 resident pages in RAM)
+            if (info.pages_resident == 0) {
+                continue;
+            }
 
-                // Skip thread stacks & guard mappings; include all MALLOC (tiny/small/medium/nano/large), Foundation & anonymous rw- heap
-                if (info.user_tag == VM_MEMORY_STACK || info.user_tag == VM_MEMORY_GUARD) {
-                    continue;
-                }
+            // Only inspect readable + writable, non-executable user heap/data regions (<= 16 MB each)
+            BOOL isRWData = ((info.protection & VM_PROT_READ) != 0) &&
+                            ((info.protection & VM_PROT_WRITE) != 0) &&
+                            ((info.protection & VM_PROT_EXECUTE) == 0);
+            if (!isRWData || regionSize < 4096 || regionSize > (16 * 1024 * 1024)) {
+                continue;
+            }
 
-                // Read region in 64KB chunks with 8KB overlap so JSON spanning chunk boundaries is never split
-                mach_vm_address_t curOffset = 0;
-                while (curOffset < regionSize && totalBytesScanned < kMaxHeapScanPerTick) {
-                    mach_vm_size_t toRead = MIN((mach_vm_size_t)(kHeapScanChunkBytes + kHeapScanOverlap),
-                                                regionSize - curOffset);
-                    if (toRead < 64) break;
+            // Only scan MALLOC / Foundation / CFNetwork / anonymous heap tags where Swift/ObjC JSON buffers reside
+            unsigned int tag = info.user_tag;
+            BOOL isHeapTag = (tag == 0 ||
+                              tag == VM_MEMORY_MALLOC ||
+                              tag == VM_MEMORY_MALLOC_SMALL ||
+                              tag == VM_MEMORY_MALLOC_LARGE ||
+                              tag == VM_MEMORY_MALLOC_HUGE ||
+                              tag == VM_MEMORY_MALLOC_TINY ||
+                              tag == VM_MEMORY_MALLOC_LARGE_REUSABLE ||
+                              tag == VM_MEMORY_MALLOC_LARGE_REUSED ||
+                              tag == VM_MEMORY_MALLOC_NANO ||
+                              tag == VM_MEMORY_MALLOC_MEDIUM ||
+                              tag == VM_MEMORY_FOUNDATION ||
+                              tag == VM_MEMORY_CFNETWORK);
+            if (!isHeapTag) {
+                continue;
+            }
 
-                    mach_vm_size_t outSize = 0;
-                    kern_return_t rkr = mach_vm_read_overwrite(task,
-                                                               regionStart + curOffset,
-                                                               toRead,
-                                                               (mach_vm_address_t)self->_reusableScanBuf,
-                                                               &outSize);
-                    if (rkr == KERN_SUCCESS && outSize >= 64) {
-                        totalBytesScanned += (size_t)outSize;
-                        [self scanRawBuffer:self->_reusableScanBuf
-                                     length:(size_t)outSize
-                                targetULIDs:targetULIDs
-                                  sourceTag:@"RAMHeap"
-                             intoCandidates:candidates];
-                        if (targetULIDs.count > 0 && candidates.count > 0) {
-                            // Found exact target ULID in heap -> stop early!
-                            for (GSMSniffedOrder *c in candidates) {
-                                if ([c.orderId isEqualToString:targetULIDs.firstObject]) {
-                                    return;
-                                }
+            // Read region in 64KB chunks with 8KB overlap so JSON spanning chunk boundaries is never split
+            mach_vm_address_t curOffset = 0;
+            while (curOffset < regionSize && totalBytesScanned < kMaxHeapScanPerTick) {
+                mach_vm_size_t toRead = MIN((mach_vm_size_t)(kHeapScanChunkBytes + kHeapScanOverlap),
+                                            regionSize - curOffset);
+                if (toRead < 64) break;
+
+                mach_vm_size_t outSize = 0;
+                kern_return_t rkr = mach_vm_read_overwrite(task,
+                                                           regionStart + curOffset,
+                                                           toRead,
+                                                           (mach_vm_address_t)self->_reusableScanBuf,
+                                                           &outSize);
+                if (rkr == KERN_SUCCESS && outSize >= 64) {
+                    totalBytesScanned += (size_t)outSize;
+                    [self scanRawBuffer:self->_reusableScanBuf
+                                 length:(size_t)outSize
+                            targetULIDs:targetULIDs
+                              sourceTag:@"RAMHeap"
+                         intoCandidates:candidates];
+                    if (targetULIDs.count > 0 && candidates.count > 0) {
+                        // Found exact target ULID in heap -> stop early!
+                        for (GSMSniffedOrder *c in candidates) {
+                            if ([c.orderId isEqualToString:targetULIDs.firstObject]) {
+                                return;
                             }
                         }
                     }
-                    if (curOffset + kHeapScanChunkBytes >= regionSize) break;
-                    curOffset += kHeapScanChunkBytes;
                 }
+                if (curOffset + kHeapScanChunkBytes >= regionSize) break;
+                curOffset += kHeapScanChunkBytes;
             }
-        } @finally {
-            mach_port_deallocate(mach_task_self(), task);
         }
-    }];
+    } @finally {
+        mach_port_deallocate(mach_task_self(), task);
+    }
 }
 
 #pragma mark - Caching & 3-Lock Verification
