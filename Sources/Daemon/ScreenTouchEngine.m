@@ -95,7 +95,9 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 
     IOSurfaceRef _srcSurface;
     IOSurfaceRef _dstSurface;
+    IOSurfaceRef _lastActiveSurface;
     IOSurfaceAcceleratorRef _accelerator;
+    NSDictionary *_surfaceProps;
 
     int _pixelW;
     int _pixelH;
@@ -253,6 +255,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 }
 
 - (void)rebuildCaptureSurfaces {
+    _lastActiveSurface = NULL;
     if (_srcSurface) {
         CFRelease(_srcSurface);
         _srcSurface = NULL;
@@ -300,12 +303,20 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         props[@"IOSurfaceColorSpace"] = CFBridgingRelease(csProp);
     }
 
-    _srcSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)props);
-    _dstSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)props);
+    _surfaceProps = [props copy];
+    _srcSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)_surfaceProps);
+    _lastActiveSurface = _srcSurface;
+    // Lazy-allocate _dstSurface (4.05 MB VRAM) and _accelerator ONLY if _srcSurface ever fails direct inspection!
+}
 
-    if (_fnAccCreate) {
+- (BOOL)ensureFallbackSurfaceAndAccelerator {
+    if (!_dstSurface && _fnSurfaceCreate && _surfaceProps) {
+        _dstSurface = _fnSurfaceCreate((__bridge CFDictionaryRef)_surfaceProps);
+    }
+    if (!_accelerator && _fnAccCreate) {
         _fnAccCreate(kCFAllocatorDefault, NULL, &_accelerator);
     }
+    return (_dstSurface != NULL && _accelerator != NULL && _fnAccTransfer != NULL);
 }
 
 - (BOOL)inspectSurfacePixelsAndSensors:(IOSurfaceRef)surface updateMetrics:(BOOL)updateMetrics {
@@ -546,9 +557,10 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     _lastFrameChangedSamples = kGridCount;
 }
 
-- (CIImage *)captureScreenCIImage {
+- (BOOL)captureScreenSensorsOnly {
     if (!_fnRenderDisplay || !_srcSurface) {
         _lastCaptureHadPixels               = NO;
+        _lastActiveSurface                  = NULL;
         _lastFrameHasBottomTealButton       = NO;
         _lastFrameLikelyHasOrderPopup       = NO;
         _lastFrameHasOrderHeaderAtTop       = NO;
@@ -556,7 +568,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
         _lastFrameHeaderIconCoolRide        = NO;
         _lastFrameLikelyHasLobbyPowerButton = NO;
         _lastOrderYellowDotY                = 0.0;
-        return nil;
+        return NO;
     }
 
     // Clear 4 canary pixels (and bump IOSurface seed) BEFORE rendering so a silent CARenderServerRenderDisplay no-op is detected 100%!
@@ -580,13 +592,13 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
     IOSurfaceRef activeSurface = _srcSurface;
     BOOL hasPixels = NO;
 
-    // Fast path: inspect _srcSurface directly (saves 4MB VRAM DMA copy per frame on iPhone 8!)
+    // Fast path: inspect _srcSurface directly (saves 4.1MB VRAM DMA copy & _dstSurface allocation on iPhone 8!)
     if ([self inspectSurfacePixelsAndSensors:_srcSurface updateMetrics:YES]) {
         activeSurface = _srcSurface;
         hasPixels = YES;
     }
 
-    if (!hasPixels && _accelerator && _fnAccTransfer && _dstSurface) {
+    if (!hasPixels && [self ensureFallbackSurfaceAndAccelerator]) {
         kern_return_t kr = _fnAccTransfer(_accelerator, _srcSurface, _dstSurface, NULL, NULL, NULL, NULL);
         if (kr == KERN_SUCCESS && [self inspectSurfacePixelsAndSensors:_dstSurface updateMetrics:YES]) {
             activeSurface = _dstSurface;
@@ -604,6 +616,7 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
 
     _lastCaptureHadPixels = hasPixels;
     if (!hasPixels) {
+        _lastActiveSurface                  = NULL;
         _lastFrameHasBottomTealButton       = NO;
         _lastFrameLikelyHasOrderPopup       = NO;
         _lastFrameHasOrderHeaderAtTop       = NO;
@@ -618,11 +631,21 @@ typedef NS_ENUM(NSInteger, TouchPhaseMode) {
             [self rebuildCaptureSurfaces];
             [self refreshHIDClient];
         }
-        return nil;
+        return NO;
     }
     _consecutiveEmptyCaptures = 0;
+    _lastActiveSurface = activeSurface;
+    return YES;
+}
 
-    return [CIImage imageWithIOSurface:activeSurface];
+- (CIImage *)currentCapturedCIImage {
+    if (!_lastCaptureHadPixels || !_lastActiveSurface) return nil;
+    return [CIImage imageWithIOSurface:_lastActiveSurface];
+}
+
+- (CIImage *)captureScreenCIImage {
+    if (![self captureScreenSensorsOnly]) return nil;
+    return [self currentCapturedCIImage];
 }
 
 - (void)dispatchTouchMode:(TouchPhaseMode)mode normX:(double)nx normY:(double)ny {

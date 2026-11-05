@@ -22,6 +22,8 @@
 
 + (instancetype)sharedEngine;
 
+- (BOOL)captureScreenSensorsOnly;
+- (CIImage *)currentCapturedCIImage;
 - (CIImage *)captureScreenCIImage;
 - (void)markCurrentFrameAnalyzed;
 - (void)invalidateAnalyzedBaseline;

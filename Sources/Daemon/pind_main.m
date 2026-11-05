@@ -759,12 +759,16 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
         usleep(480000);
 
         BOOL confirmedOffline = NO;
+        double lastOfflineHbSave = state.workerHeartbeatEpoch;
         for (int attempt = 0; attempt < 18 && !gShouldExit && !gSkipPauseRequested; attempt++) {
             @autoreleasepool {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 double iterNow = [[NSDate date] timeIntervalSince1970];
                 state.workerHeartbeatEpoch = iterNow;
-                [state saveStateAndNotify:NO];
+                if (iterNow - lastOfflineHbSave >= 3.0) {
+                    [state saveStateAndNotify:NO];
+                    lastOfflineHbSave = iterNow;
+                }
 
                 CIImage *img = [engine captureScreenCIImage];
                 ScreenAnalysis *ana = [scanner analyzeScreenImage:img
@@ -980,14 +984,14 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                                          enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
             }
 
-            // LIVE PIXEL WAKEUP DURING PAUSE (0% Vision OCR, 0.02ms):
+            // LIVE PIXEL WAKEUP DURING PAUSE (0% Vision OCR, 0 CIImage alloc, 0.02ms):
             // If driver manually pressed 'Mở nhận chuyến' to go back Online early, OR an order popped up -> cancel pause immediately!
             pauseTick++;
             if ((pauseTick % 2 == 0) && !config.dryRunMode && !isDeviceScreenLocked()) {
                 NSString *fgDuringPause = currentFrontmostAppBundleIDForConfig(config);
                 if (isFrontmostAppAllowedForScan(fgDuringPause, config)) {
-                    CIImage *pauseProbe = [engine captureScreenCIImage];
-                    if (pauseProbe && engine.lastFrameLikelyHasOrderPopup) {
+                    BOOL pauseProbeOk = [engine captureScreenSensorsOnly];
+                    if (pauseProbeOk && engine.lastFrameLikelyHasOrderPopup) {
                         state.pauseEndEpoch        = 0.0;
                         state.workerHeartbeatEpoch = cur;
                         state.phaseDescription     = @"Đang trực tuyến / Canh đơn (Turbo)";
@@ -996,7 +1000,7 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                         [engine invalidateAnalyzedBaseline];
                         return YES;
                     }
-                    if (pauseProbe && !didRelaunchApp && (cur - pauseLoopStartEpoch) >= 4.0 && engine.lastFrameLikelyHasLobbyPowerButton) {
+                    if (pauseProbeOk && !didRelaunchApp && (cur - pauseLoopStartEpoch) >= 4.0 && engine.lastFrameLikelyHasLobbyPowerButton) {
                         state.pauseEndEpoch        = 0.0;
                         state.workerHeartbeatEpoch = cur;
                         state.phaseDescription     = @"Đang trực tuyến / Canh đơn";
@@ -1071,13 +1075,18 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
 
     BOOL backOnline = NO;
     int onlineTapsSent = 0;
+    double lastOnlineHbSave = state.workerHeartbeatEpoch;
 
     // Closed-loop re-online check (up to ~36s so iPhone 8 cold-launch + GSM Maps + GPS lock completes smoothly)
     for (int waitIdx = 0; waitIdx < 36 && !gShouldExit; waitIdx++) {
         @autoreleasepool {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
-            state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
-            [state saveStateAndNotify:NO];
+            double onlineIterNow = [[NSDate date] timeIntervalSince1970];
+            state.workerHeartbeatEpoch = onlineIterNow;
+            if (onlineIterNow - lastOnlineHbSave >= 3.0) {
+                [state saveStateAndNotify:NO];
+                lastOnlineHbSave = onlineIterNow;
+            }
 
             // Auto re-bring Xanh SM to foreground if cold-launch stalled or stayed on SpringBoard
             if (config.autoKillAndRelaunchApp && !config.dryRunMode && (waitIdx % 6 == 2)) {
@@ -1387,7 +1396,7 @@ static int runWorkerMain(void) {
                     }
                 }
 
-                CIImage *preCapturedImg = nil;
+                BOOL preCapturedSensors = NO;
 
                 // --- TẦNG HẠ NHIỆT 1: SMART-SLEEP KHI ĐANG Ở NGOÀI APP TÀI XẾ (TỰ PHỤC HỒI NẾU MONITOR KẸT) ---
                 if (config.smartCoolMode) {
@@ -1397,19 +1406,19 @@ static int runWorkerMain(void) {
                     // SELF-HEAL PIXEL PROBE:
                     // Even if BKSApplicationStateMonitor / FBSDisplayLayoutMonitor got stuck reporting a stale app
                     // (e.g. PinNhietDo after Map Relay bounce-back, SpringBoard banner, phone call, or Camera),
-                    // probe screen pixels every 2 ticks (~1.2s) in 0.02ms to wake up immediately when Xanh SM is on screen!
+                    // probe screen pixels every 2 ticks (~1.2s) in 0.02ms (0 CIImage allocation) to wake up immediately when Xanh SM is on screen!
                     if (!canScan) {
                         coolSleepTickCounter++;
                         BOOL isGoogleMapsFront = [frontBid isEqualToString:@"com.google.Maps"];
                         int probeMod = isGoogleMapsFront ? 4 : 2;
                         if ((coolSleepTickCounter % probeMod) == 0) {
-                            CIImage *probe = [engine captureScreenCIImage];
-                            if (probe && !engine.lastFrameLooksLikeGoogleMapsNav &&
+                            BOOL probeOk = [engine captureScreenSensorsOnly];
+                            if (probeOk && !engine.lastFrameLooksLikeGoogleMapsNav &&
                                 (engine.lastFrameLikelyHasOrderPopup ||
                                  engine.lastFrameHasBottomTealButton ||
                                  (!isGoogleMapsFront && engine.lastFrameLikelyHasLobbyPowerButton))) {
                                 canScan = YES;
-                                preCapturedImg = probe;
+                                preCapturedSensors = YES;
                                 resetFrontmostAppMonitors();
                             }
                         }
@@ -1473,9 +1482,9 @@ static int runWorkerMain(void) {
                     [state saveStateAndNotify:YES];
                 }
 
-                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: CẢM BIẾN PIXEL 0.02ms CHẶN VISION OCR KHI MÀN HÌNH ĐỨNG YÊN ---
-                CIImage *screenImg = preCapturedImg ?: [engine captureScreenCIImage];
-                if (!screenImg) {
+                // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: CẢM BIẾN PIXEL 0.02ms CHẶN VISION OCR + 0 CIIMAGE ALLOC KHI MÀN HÌNH ĐỨNG YÊN ---
+                BOOL hasCapturedPixels = preCapturedSensors ? engine.lastCaptureHadPixels : [engine captureScreenSensorsOnly];
+                if (!hasCapturedPixels) {
                     usleep((useconds_t)(MAX(250, config.scanIntervalMs) * 1000));
                     continue;
                 }
@@ -1502,7 +1511,7 @@ static int runWorkerMain(void) {
 
                 if (config.smartCoolMode && !hasPopupOrActionCandidate) {
                     // CASE A: Uncovered bright teal Lobby [Power] circle is visible at (40, 455) in 0.01ms!
-                    // We know with 100% certainty: in Lobby Online, NO order popup, NO '0.0/8' modal sheet -> SKIP Vision OCR!
+                    // We know with 100% certainty: in Lobby Online, NO order popup, NO '0.0/8' modal sheet -> SKIP Vision OCR & 0 CIImage alloc!
                     if (engine.lastFrameLikelyHasLobbyPowerButton && frameChangedBeforeMark < 28) {
                         if (inActiveTripSession ||
                             ![state.phaseDescription isEqualToString:@"Đang trực tuyến / Canh đơn"]) {
@@ -1557,6 +1566,12 @@ static int runWorkerMain(void) {
                         usleep((useconds_t)(idleMs * 1000));
                         continue;
                     }
+                }
+
+                CIImage *screenImg = [engine currentCapturedCIImage];
+                if (!screenImg) {
+                    usleep((useconds_t)(MAX(250, config.scanIntervalMs) * 1000));
+                    continue;
                 }
 
                 [engine markCurrentFrameAnalyzed];
@@ -1728,8 +1743,8 @@ static int runWorkerMain(void) {
                         } else {
                             // KHÓA AN TOÀN 0.5ms TRƯỚC KHI BẤM [X]: Nếu bảng đơn vừa tự trôi mất trong lúc chờ delay -> HỦY CHẠM NGAY!
                             if (!isAccept) {
-                                CIImage *preTapImg = [engine captureScreenCIImage];
-                                if (!preTapImg || !engine.lastFrameLikelyHasOrderPopup) {
+                                BOOL preTapOk = [engine captureScreenSensorsOnly];
+                                if (!preTapOk || !engine.lastFrameLikelyHasOrderPopup) {
                                     appendDaemonLog(@"[AN TOÀN] Bảng đơn Green Food vừa tự trôi mất trước khi hạ ngón tay -> Hủy cú chạm [X] (tránh bấm nhầm 0.0/8)!");
                                     [engine invalidateAnalyzedBaseline];
                                     notify_post(kNotifyStatsUpdated);
@@ -1745,8 +1760,8 @@ static int runWorkerMain(void) {
                                                             durationMs:50];
                                     appendDaemonLog(@"[CHỐNG CHE] Phát hiện Banner đè lên nút [X] -> Đã vuốt hất Banner lên trước khi bấm [X]!");
                                     usleep(145000);
-                                    preTapImg = [engine captureScreenCIImage];
-                                    if (!preTapImg || !engine.lastFrameLikelyHasOrderPopup) {
+                                    preTapOk = [engine captureScreenSensorsOnly];
+                                    if (!preTapOk || !engine.lastFrameLikelyHasOrderPopup) {
                                         [engine invalidateAnalyzedBaseline];
                                         turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 4.5;
                                         continue;
@@ -1774,8 +1789,8 @@ static int runWorkerMain(void) {
                                                                toPoint:CGPointMake(midX, 6.0)
                                                             durationMs:50];
                                     usleep(140000);
-                                    CIImage *recheckImg = [engine captureScreenCIImage];
-                                    if (!recheckImg || !engine.lastFrameLikelyHasOrderPopup || !engine.lastFrameHasOrderHeaderAtTop) {
+                                    BOOL recheckOk = [engine captureScreenSensorsOnly];
+                                    if (!recheckOk || !engine.lastFrameLikelyHasOrderPopup || !engine.lastFrameHasOrderHeaderAtTop) {
                                         confirmedGone = YES;
                                         break;
                                     }
@@ -1800,14 +1815,20 @@ static int runWorkerMain(void) {
                                 usleep(postTapWaitUs);
                                 if (gShouldExit) break;
 
-                                CIImage *chkImg = [engine captureScreenCIImage];
-                                if (!chkImg) {
+                                BOOL chkOk = [engine captureScreenSensorsOnly];
+                                if (!chkOk) {
                                     confirmedGone = YES;
                                     break;
                                 }
 
-                                // Kiểm tra nhanh 0.01ms bằng cảm biến Pixel: nếu thanh xanh 'Nhận chuyến' đáy màn đã biến mất -> Bảng đơn đã tắt 100%!
+                                // Kiểm tra nhanh 0.01ms bằng cảm biến Pixel (0 CIImage alloc): nếu thanh xanh 'Nhận chuyến' đáy màn đã biến mất -> Bảng đơn đã tắt 100%!
                                 if (!isAccept && !engine.lastFrameLikelyHasOrderPopup) {
+                                    confirmedGone = YES;
+                                    break;
+                                }
+
+                                CIImage *chkImg = [engine currentCapturedCIImage];
+                                if (!chkImg) {
                                     confirmedGone = YES;
                                     break;
                                 }

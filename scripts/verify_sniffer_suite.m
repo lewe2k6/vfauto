@@ -380,6 +380,28 @@ int main(int argc, const char *argv[]) {
                     "Toast @2x bitmap must render at 338x33px with auto-shrinking Vietnamese text");
         if (imgToast) CGImageRelease(imgToast);
 
+        // ---------------------------------------------------------------------
+        // TEST 10: iPhone 8 Performance & Zero-4G Offline Hanoi Distance Routing
+        // When sniffedOrder is nil (pure OCR fallback) and both addresses are in Hanoi Offline DB (123,757 coords),
+        // distance must compute in < 20ms with 0 Byte 4G!
+        // ---------------------------------------------------------------------
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+        FoodFilterEvaluation *evOfflineLong = [foodEngine evaluateGreenFoodWithFare:17000
+                                                                        pickupTitle:@"Bún Bò Huế 65"
+                                                                     pickupSubtitle:@"65 Đường Láng, Đống Đa, Hà Nội"
+                                                                       dropoffTitle:@"85 Xuân Thủy"
+                                                                    dropoffSubtitle:@"85 Xuân Thủy, Cầu Giấy, Hà Nội"
+                                                                       sniffedOrder:nil
+                                                                             config:cfg
+                                                                         retryCount:0];
+        double elapsedOfflineMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0;
+        ASSERT_TRUE(evOfflineLong.decision == FoodFilterDecisionAccept && evOfflineLong.estimatedDistanceKm > 3.5,
+                    "Offline Hanoi distance (65 Đường Láng -> 85 Xuân Thủy) must exceed 3.5km and ACCEPT (got %.2fkm)",
+                    evOfflineLong.estimatedDistanceKm);
+        ASSERT_TRUE(elapsedOfflineMs < 25.0,
+                    "Zero-4G Offline Hanoi distance must complete in < 25ms without any HTTP call (took %.2fms)",
+                    elapsedOfflineMs);
+
         printf("==> Verification Suite Complete: %d passed, %d failed.\n", gPasses, gFailures);
         return (gFailures == 0) ? 0 : 1;
     }

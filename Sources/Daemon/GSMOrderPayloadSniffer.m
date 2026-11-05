@@ -92,9 +92,10 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     return (b >= 0x20 && b <= 0x7E) || b == '\n' || b == '\r' || b == '\t' || (b >= 0x80 && b <= 0xF4);
 }
 
-#define kHeapScanChunkBytes  (64 * 1024)
-#define kHeapScanOverlap     (8 * 1024)
-#define kMaxOrderJSONBytes   (32 * 1024)
+#define kHeapScanChunkBytes   (64 * 1024)
+#define kHeapScanOverlap      (8 * 1024)
+#define kMaxOrderJSONBytes    (32 * 1024)
+#define kMaxDiskTailReadBytes (256 * 1024)
 
 @implementation GSMOrderPayloadSniffer {
     NSLock *_lock;
@@ -107,12 +108,16 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     NSMutableArray<NSString *> *_handledOrderQueue;
     NSMutableDictionary<NSString *, GSMSniffedOrder *> *_parsedOrderCache;
     NSMutableArray<NSString *> *_parsedOrderLRU;
+    NSMutableDictionary<NSString *, NSString *> *_fileStatCache;
 
     GSMSniffedOrder *_latestSniffedOrder;
     double _lastHeapScanEpoch;
+    double _lastDeepDirScanEpoch;
     pid_t _cachedDriverPid;
+    pid_t _deniedTaskForPid;
     double _lastPidLookupEpoch;
     uint8_t *_reusableScanBuf;
+    uint8_t *_reusableFileBuf;
 }
 
 + (instancetype)sharedSniffer {
@@ -132,7 +137,10 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         _handledOrderQueue  = [NSMutableArray arrayWithCapacity:40];
         _parsedOrderCache   = [NSMutableDictionary dictionaryWithCapacity:24];
         _parsedOrderLRU     = [NSMutableArray arrayWithCapacity:24];
+        _fileStatCache      = [NSMutableDictionary dictionaryWithCapacity:128];
+        _deniedTaskForPid   = 0;
         _reusableScanBuf    = (uint8_t *)malloc(kHeapScanChunkBytes + kHeapScanOverlap + 64);
+        _reusableFileBuf    = (uint8_t *)malloc(kMaxDiskTailReadBytes + 64);
     }
     return self;
 }
@@ -141,6 +149,10 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     if (_reusableScanBuf) {
         free(_reusableScanBuf);
         _reusableScanBuf = NULL;
+    }
+    if (_reusableFileBuf) {
+        free(_reusableFileBuf);
+        _reusableFileBuf = NULL;
     }
 }
 
@@ -738,19 +750,38 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     if (st.st_size < 64) return;
     if (maxAgeSec > 0.0 && (now - (double)st.st_mtimespec.tv_sec) > maxAgeSec) return;
 
+    // Fast Stat Fingerprint Check (0.002ms):
+    // If file mtime + size + active ULID list haven't changed since last check, skip open/pread/memmem completely!
+    NSString *firstUlid = targetULIDs.firstObject ?: @"";
+    NSString *statSig = [NSString stringWithFormat:@"%ld:%ld:%lld:%@",
+                         (long)st.st_mtimespec.tv_sec,
+                         (long)st.st_mtimespec.tv_nsec,
+                         (long long)st.st_size,
+                         firstUlid];
+    NSString *prevSig = _fileStatCache[filePath];
+    if (prevSig && [prevSig isEqualToString:statSig]) {
+        return;
+    }
+    if (_fileStatCache.count >= 160) {
+        [_fileStatCache removeAllObjects];
+    }
+    _fileStatCache[filePath] = statSig;
+
     int fd = open(cPath, O_RDONLY);
     if (fd < 0) return;
-    size_t maxRead = 4 * 1024 * 1024;
+    size_t maxRead = kMaxDiskTailReadBytes; // 256 KB tail is 150x larger than a ~1.5KB GSM order JSON
     size_t readLen = ((size_t)st.st_size > maxRead) ? maxRead : (size_t)st.st_size;
     off_t startOff = ((size_t)st.st_size > maxRead) ? (st.st_size - (off_t)maxRead) : 0;
 
-    uint8_t *buf = (uint8_t *)malloc(readLen);
+    uint8_t *buf = _reusableFileBuf ?: (uint8_t *)malloc(readLen);
     if (buf) {
         ssize_t n = pread(fd, buf, readLen, startOff);
         if (n > 64) {
             [self scanRawBuffer:buf length:(size_t)n targetULIDs:targetULIDs sourceTag:sourceTag intoCandidates:candidates];
         }
-        free(buf);
+        if (buf != _reusableFileBuf) {
+            free(buf);
+        }
     }
     close(fd);
 }
@@ -803,6 +834,14 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 - (void)scanDiskCachesWithConfig:(FilterConfig *)config
                      targetULIDs:(NSArray<NSString *> *)targetULIDs
                   intoCandidates:(NSMutableArray<GSMSniffedOrder *> *)candidates {
+    // Seed candidates with any already-parsed orders in memory so _fileStatCache skips never hide cached orders
+    for (NSString *uid in _parsedOrderLRU) {
+        GSMSniffedOrder *cachedOrd = _parsedOrderCache[uid];
+        if (cachedOrd && ![_handledOrderIds containsObject:cachedOrd.orderId] && ![candidates containsObject:cachedOrd]) {
+            [candidates addObject:cachedOrd];
+        }
+    }
+
     [self ensureGSMContainerPathsResolvedWithConfig:config];
     if (_cachedContainerPath.length == 0 && _cachedCacheDirPath.length == 0) return;
 
@@ -833,8 +872,10 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                               intoCandidates:candidates];
         }
 
-        // 2. Scan any recently modified files (within last 60s) across Library/Caches, Documents, Application Support & tmp
-        if (self->_cachedContainerPath.length > 0) {
+        // 2. Scan broader container dirs at most once every 0.8s (only if primary CacheWAL/FSCache didn't already match active ULID)
+        BOOL alreadyHasTarget = (targetULIDs.count > 0 && self->_parsedOrderCache[targetULIDs.firstObject] != nil);
+        if (!alreadyHasTarget && self->_cachedContainerPath.length > 0 && (now - self->_lastDeepDirScanEpoch) >= 0.80) {
+            self->_lastDeepDirScanEpoch = now;
             NSArray<NSArray<NSString *> *> *containerDirs = @[
                 @[ [self->_cachedContainerPath stringByAppendingPathComponent:@"Library/Caches"],              @"LibCache" ],
                 @[ [self->_cachedContainerPath stringByAppendingPathComponent:@"Documents"],                   @"Docs"     ],
@@ -923,9 +964,10 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     _lastHeapScanEpoch = now;
 
     pid_t driverPid = [self findRunningDriverPIDWithConfig:config];
-    if (driverPid <= 1) return;
+    if (driverPid <= 1 || driverPid == _deniedTaskForPid) return;
 
-    // Acquire Mach task port right; only elevate euid(0) for the ~2us task_for_pid syscall if euid(501) wasn't enough!
+    // Acquire Mach task port right; if kernel denies task_for_pid for this PID (standard non-jailbroken TrollStore),
+    // cache _deniedTaskForPid = driverPid so we NEVER waste syscalls or euid switches on this PID again!
     __block mach_port_t task = MACH_PORT_NULL;
     kern_return_t kr = sTaskForPid(mach_task_self(), driverPid, &task);
     if (kr != KERN_SUCCESS || !MACH_PORT_VALID(task)) {
@@ -934,6 +976,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         }];
     }
     if (!MACH_PORT_VALID(task)) {
+        _deniedTaskForPid = driverPid;
         return;
     }
 

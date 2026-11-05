@@ -3,6 +3,7 @@
 #import "SharedConfig.h"
 #import "PureQRCode.h"
 #import <notify.h>
+#import <sys/stat.h>
 
 @implementation SecretConfigViewController {
     FilterConfig *_cfg;
@@ -95,6 +96,9 @@
     BOOL _hasPendingSliderSave;
     NSTimeInterval _lastAutoHealEpoch;
     int _statsNotifyToken;
+    time_t _lastLogMtimeSec;
+    long _lastLogMtimeNsec;
+    off_t _lastLogFileSize;
 }
 
 - (void)viewDidLoad {
@@ -174,16 +178,53 @@
         [weakSelf refreshStatusAndLogs];
     });
 
-    _refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                     target:self
-                                                   selector:@selector(refreshStatusAndLogs)
-                                                   userInfo:nil
-                                                    repeats:YES];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppDidEnterBackground)
+                                                 name:UIApplicationDidEnterBackgroundNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleAppWillEnterForeground)
+                                                 name:UIApplicationWillEnterForegroundNotification
+                                               object:nil];
+
+    [self startRefreshTimerIfNeeded];
+}
+
+- (void)startRefreshTimerIfNeeded {
+    if (!_refreshTimer) {
+        _refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                         target:self
+                                                       selector:@selector(refreshStatusAndLogs)
+                                                       userInfo:nil
+                                                        repeats:YES];
+    }
+}
+
+- (void)stopRefreshTimer {
+    if (_refreshTimer) {
+        [_refreshTimer invalidate];
+        _refreshTimer = nil;
+    }
+}
+
+- (void)handleAppDidEnterBackground {
+    if (_hasPendingSliderSave) {
+        [_sliderSaveTimer invalidate];
+        _sliderSaveTimer = nil;
+        _hasPendingSliderSave = NO;
+        [_cfg saveToDiskAndNotify:YES];
+    }
+    [self stopRefreshTimer];
+}
+
+- (void)handleAppWillEnterForeground {
+    [self startRefreshTimerIfNeeded];
+    [self refreshStatusAndLogs];
 }
 
 - (void)dealloc {
-    [_refreshTimer invalidate];
-    _refreshTimer = nil;
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self stopRefreshTimer];
     [_sliderSaveTimer invalidate];
     _sliderSaveTimer = nil;
     if (_statsNotifyToken != 0) {
@@ -946,7 +987,7 @@
 
     _distSliderWrap.alpha = _cfg.foodAcceptLongDistance ? 1.0 : 0.35;
     _distSliderWrap.userInteractionEnabled = _cfg.foodAcceptLongDistance;
-    _lblMinFoodDistKm.text = [NSString stringWithFormat:@"Ngưỡng khoảng cách Điểm nhận -> Điểm giao: > %.1f km\n(Đo xe máy Valhalla + 49.261 ghim Hà Nội Offline chống lag 4G)",
+    _lblMinFoodDistKm.text = [NSString stringWithFormat:@"Ngưỡng khoảng cách Điểm nhận -> Điểm giao: > %.1f km\n(Đo xe máy Hà Nội 123.757 tọa độ Offline 0ms — Tiết kiệm >95%% 4G)",
                               _cfg.minFoodDistanceKm];
 
     _lblPauseSec.text    = [NSString stringWithFormat:@"Thời gian tắt nhận chuyến: %ld giây (%.1f phút)",
@@ -1565,10 +1606,16 @@
 
 - (void)clearLogsTapped {
     clearDaemonLogs();
+    _lastLogMtimeSec = 0;
+    _lastLogMtimeNsec = 0;
+    _lastLogFileSize = -1;
     [self refreshStatusAndLogs];
 }
 
 - (void)refreshStatusAndLogs {
+    if ([UIApplication sharedApplication].applicationState == UIApplicationStateBackground) {
+        return;
+    }
     pid_t wkPid = getRunningDaemonPID();
     pid_t wdPid = getRunningWatchdogPID();
     RuntimeDaemonState *st = [RuntimeDaemonState loadState];
@@ -1661,11 +1708,28 @@
     _statsLabel.text = [NSString stringWithFormat:@"Đã nhận: %ld cuốc  |  Đã X Food: %ld đơn",
                         (long)st.statAcceptedCount, (long)st.statRejectedCount];
 
-    NSString *logs = readDaemonLogs();
-    if (![_logTextView.text isEqualToString:logs]) {
-        _logTextView.text = logs;
-        if (_logTextView.text.length > 10) {
-            [_logTextView scrollRangeToVisible:NSMakeRange(_logTextView.text.length - 1, 1)];
+    struct stat logStat;
+    BOOL logChanged = YES;
+    if (stat([kDaemonLogPath fileSystemRepresentation], &logStat) == 0) {
+        if (logStat.st_mtimespec.tv_sec == _lastLogMtimeSec &&
+            logStat.st_mtimespec.tv_nsec == _lastLogMtimeNsec &&
+            logStat.st_size == _lastLogFileSize &&
+            _logTextView.text.length > 0) {
+            logChanged = NO;
+        } else {
+            _lastLogMtimeSec  = logStat.st_mtimespec.tv_sec;
+            _lastLogMtimeNsec = logStat.st_mtimespec.tv_nsec;
+            _lastLogFileSize  = logStat.st_size;
+        }
+    }
+
+    if (logChanged) {
+        NSString *logs = readDaemonLogs();
+        if (![_logTextView.text isEqualToString:logs]) {
+            _logTextView.text = logs;
+            if (_logTextView.text.length > 10) {
+                [_logTextView scrollRangeToVisible:NSMakeRange(_logTextView.text.length - 1, 1)];
+            }
         }
     }
 }
