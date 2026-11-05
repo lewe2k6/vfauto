@@ -351,12 +351,18 @@
                 CGFloat uiW = bb.size.width * screenSize.width;
                 CGFloat uiH = bb.size.height * screenSize.height;
                 CGFloat uiY = (1.0 - (bb.origin.y + bb.size.height)) * screenSize.height;
+                CGFloat centerY = uiY + uiH * 0.5;
+
+                // Ignore top iOS Status Bar strip (y < 21pt on iPhone 8 375x667) so carrier/clock/StealthStatusPillHUD text is 100% invisible to OCR
+                if (centerY < MAX(21.0, screenSize.height * 0.0315)) {
+                    continue;
+                }
 
                 OCRTextBlock *blk = [[OCRTextBlock alloc] init];
                 blk.rawText  = top.string;
                 blk.normText = NormalizeVNText(top.string);
                 blk.uiRect   = CGRectMake(uiX, uiY, uiW, uiH);
-                blk.uiCenter = CGPointMake(uiX + uiW * 0.5, uiY + uiH * 0.5);
+                blk.uiCenter = CGPointMake(uiX + uiW * 0.5, centerY);
                 [blocks addObject:blk];
             }
         }];

@@ -26,6 +26,7 @@ DAEMON_SRCS := Sources/Daemon/pind_main.m \
                Sources/Daemon/OrderScanner.m \
                Sources/Daemon/HanoiFoodFilterEngine.m \
                Sources/Daemon/GSMOrderPayloadSniffer.m \
+               Sources/Daemon/StealthStatusPillHUD.m \
                Shared/TSUtil.m
 
 MAP_APP_SRCS := Sources/MapApp/map_main.m \
@@ -40,7 +41,7 @@ APP_FRAMEWORKS    := -framework Foundation -framework UIKit -framework CoreGraph
 
 DAEMON_FRAMEWORKS := -framework Foundation -framework CoreGraphics \
                      -framework CoreImage -framework QuartzCore \
-                     -framework Vision -framework AudioToolbox -lz
+                     -framework CoreText -framework Vision -framework AudioToolbox -lz
 
 .PHONY: all clean
 

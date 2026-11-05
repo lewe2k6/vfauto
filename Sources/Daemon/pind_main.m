@@ -18,6 +18,7 @@
 #import "OrderScanner.h"
 #import "HanoiFoodFilterEngine.h"
 #import "GSMOrderPayloadSniffer.h"
+#import "StealthStatusPillHUD.h"
 
 #ifndef POSIX_SPAWN_CLOEXEC_DEFAULT
 #define POSIX_SPAWN_CLOEXEC_DEFAULT 0x4000
@@ -535,6 +536,51 @@ static BOOL isFrontmostAppAllowedForScan(NSString *frontBid, FilterConfig *confi
     return bundleIDMatchesDriverApp(frontBid, config);
 }
 
+static NSString *buildPillToastSummaryForOrder(ScreenAnalysis *ana, BOOL isAccept, BOOL isDryRun) {
+    NSString *verb = isDryRun
+        ? (isAccept ? @"THỬ ĐỚP" : @"THỬ HỦY")
+        : (isAccept ? @"ĐỚP" : @"HỦY");
+    NSString *priceStr = (ana && ana.detectedPriceVND >= 1000)
+        ? [NSString stringWithFormat:@"%ldk", (long)(ana.detectedPriceVND / 1000)]
+        : @"";
+
+    if (ana && ana.isGreenFood) {
+        NSString *reasonUpper = (ana.orderReason ?: @"").uppercaseString;
+        if (!isAccept && ([reasonUpper containsString:@"TTTM"] || [reasonUpper containsString:@"HẦM"])) {
+            return (priceStr.length > 0)
+                ? [NSString stringWithFormat:@"%@ Food TTTM • %@", verb, priceStr]
+                : [NSString stringWithFormat:@"%@ Food TTTM", verb];
+        }
+        if (!isAccept && [reasonUpper containsString:@"ĐÔNG"]) {
+            return (priceStr.length > 0)
+                ? [NSString stringWithFormat:@"%@ Food ĐÔNG • %@", verb, priceStr]
+                : [NSString stringWithFormat:@"%@ Food ĐÔNG", verb];
+        }
+        if (ana.estimatedDistanceKm >= 0.1 && priceStr.length > 0) {
+            return [NSString stringWithFormat:@"%@ Food %@ • %.1fkm", verb, priceStr, ana.estimatedDistanceKm];
+        }
+        if (priceStr.length > 0) {
+            return [NSString stringWithFormat:@"%@ Food • %@", verb, priceStr];
+        }
+        return [NSString stringWithFormat:@"%@ Green Food", verb];
+    }
+
+    NSString *svcTitle = (ana.detectedServiceTitle ?: @"").lowercaseString;
+    NSString *svcShort = @"Bike";
+    if ([svcTitle containsString:@"2h"] || [svcTitle containsString:@"2 h"]) {
+        svcShort = @"Exp 2H";
+    } else if ([svcTitle containsString:@"express"] || [svcTitle containsString:@"giao"]) {
+        svcShort = @"Express";
+    } else if ([svcTitle containsString:@"car"] || [svcTitle containsString:@"taxi"]) {
+        svcShort = @"Car";
+    }
+
+    if (priceStr.length > 0) {
+        return [NSString stringWithFormat:@"%@ %@ • %@", verb, svcShort, priceStr];
+    }
+    return [NSString stringWithFormat:@"%@ %@", verb, svcShort];
+}
+
 static BOOL extractFingerprintParts(NSString *fp, NSString **outType, NSInteger *outPrice, NSString **outPickupPrefix) {
     if (!fp || fp.length == 0) return NO;
     NSArray<NSString *> *parts = [fp componentsSeparatedByString:@"|"];
@@ -923,6 +969,17 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
             double rem = state.pauseEndEpoch - cur;
             if (rem <= 0.0) break;
 
+            if (isDeviceScreenLocked() || !config.masterEnabled || !config.statusPillHUDEnabled) {
+                [[StealthStatusPillHUD sharedHUD] hideImmediately];
+            } else {
+                [[StealthStatusPillHUD sharedHUD] updateWithMode:StealthPillModePausingFood
+                                                   acceptedCount:state.statAcceptedCount
+                                                   rejectedCount:state.statRejectedCount
+                                               pauseRemainingSec:(NSInteger)ceil(rem)
+                                               orderPopupVisible:NO
+                                                         enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
+            }
+
             // LIVE PIXEL WAKEUP DURING PAUSE (0% Vision OCR, 0.02ms):
             // If driver manually pressed 'Mở nhận chuyến' to go back Online early, OR an order popped up -> cancel pause immediately!
             pauseTick++;
@@ -983,6 +1040,7 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
 
     // If phone screen is currently locked when pause ends, wait cleanly until unlocked so iOS allows foreground launch & UI tap
     if (isDeviceScreenLocked() && !config.dryRunMode) {
+        [[StealthStatusPillHUD sharedHUD] hideImmediately];
         state.phaseDescription = @"Hết giờ nghỉ — Chờ mở khóa màn hình để bật lại App...";
         state.workerHeartbeatEpoch = [[NSDate date] timeIntervalSince1970];
         [state saveStateAndNotify:YES];
@@ -1185,6 +1243,8 @@ static int runWorkerMain(void) {
         ScreenTouchEngine *engine = [ScreenTouchEngine sharedEngine];
         OrderScanner *scanner     = [OrderScanner sharedScanner];
         HanoiFoodFilterEngine *foodEngine = [HanoiFoodFilterEngine sharedEngine];
+        [[StealthStatusPillHUD sharedHUD] configureWithLogicalScreenSize:engine.logicalScreenSize
+                                                                   scale:engine.screenScale];
 
         BOOL lowRAMMode           = isLowRAMDevice();
         uint64_t sleepTrimMB      = lowRAMMode ? 185 : 240;
@@ -1275,6 +1335,7 @@ static int runWorkerMain(void) {
                     if (readMasterEnabledSafely(YES)) {
                         config.masterEnabled = YES;
                     } else {
+                        [[StealthStatusPillHUD sharedHUD] hideImmediately];
                         usleep(650000);
                         continue;
                     }
@@ -1283,6 +1344,7 @@ static int runWorkerMain(void) {
                 // Always track lock-screen state so unlocking after >= 3 mins spawns a 100% fresh Worker
                 BOOL screenLocked = isDeviceScreenLocked();
                 if (screenLocked) {
+                    [[StealthStatusPillHUD sharedHUD] hideImmediately];
                     if (lockedSinceEpoch <= 0.0) {
                         lockedSinceEpoch = now;
                     }
@@ -1368,6 +1430,12 @@ static int runWorkerMain(void) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:YES];
                         }
+                        [[StealthStatusPillHUD sharedHUD] updateWithMode:StealthPillModeCoolSleep
+                                                           acceptedCount:state.statAcceptedCount
+                                                           rejectedCount:state.statRejectedCount
+                                                       pauseRemainingSec:0
+                                                       orderPopupVisible:NO
+                                                                 enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
 
                         if (!isMapRelayInFlight() &&
                             !inActiveTripSession &&
@@ -1378,6 +1446,7 @@ static int runWorkerMain(void) {
                             malloc_zone_pressure_relief(NULL, 0);
                             if (((now - bootEpoch) > 1200.0 && currentProcessFootprintMB() > sleepTrimMB) ||
                                 (now - bootEpoch) > 7200.0) {
+                                [[StealthStatusPillHUD sharedHUD] hideImmediately];
                                 state.workerHeartbeatEpoch = now;
                                 [state saveStateAndNotify:NO];
                                 _exit(kExitCodeProactiveRAMTrim);
@@ -1415,6 +1484,12 @@ static int runWorkerMain(void) {
                     engine.lastFrameLooksLikeGoogleMapsNav &&
                     !engine.lastFrameLikelyHasOrderPopup &&
                     !engine.lastFrameHasBottomTealButton) {
+                    [[StealthStatusPillHUD sharedHUD] updateWithMode:StealthPillModeCoolSleep
+                                                       acceptedCount:state.statAcceptedCount
+                                                       rejectedCount:state.statRejectedCount
+                                                   pauseRemainingSec:0
+                                                   orderPopupVisible:NO
+                                                             enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
                     usleep(600000);
                     continue;
                 }
@@ -1436,6 +1511,12 @@ static int runWorkerMain(void) {
                             state.workerHeartbeatEpoch = now;
                             [state saveStateAndNotify:YES];
                         }
+                        [[StealthStatusPillHUD sharedHUD] updateWithMode:StealthPillModeScanning
+                                                           acceptedCount:state.statAcceptedCount
+                                                           rejectedCount:state.statRejectedCount
+                                                       pauseRemainingSec:0
+                                                       orderPopupVisible:NO
+                                                                 enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
                         consecutiveOfflineInterrupts = 0;
                         [engine markCurrentFrameAnalyzed];
                         NSInteger idleMs = MAX(260, config.scanIntervalMs);
@@ -1453,6 +1534,12 @@ static int runWorkerMain(void) {
                                               ((frameChangedBeforeMark <= 4 && (now - lastFullOCREpoch) < 2.2) ||
                                                (frameChangedBeforeMark < 16 && (now - lastFullOCREpoch) < 0.65)));
                     if (shouldSkipIdleOCR) {
+                        [[StealthStatusPillHUD sharedHUD] updateWithMode:(inActiveTripSession ? StealthPillModeActiveTrip : StealthPillModeScanning)
+                                                           acceptedCount:state.statAcceptedCount
+                                                           rejectedCount:state.statRejectedCount
+                                                       pauseRemainingSec:0
+                                                       orderPopupVisible:NO
+                                                                 enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
                         if (!isMapRelayInFlight() &&
                             !inActiveTripSession &&
                             getRunningWatchdogPID() > 0 &&
@@ -1460,6 +1547,7 @@ static int runWorkerMain(void) {
                             currentProcessFootprintMB() > idleActiveTrimMB) {
                             malloc_zone_pressure_relief(NULL, 0);
                             if (currentProcessFootprintMB() > idleActiveTrimMB) {
+                                [[StealthStatusPillHUD sharedHUD] hideImmediately];
                                 state.workerHeartbeatEpoch = now;
                                 [state saveStateAndNotify:NO];
                                 _exit(kExitCodeProactiveRAMTrim);
@@ -1500,6 +1588,13 @@ static int runWorkerMain(void) {
                     inActiveTripSession = YES;
                     consecutiveOfflineInterrupts = 0;
                 }
+
+                [[StealthStatusPillHUD sharedHUD] updateWithMode:(inActiveTripSession ? StealthPillModeActiveTrip : StealthPillModeScanning)
+                                                   acceptedCount:state.statAcceptedCount
+                                                   rejectedCount:state.statRejectedCount
+                                               pauseRemainingSec:0
+                                               orderPopupVisible:ana.hasOrderPopup
+                                                         enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
 
                 // 2. XỬ LÝ BẢNG NỔ ĐƠN ('Bike' / 'Express' / 'Express 2H' vs 'Green Food')
                 if (ana.hasOrderPopup) {
@@ -1619,6 +1714,16 @@ static int runWorkerMain(void) {
                             appendDaemonLog(@"[THỬ] %@ | Tâm (%.0f, %.0f) trễ %ums",
                                             ana.orderReason, ana.orderTargetPoint.x, ana.orderTargetPoint.y, rawDelayMs);
                             if (config.hapticEnabled) triggerHapticFeedback(isAccept);
+                            NSString *dryToast = buildPillToastSummaryForOrder(ana, isAccept, YES);
+                            [[StealthStatusPillHUD sharedHUD] showActionToastWithSummary:dryToast
+                                                                                isAccept:isAccept
+                                                                             durationSec:2.5];
+                            [[StealthStatusPillHUD sharedHUD] updateWithMode:(inActiveTripSession ? StealthPillModeActiveTrip : StealthPillModeScanning)
+                                                               acceptedCount:state.statAcceptedCount
+                                                               rejectedCount:state.statRejectedCount
+                                                           pauseRemainingSec:0
+                                                           orderPopupVisible:NO
+                                                                     enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
                             notify_post(kNotifyStatsUpdated);
                         } else {
                             // KHÓA AN TOÀN 0.5ms TRƯỚC KHI BẤM [X]: Nếu bảng đơn vừa tự trôi mất trong lúc chờ delay -> HỦY CHẠM NGAY!
@@ -1816,6 +1921,18 @@ static int runWorkerMain(void) {
                                 appendDaemonLog(@"%@ | Chạm (%.0f, %.0f) [%@]",
                                                 ana.orderReason, actualPt.x, actualPt.y, tapNote);
                                 if (config.hapticEnabled && (!isAccept || confirmedGone)) triggerHapticFeedback(isAccept);
+                                if (!isAccept || confirmedGone) {
+                                    NSString *toastSummary = buildPillToastSummaryForOrder(ana, isAccept, NO);
+                                    [[StealthStatusPillHUD sharedHUD] showActionToastWithSummary:toastSummary
+                                                                                        isAccept:isAccept
+                                                                                     durationSec:2.5];
+                                    [[StealthStatusPillHUD sharedHUD] updateWithMode:(inActiveTripSession ? StealthPillModeActiveTrip : StealthPillModeScanning)
+                                                                       acceptedCount:state.statAcceptedCount
+                                                                       rejectedCount:state.statRejectedCount
+                                                                   pauseRemainingSec:0
+                                                                   orderPopupVisible:NO
+                                                                             enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
+                                }
                                 notify_post(kNotifyStatsUpdated);
                             }
                         }
@@ -1901,6 +2018,7 @@ static int runWorkerMain(void) {
             }
         }
 
+        [[StealthStatusPillHUD sharedHUD] hideImmediately];
         unlinkPidFileIfOwnedByMe(kDaemonPidPath);
         notify_cancel(reloadTok);
         notify_cancel(stopTok);

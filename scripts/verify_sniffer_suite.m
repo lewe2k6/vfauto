@@ -2,6 +2,7 @@
 #import "SharedConfig.h"
 #import "GSMOrderPayloadSniffer.h"
 #import "HanoiFoodFilterEngine.h"
+#import "StealthStatusPillHUD.h"
 
 @implementation FilterConfig
 - (instancetype)init {
@@ -330,6 +331,54 @@ int main(int argc, const char *argv[]) {
                                                                 dropoffText:@"45 Thái Hà"];
         ASSERT_TRUE(afterHandled == nil,
                     "Lock 1 must never return an orderId after markOrderHandled: is called");
+
+        // ---------------------------------------------------------------------
+        // TEST 9: StealthStatusPillHUD — iPhone 8 (375x667pt) Zero-Collision Geometry & Retina Bitmap Rendering
+        // ---------------------------------------------------------------------
+        CGSize ip8Screen = CGSizeMake(375.0, 667.0);
+        CGRect compactRect = [StealthStatusPillHUD logicalFrameForCompact:YES screenSize:ip8Screen];
+        CGRect toastRect   = [StealthStatusPillHUD logicalFrameForCompact:NO  screenSize:ip8Screen];
+
+        // 9A: Compact pill sits in empty iPhone 8 Status Bar corridor x=215..307, y=2..18pt
+        ASSERT_TRUE(CGRectGetMinX(compactRect) >= 214.0 && CGRectGetMaxX(compactRect) <= 308.0,
+                    "Compact pill X=[%.1f..%.1f] must clear iOS clock (<=212pt) and GPS/Battery (>=310pt)",
+                    CGRectGetMinX(compactRect), CGRectGetMaxX(compactRect));
+        ASSERT_TRUE(CGRectGetMinY(compactRect) >= 1.5 && CGRectGetMaxY(compactRect) <= 19.0,
+                    "Compact pill Y=[%.1f..%.1f] must stay inside top 20pt iOS Status Bar and >=16pt above ScreenTouchEngine sensors (y>=34pt)",
+                    CGRectGetMinY(compactRect), CGRectGetMaxY(compactRect));
+        CGFloat compactCenterY = CGRectGetMidY(compactRect);
+        ASSERT_TRUE(compactCenterY < 21.0,
+                    "Compact pill centerY=%.2f must be strictly below OrderScanner 21.0pt Status Bar OCR cutoff",
+                    compactCenterY);
+
+        // 9B: Expanded 2.5s Toast pill sits in x=138..307, y=1.8..18.3pt
+        ASSERT_TRUE(CGRectGetMinX(toastRect) >= 137.0 && CGRectGetMaxX(toastRect) <= 308.0,
+                    "Toast pill X=[%.1f..%.1f] must clear left 'Google Maps 4G' (<=136pt) and right GPS/Battery (>=310pt)",
+                    CGRectGetMinX(toastRect), CGRectGetMaxX(toastRect));
+        ASSERT_TRUE(CGRectGetMaxY(toastRect) < 20.0 && CGRectGetMidY(toastRect) < 21.0,
+                    "Toast pill Y=[%.1f..%.1f] must never touch Xanh SM header/buttons (y>=24pt) or OrderPopup [X] at (342, 52)",
+                    CGRectGetMinY(toastRect), CGRectGetMaxY(toastRect));
+
+        // 9C: Retina @2x CoreGraphics + CoreText capsule bitmap rendering
+        CGImageRef imgCompact = [StealthStatusPillHUD createPillBitmapWithText:@"CANH 12/4"
+                                                                     isCompact:YES
+                                                                         bgRed:0.05 bgGreen:0.08 bgBlue:0.11 bgAlpha:0.88
+                                                                     borderRed:0.00 borderGreen:0.88 borderBlue:0.48
+                                                                        dotRed:0.00 dotGreen:0.92 dotBlue:0.48
+                                                                         scale:2.0];
+        ASSERT_TRUE(imgCompact != NULL && CGImageGetWidth(imgCompact) == 184 && CGImageGetHeight(imgCompact) == 32,
+                    "Compact @2x bitmap must render at 184x32px");
+        if (imgCompact) CGImageRelease(imgCompact);
+
+        CGImageRef imgToast = [StealthStatusPillHUD createPillBitmapWithText:@"HỦY Food 17k • 1.9km"
+                                                                   isCompact:NO
+                                                                       bgRed:0.42 bgGreen:0.09 bgBlue:0.07 bgAlpha:0.94
+                                                                   borderRed:1.00 borderGreen:0.32 borderBlue:0.32
+                                                                      dotRed:1.00 dotGreen:0.40 dotBlue:0.35
+                                                                       scale:2.0];
+        ASSERT_TRUE(imgToast != NULL && CGImageGetWidth(imgToast) == 338 && CGImageGetHeight(imgToast) == 33,
+                    "Toast @2x bitmap must render at 338x33px with auto-shrinking Vietnamese text");
+        if (imgToast) CGImageRelease(imgToast);
 
         printf("==> Verification Suite Complete: %d passed, %d failed.\n", gPasses, gFailures);
         return (gFailures == 0) ? 0 : 1;

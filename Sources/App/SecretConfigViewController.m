@@ -19,6 +19,7 @@
     // Card 1: Core Switches & Green Food Min Price
     UISwitch *_swMaster;
     UISwitch *_swSmartCool;
+    UISwitch *_swStatusPillHUD;
     UISwitch *_swAutoBike;
     UISwitch *_swRejectAllFood;
     UILabel  *_lblMinFoodPrice;
@@ -495,6 +496,11 @@
                                subtitle:@"Ngắt 100% quét khi đang mở Google Maps/khóa máy & chống gọi AI thừa"
                                  action:@selector(generalControlChanged)];
 
+    _swStatusPillHUD = [self addSwitchRowTo:sec1
+                                      title:@"Viên thuốc trạng thái ở mép đỉnh (Chỉ nhìn, 0% chạm)"
+                                   subtitle:@"Hiện trạng thái Canh đơn, Nghỉ Food & kết quả Đớp/Hủy ở khe trống thanh pin (xuyên thấu cảm ứng 100%)"
+                                     action:@selector(generalControlChanged)];
+
     _swAutoBike = [self addSwitchRowTo:sec1
                                  title:@"Tự động [Nhận] Bike, Express, Express 2H..."
                               subtitle:@"Đớp trọn mọi đơn chở khách & giao hàng (chỉ lọc riêng Green Food)"
@@ -805,6 +811,7 @@
 - (void)syncUIFromConfig {
     _swMaster.on        = _cfg.masterEnabled;
     _swSmartCool.on     = _cfg.smartCoolMode;
+    _swStatusPillHUD.on = _cfg.statusPillHUDEnabled;
     _swAutoBike.on      = _cfg.autoAcceptBike;
     _swRejectAllFood.on = _cfg.rejectAllFood;
     _swHaptic.on        = _cfg.hapticEnabled;
@@ -1028,6 +1035,7 @@
 
 - (void)generalControlChanged {
     _cfg.smartCoolMode          = _swSmartCool.isOn;
+    _cfg.statusPillHUDEnabled   = _swStatusPillHUD.isOn;
     _cfg.autoAcceptBike         = _swAutoBike.isOn;
     _cfg.rejectAllFood          = _swRejectAllFood.isOn;
     _cfg.foodBlockMallAndBasement = _swBlockMall.isOn;

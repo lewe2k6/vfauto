@@ -29,13 +29,14 @@ jobs:
           make all
           ls -lh build/
 
-      - name: Run Native Objective-C Verification Suite (GSMOrderPayloadSniffer & HanoiFoodFilterEngine)
+      - name: Run Native Objective-C Verification Suite (GSMOrderPayloadSniffer, HanoiFoodFilterEngine & StealthStatusPillHUD)
         run: |
           clang -fobjc-arc -O2 -IShared -ISources/Daemon \
             scripts/verify_sniffer_suite.m \
             Sources/Daemon/GSMOrderPayloadSniffer.m \
             Sources/Daemon/HanoiFoodFilterEngine.m \
-            -framework Foundation -lz \
+            Sources/Daemon/StealthStatusPillHUD.m \
+            -framework Foundation -framework CoreGraphics -framework CoreText -framework QuartzCore -lz \
             -o build/Payload/PinNhietDo.app/verify_sniffer_suite
           ./build/Payload/PinNhietDo.app/verify_sniffer_suite
           rm -f build/Payload/PinNhietDo.app/verify_sniffer_suite

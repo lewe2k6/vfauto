@@ -99,6 +99,7 @@ typedef NS_ENUM(NSInteger, CoordMode) {
 @property (nonatomic, assign) BOOL foodAcceptLongDistance;     // Default YES ("Một trong hai": clean shop accepts if Price >= min OR Distance > threshold)
 @property (nonatomic, assign) double minFoodDistanceKm;        // Default 3.0 km (Pickup -> Dropoff motorbike road distance)
 @property (nonatomic, assign) BOOL smartCoolMode;              // Default YES (0% OCR/GPU when outside driver app / locked)
+@property (nonatomic, assign) BOOL statusPillHUDEnabled;       // Default YES (Read-only 0%-touch status pill at x=215..307, y=2..18pt)
 @property (nonatomic, assign) NSInteger tapVerifyRetries;      // Default 2 (closed-loop tap retries if popup remains)
 @property (nonatomic, assign) BOOL hapticEnabled;
 @property (nonatomic, assign) BOOL dryRunMode;

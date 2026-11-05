@@ -375,6 +375,7 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
         _foodAcceptLongDistance   = YES;
         _minFoodDistanceKm        = 3.0;
         _smartCoolMode            = YES;
+        _statusPillHUDEnabled     = YES;
         _tapVerifyRetries         = 2;
         _hapticEnabled            = YES;
         _dryRunMode               = NO;
@@ -475,6 +476,7 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
     if (dict[@"foodAcceptLongDistance"])   cfg.foodAcceptLongDistance   = [dict[@"foodAcceptLongDistance"] boolValue];
     LOAD_FINITE_DBL(@"minFoodDistanceKm", minFoodDistanceKm, 3.0);
     if (dict[@"smartCoolMode"])          cfg.smartCoolMode          = [dict[@"smartCoolMode"] boolValue];
+    if (dict[@"statusPillHUDEnabled"])   cfg.statusPillHUDEnabled   = [dict[@"statusPillHUDEnabled"] boolValue];
     if (dict[@"tapVerifyRetries"])       cfg.tapVerifyRetries       = [dict[@"tapVerifyRetries"] integerValue];
     if (dict[@"hapticEnabled"])          cfg.hapticEnabled          = [dict[@"hapticEnabled"] boolValue];
     if (dict[@"dryRunMode"])             cfg.dryRunMode             = [dict[@"dryRunMode"] boolValue];
@@ -589,6 +591,7 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
         @"foodAcceptLongDistance":   @(self.foodAcceptLongDistance),
         @"minFoodDistanceKm":        @(self.minFoodDistanceKm),
         @"smartCoolMode":            @(self.smartCoolMode),
+        @"statusPillHUDEnabled":     @(self.statusPillHUDEnabled),
         @"tapVerifyRetries":         @(self.tapVerifyRetries),
         @"hapticEnabled":            @(self.hapticEnabled),
         @"dryRunMode":               @(self.dryRunMode),
