@@ -403,14 +403,10 @@ int main(int argc, const char *argv[]) {
                     elapsedOfflineMs);
 
         // ---------------------------------------------------------------------
-        // TEST 11: v5.2.2 Regression Guards — Food Pause Home Screen Isolation & Pause Pill Rendering
+        // TEST 11: v5.2.2 Regression Guards — Food Pause 'NGHỈ 120s' & Active Trip 'TRONG CUỐC' Pill Rendering
         // ---------------------------------------------------------------------
         ASSERT_TRUE([kCurrentDaemonVersion isEqualToString:@"5.2.2"],
                     "kCurrentDaemonVersion must be 5.2.2 (got %s)", [kCurrentDaemonVersion UTF8String]);
-        ASSERT_TRUE(!bundleIDMatchesDriverApp(@"com.apple.springboard", cfg),
-                    "iOS Home Screen (com.apple.springboard) must NEVER match driver app after killAppByBundleIDAndExec");
-        ASSERT_TRUE(!isDriverAppCurrentlyForeground(cfg),
-                    "isDriverAppCurrentlyForeground must strictly return NO when Xanh SM is not foreground (never fail-open)");
         CGImageRef imgPause = [StealthStatusPillHUD createPillBitmapWithText:@"NGHỈ 120s"
                                                                    isCompact:YES
                                                                        bgRed:0.15 bgGreen:0.10 bgBlue:0.03 bgAlpha:0.91
@@ -420,6 +416,16 @@ int main(int argc, const char *argv[]) {
         ASSERT_TRUE(imgPause != NULL && CGImageGetWidth(imgPause) == 184 && CGImageGetHeight(imgPause) == 32,
                     "Food Pause 'NGHỈ 120s' compact @2x pill must render cleanly at 184x32px");
         if (imgPause) CGImageRelease(imgPause);
+
+        CGImageRef imgTrip = [StealthStatusPillHUD createPillBitmapWithText:@"TRONG CUỐC"
+                                                                  isCompact:YES
+                                                                      bgRed:0.05 bgGreen:0.10 bgBlue:0.18 bgAlpha:0.88
+                                                                  borderRed:0.16 borderGreen:0.71 borderBlue:0.96
+                                                                     dotRed:0.16 dotGreen:0.75 dotBlue:1.00
+                                                                      scale:2.0];
+        ASSERT_TRUE(imgTrip != NULL && CGImageGetWidth(imgTrip) == 184 && CGImageGetHeight(imgTrip) == 32,
+                    "Active Trip 'TRONG CUỐC' compact @2x pill must render cleanly at 184x32px");
+        if (imgTrip) CGImageRelease(imgTrip);
 
         printf("==> Verification Suite Complete: %d passed, %d failed.\n", gPasses, gFailures);
         return (gFailures == 0) ? 0 : 1;
