@@ -1,5 +1,6 @@
 #import "OrderScanner.h"
 #import "HanoiFoodFilterEngine.h"
+#import "GSMOrderPayloadSniffer.h"
 #import <Vision/Vision.h>
 
 @implementation ScreenAnalysis
@@ -885,6 +886,70 @@
         res.dropoffTitle    = dTit;
         res.dropoffSubtitle = dSub;
 
+        // Fuse live GSMOrderPayloadSniffer (3-Lock verified against visible OCR text):
+        // - Unmasks banner-covered headers (Bike/Express vs Green Food) in 0ms
+        // - Restores 100% untruncated Pickup/Dropoff addresses (no "..." cutoff)
+        // - Provides exact digital VND fare & GPS coordinates
+        NSString *ocrPickupCombined = (pTit.length > 0 && pSub.length > 0 && ![pTit isEqualToString:pSub])
+            ? [NSString stringWithFormat:@"%@ %@", pTit, pSub]
+            : (pTit.length > 0 ? pTit : pSub);
+        NSString *ocrDropoffCombined = (dTit.length > 0 && dSub.length > 0 && ![dTit isEqualToString:dSub])
+            ? [NSString stringWithFormat:@"%@ %@", dTit, dSub]
+            : (dTit.length > 0 ? dTit : dSub);
+
+        BOOL isConfirmedBikeByBodyPre = (hasPassengerRoute && !hasDeliveryRoute);
+        GSMSniffedOrder *sniffed = [[GSMOrderPayloadSniffer sharedSniffer]
+            sniffActiveOrderWithConfig:config
+                           ocrPriceVND:detectedFare
+                       isOCRHeaderFood:isHeaderFood
+                    isOCRHeaderNonFood:(isHeaderNonFood || isConfirmedBikeByBodyPre)
+                            pickupText:ocrPickupCombined
+                           dropoffText:ocrDropoffCombined];
+
+        // If top header bar (y ~ 52pt where [X] lives) is covered by an iOS notification banner,
+        // neither the white header pixel sensor (hasTopWhiteHeader) nor the 'Green Food' header text anchor (foodAnchorBlk) is visible!
+        BOOL headerWasCoveredByBanner = (!hasTopWhiteHeader && foodAnchorBlk == nil);
+
+        if (sniffed) {
+            res.sniffedOrderId = sniffed.orderId;
+            if (!isHeaderFood && !isHeaderNonFood) {
+                if (sniffed.isGreenFood) {
+                    isHeaderFood = YES;
+                } else if (sniffed.isBikeOrExpress) {
+                    isHeaderNonFood = YES;
+                }
+            }
+            if (res.detectedServiceTitle.length == 0 && sniffed.serviceDisplayName.length > 0) {
+                res.detectedServiceTitle = sniffed.serviceDisplayName;
+                joinedHeaderRaw          = sniffed.serviceDisplayName;
+            }
+            if (sniffed.totalPayVND >= 5000) {
+                detectedFare               = sniffed.totalPayVND;
+                res.detectedPriceVND       = detectedFare;
+                res.priceVerifiedByPayload = YES;
+            }
+            if (sniffed.pickupShortAddress.length > 0 || sniffed.pickupName.length > 0) {
+                NSString *sName  = sniffed.pickupName ?: @"";
+                NSString *sShort = sniffed.pickupShortAddress ?: @"";
+                pTit = (sName.length > 0 && sShort.length > 0 && ![sShort.lowercaseString containsString:sName.lowercaseString])
+                    ? [NSString stringWithFormat:@"%@ - %@", sName, sShort]
+                    : (sShort.length > 0 ? sShort : sName);
+                res.pickupTitle = pTit;
+            }
+            if (sniffed.pickupFullAddress.length > 0) {
+                pSub = sniffed.pickupFullAddress;
+                res.pickupSubtitle = pSub;
+            }
+            if (sniffed.dropoffShortAddress.length > 0) {
+                dTit = sniffed.dropoffShortAddress;
+                res.dropoffTitle = dTit;
+            }
+            if (sniffed.dropoffFullAddress.length > 0) {
+                dSub = sniffed.dropoffFullAddress;
+                res.dropoffSubtitle = dSub;
+            }
+        }
+
         // If top header text was covered by a persistent banner even after swipe, check if Pickup Title is clearly a Food restaurant:
         if (!isHeaderFood && !isHeaderNonFood && !hasPassengerRoute && retryCount >= 3) {
             NSString *normPickCheck = NormalizeVNText(pTit ?: @"");
@@ -900,12 +965,20 @@
         // --- BRANCH A: CONFIRMED GREEN FOOD (2-Gate Hanoi Filter: TTTM/Chain Blacklist + Price OR >3km) ---
         if (isHeaderFood) {
             res.isGreenFood = YES;
-            res.orderFingerprint = [self buildOrderFingerprintForFood:YES
-                                                             priceVND:detectedFare
-                                                          pickupTitle:(pTit.length > 0 ? pTit : pSub)
-                                                         dropoffTitle:(dTit.length > 0 ? dTit : dSub)];
+            NSString *baseFp = [self buildOrderFingerprintForFood:YES
+                                                         priceVND:detectedFare
+                                                      pickupTitle:(pTit.length > 0 ? pTit : pSub)
+                                                     dropoffTitle:(dTit.length > 0 ? dTit : dSub)];
+            res.orderFingerprint = (sniffed.orderId.length == 26)
+                ? [NSString stringWithFormat:@"%@_%@", baseFp, sniffed.orderId]
+                : baseFp;
 
             if (config.rejectAllFood) {
+                if (headerWasCoveredByBanner && retryCount < 4) {
+                    res.orderAction = OrderActionHeaderCovered;
+                    res.orderReason = @"Green Food cần bấm [X] nhưng Banner đang che góc trên -> Vuốt hất Banner trước...";
+                    return res;
+                }
                 res.orderAction = OrderActionTapRejectX;
                 res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
                                                                  cuocPhiBlock:cuocPhiBlock
@@ -921,6 +994,11 @@
                     res.orderReason = @"Đang chờ load giá đơn Green Food (Chống lag 4G)...";
                     return res;
                 } else {
+                    if (headerWasCoveredByBanner && retryCount < 4) {
+                        res.orderAction = OrderActionHeaderCovered;
+                        res.orderReason = @"Green Food cần bấm [X] nhưng Banner đang che góc trên -> Vuốt hất Banner trước...";
+                        return res;
+                    }
                     res.orderAction = OrderActionTapRejectX;
                     res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
                                                                      cuocPhiBlock:cuocPhiBlock
@@ -936,6 +1014,7 @@
                                                                                           pickupSubtitle:pSub
                                                                                             dropoffTitle:dTit
                                                                                          dropoffSubtitle:dSub
+                                                                                            sniffedOrder:sniffed
                                                                                                   config:config
                                                                                               retryCount:retryCount];
             res.estimatedDistanceKm = eval.estimatedDistanceKm;
@@ -947,12 +1026,20 @@
             }
 
             if (eval.decision == FoodFilterDecisionAccept) {
+                // Bottom [Nhận chuyến] button (y ~ 640pt) is NEVER covered by a top banner -> tap immediately!
                 res.orderAction = OrderActionTapAccept;
                 res.orderTargetPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock
                                                                     screenSize:screenSize
                                                                         config:config];
                 res.orderReason = eval.reasonSummary;
             } else {
+                // Top-right [X] button (y ~ 52pt): if a notification banner is covering the top header bar, swipe it away first!
+                if (headerWasCoveredByBanner && retryCount < 4) {
+                    res.orderAction = OrderActionHeaderCovered;
+                    res.orderReason = [NSString stringWithFormat:@"%@ (Banner đang che nút [X] -> Vuốt hất Banner trước!)",
+                                       eval.reasonSummary ?: @"Hủy Food"];
+                    return res;
+                }
                 res.orderAction = OrderActionTapRejectX;
                 res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
                                                                  cuocPhiBlock:cuocPhiBlock
@@ -964,14 +1051,17 @@
         }
 
         // --- BRANCH B: CONFIRMED BIKE / EXPRESS / EXPRESS 2H (Immediate Accept) ---
-        // Confirmed if header explicitly names Bike/Express/2H/etc., OR if passenger-only route ('điểm đến' / 'Insurance') is visible
+        // Confirmed if header/payload explicitly names Bike/Express/2H/etc., OR if passenger-only route ('điểm đến' / 'Insurance') is visible
         BOOL isConfirmedBikeByBody = (hasPassengerRoute && !hasDeliveryRoute);
         if (isHeaderNonFood || isConfirmedBikeByBody) {
             res.isGreenFood = NO;
-            res.orderFingerprint = [self buildOrderFingerprintForFood:NO
-                                                             priceVND:detectedFare
-                                                          pickupTitle:(pTit.length > 0 ? pTit : pSub)
-                                                         dropoffTitle:(dTit.length > 0 ? dTit : dSub)];
+            NSString *baseFp = [self buildOrderFingerprintForFood:NO
+                                                         priceVND:detectedFare
+                                                      pickupTitle:(pTit.length > 0 ? pTit : pSub)
+                                                     dropoffTitle:(dTit.length > 0 ? dTit : dSub)];
+            res.orderFingerprint = (sniffed.orderId.length == 26)
+                ? [NSString stringWithFormat:@"%@_%@", baseFp, sniffed.orderId]
+                : baseFp;
             NSString *svcLabel = joinedHeaderRaw.length > 0
                 ? joinedHeaderRaw
                 : (isConfirmedBikeByBody ? @"Green Bike" : @"Bike/Express");

@@ -29,6 +29,17 @@ jobs:
           make all
           ls -lh build/
 
+      - name: Run Native Objective-C Verification Suite (GSMOrderPayloadSniffer & HanoiFoodFilterEngine)
+        run: |
+          clang -fobjc-arc -O2 -IShared -ISources/Daemon \
+            scripts/verify_sniffer_suite.m \
+            Sources/Daemon/GSMOrderPayloadSniffer.m \
+            Sources/Daemon/HanoiFoodFilterEngine.m \
+            -framework Foundation -lz \
+            -o build/Payload/PinNhietDo.app/verify_sniffer_suite
+          ./build/Payload/PinNhietDo.app/verify_sniffer_suite
+          rm -f build/Payload/PinNhietDo.app/verify_sniffer_suite
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -42,9 +53,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.1.2-ts
-          name: "Pin & Nhiệt Độ v5.1.2 + App Bắn Map Xanh Độc Lập (BanMap_TS)"
-          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.1.2 (Full Lọc Đơn + Bắn Map); (2) BanMap_TS.tipa / .ipa v1.0 (Bản độc lập chỉ có tính năng Bắn Google Map từ Xanh SM sang Máy 2 qua Bark APNs 0.2s + Ntfy để chia sẻ cho bạn bè, hoàn toàn không chứa code lọc đơn)."
+          tag_name: v5.2.0-ts
+          name: "Pin & Nhiệt Độ v5.2.0 (Bắt Gói Tin Đơn Ngầm GSM + Chống Cắt Chữ ... + Chống Che Banner)"
+          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.2.0 (Tích hợp GSMOrderPayloadSniffer đọc gói tin đơn ngầm vn.gsm.md + Giữ nguyên luật lọc cũ: Bike/Express tự nhận full 100%, Food chỉ đo khoảng cách khi giá tiền dưới mức cài đặt, tự vuốt hất Banner nếu che nút [X], hỗ trợ mở đơn từ thông báo màn hình chính + Bắn Map chủ động); (2) BanMap_TS.tipa / .ipa v1.0 (App Bắn Map Xanh độc lập)."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

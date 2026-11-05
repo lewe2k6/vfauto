@@ -25,6 +25,7 @@ DAEMON_SRCS := Sources/Daemon/pind_main.m \
                Sources/Daemon/ScreenTouchEngine.m \
                Sources/Daemon/OrderScanner.m \
                Sources/Daemon/HanoiFoodFilterEngine.m \
+               Sources/Daemon/GSMOrderPayloadSniffer.m \
                Shared/TSUtil.m
 
 MAP_APP_SRCS := Sources/MapApp/map_main.m \

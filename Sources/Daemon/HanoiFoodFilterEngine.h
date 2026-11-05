@@ -3,6 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import "SharedConfig.h"
+#import "GSMOrderPayloadSniffer.h"
 
 typedef NS_ENUM(NSInteger, FoodFilterDecisionType) {
     FoodFilterDecisionWaitTextLoading = 0, // Weak-4G skeleton card: text not rendered yet
@@ -33,6 +34,15 @@ typedef NS_ENUM(NSInteger, FoodFilterDecisionType) {
                                      pickupSubtitle:(NSString *)pickupSubtitle
                                        dropoffTitle:(NSString *)dropoffTitle
                                     dropoffSubtitle:(NSString *)dropoffSubtitle
+                                             config:(FilterConfig *)config
+                                         retryCount:(NSInteger)retryCount;
+
+- (FoodFilterEvaluation *)evaluateGreenFoodWithFare:(NSInteger)detectedFareVND
+                                        pickupTitle:(NSString *)pickupTitle
+                                     pickupSubtitle:(NSString *)pickupSubtitle
+                                       dropoffTitle:(NSString *)dropoffTitle
+                                    dropoffSubtitle:(NSString *)dropoffSubtitle
+                                       sniffedOrder:(GSMSniffedOrder *)sniffedOrder
                                              config:(FilterConfig *)config
                                          retryCount:(NSInteger)retryCount;
 

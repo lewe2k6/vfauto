@@ -1606,6 +1606,68 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     [_cacheLock unlock];
 }
 
+- (BOOL)computeMotorbikeDistanceFromExactLatA:(double)latA
+                                         lngA:(double)lngA
+                                       toLatB:(double)latB
+                                         lngB:(double)lngB
+                                  thresholdKm:(double)thresholdKm
+                                        outKm:(double *)outKm
+                                    outSource:(NSString * __strong *)outSource {
+    if (latA < 8.0 || latA > 24.0 || lngA < 102.0 || lngA > 110.5 ||
+        latB < 8.0 || latB > 24.0 || lngB < 102.0 || lngB > 110.5) {
+        return NO;
+    }
+
+    NSString *coordCacheKey = [NSString stringWithFormat:@"GPS:%.4f,%.4f->%.4f,%.4f", latA, lngA, latB, lngB];
+    [_cacheLock lock];
+    NSNumber *cachedDist = _routeDistCache[coordCacheKey];
+    NSString *cachedTag  = _routeSourceTagCache[coordCacheKey];
+    [_cacheLock unlock];
+    if (cachedDist) {
+        *outKm = [cachedDist doubleValue];
+        if (outSource) *outSource = cachedTag ?: @"GPS-Cache";
+        return YES;
+    }
+
+    double exactAirKm = haversineDistanceKm(latA, lngA, latB, lngB);
+    BOOL riverCross   = crossesHanoiRedRiver(latA, lngA, latB, lngB);
+
+    if (exactAirKm >= thresholdKm * 1.02) {
+        double roadEst = estimateHanoiMotorbikeRoadKmOffline(latA, lngA, latB, lngB);
+        *outKm = fmax(exactAirKm * 1.05, roadEst);
+        if (outSource) *outSource = @"GPS-Air+";
+        [self cacheRouteDistance:*outKm source:@"GPS-Air+" forKey:coordCacheKey];
+        return YES;
+    }
+    if (!riverCross && exactAirKm <= thresholdKm * 0.54) {
+        double roadEst = estimateHanoiMotorbikeRoadKmOffline(latA, lngA, latB, lngB);
+        *outKm = roadEst;
+        if (outSource) *outSource = @"GPS-Air-";
+        [self cacheRouteDistance:*outKm source:@"GPS-Air-" forKey:coordCacheKey];
+        return YES;
+    }
+
+    double routedKm = 0.0;
+    if ([self queryValhallaMotorScooterKmFromLat:latA lng:lngA toLat:latB lng:lngB outKm:&routedKm]) {
+        *outKm = routedKm;
+        if (outSource) *outSource = @"GPS-Valhalla";
+        [self cacheRouteDistance:routedKm source:@"GPS-Valhalla" forKey:coordCacheKey];
+        return YES;
+    }
+    if ([self queryOSRMFallbackKmFromLat:latA lng:lngA toLat:latB lng:lngB outKm:&routedKm]) {
+        *outKm = routedKm;
+        if (outSource) *outSource = @"GPS-OSRM";
+        [self cacheRouteDistance:routedKm source:@"GPS-OSRM" forKey:coordCacheKey];
+        return YES;
+    }
+
+    double offlineKm = estimateHanoiMotorbikeRoadKmOffline(latA, lngA, latB, lngB);
+    *outKm = offlineKm;
+    if (outSource) *outSource = @"GPS-OfflineHN";
+    [self cacheRouteDistance:offlineKm source:@"GPS-OfflineHN" forKey:coordCacheKey];
+    return YES;
+}
+
 #pragma mark - Master Two-Gate Green Food Evaluator
 
 - (FoodFilterEvaluation *)evaluateGreenFoodWithFare:(NSInteger)detectedFareVND
@@ -1615,15 +1677,73 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
                                     dropoffSubtitle:(NSString *)dropoffSubtitle
                                              config:(FilterConfig *)config
                                          retryCount:(NSInteger)retryCount {
+    return [self evaluateGreenFoodWithFare:detectedFareVND
+                               pickupTitle:pickupTitle
+                            pickupSubtitle:pickupSubtitle
+                              dropoffTitle:dropoffTitle
+                           dropoffSubtitle:dropoffSubtitle
+                              sniffedOrder:nil
+                                    config:config
+                                retryCount:retryCount];
+}
+
+- (FoodFilterEvaluation *)evaluateGreenFoodWithFare:(NSInteger)detectedFareVND
+                                        pickupTitle:(NSString *)pickupTitle
+                                     pickupSubtitle:(NSString *)pickupSubtitle
+                                       dropoffTitle:(NSString *)dropoffTitle
+                                    dropoffSubtitle:(NSString *)dropoffSubtitle
+                                       sniffedOrder:(GSMSniffedOrder *)sniffedOrder
+                                             config:(FilterConfig *)config
+                                         retryCount:(NSInteger)retryCount {
     FoodFilterEvaluation *ev = [[FoodFilterEvaluation alloc] init];
     ev.estimatedDistanceKm = 0.0;
     ev.distanceSourceTag   = @"";
     ev.matchedOrderCount   = 0;
 
-    NSString *cleanPickupTitle = [self cleanLookupKeyFromString:pickupTitle];
-    NSString *cleanPickupSub   = [self cleanLookupKeyFromString:pickupSubtitle];
-    NSString *combinedPickup   = [NSString stringWithFormat:@"%@ %@", cleanPickupTitle ?: @"", cleanPickupSub ?: @""];
-    combinedPickup = [combinedPickup stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    // Fuse untruncated strings from GSMSniffedOrder (immune to "..." UI truncation) with OCR text
+    NSString *effPickupTitle    = pickupTitle ?: @"";
+    NSString *effPickupSubtitle = pickupSubtitle ?: @"";
+    NSString *effDropoffTitle   = dropoffTitle ?: @"";
+    NSString *effDropoffSub     = dropoffSubtitle ?: @"";
+
+    if (sniffedOrder) {
+        NSString *sName  = sniffedOrder.pickupName ?: @"";
+        NSString *sShort = sniffedOrder.pickupShortAddress ?: @"";
+        NSString *sFull  = sniffedOrder.pickupFullAddress ?: @"";
+        if (sName.length > 0 && sShort.length > 0 && ![sShort.lowercaseString containsString:sName.lowercaseString]) {
+            effPickupTitle = [NSString stringWithFormat:@"%@ - %@", sName, sShort];
+        } else if (sShort.length > 0) {
+            effPickupTitle = sShort;
+        } else if (sName.length > 0) {
+            effPickupTitle = sName;
+        }
+        if (sFull.length > 0) {
+            effPickupSubtitle = sFull;
+        }
+
+        NSString *dShort = sniffedOrder.dropoffShortAddress ?: @"";
+        NSString *dFull  = sniffedOrder.dropoffFullAddress ?: @"";
+        if (dShort.length > 0) effDropoffTitle = dShort;
+        if (dFull.length > 0)  effDropoffSub   = dFull;
+    }
+
+    NSString *cleanPickupTitle = [self cleanLookupKeyFromString:effPickupTitle];
+    NSString *cleanPickupSub   = [self cleanLookupKeyFromString:effPickupSubtitle];
+    NSString *ocrCleanTitle    = [self cleanLookupKeyFromString:pickupTitle];
+    NSString *ocrCleanSub      = [self cleanLookupKeyFromString:pickupSubtitle];
+    NSString *cleanPickupNote  = [self cleanLookupKeyFromString:sniffedOrder.pickupNote];
+
+    NSMutableString *combinedPickupMut = [NSMutableString stringWithFormat:@"%@ %@", cleanPickupTitle ?: @"", cleanPickupSub ?: @""];
+    if (cleanPickupNote.length > 0) {
+        [combinedPickupMut appendFormat:@" %@", cleanPickupNote];
+    }
+    if (ocrCleanTitle.length > 0 && ![combinedPickupMut containsString:ocrCleanTitle]) {
+        [combinedPickupMut appendFormat:@" %@", ocrCleanTitle];
+    }
+    if (ocrCleanSub.length > 0 && ![combinedPickupMut containsString:ocrCleanSub]) {
+        [combinedPickupMut appendFormat:@" %@", ocrCleanSub];
+    }
+    NSString *combinedPickup = [combinedPickupMut stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 
     // WEAK-4G SKELETON GUARD:
     // If Green Food header is visible, wait up to 6 frames (~700ms) if Pickup text hasn't rendered yet!
@@ -1639,11 +1759,11 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         }
     }
 
-    // Detect whether popup explicitly showed a shop name in pickupTitle vs hiding merchant name behind a bare street address
-    BOOL popupShowsExplicitShopName = ([self stripShopPrefixBeforeFirstCommaIfNeeded:pickupTitle] != nil);
+    // Detect whether popup explicitly showed a shop name in effPickupTitle vs hiding merchant name behind a bare street address
+    BOOL popupShowsExplicitShopName = ([self stripShopPrefixBeforeFirstCommaIfNeeded:effPickupTitle] != nil);
     if (!popupShowsExplicitShopName && cleanPickupTitle.length >= 4 && cleanPickupSub.length >= 6) {
         if (![cleanPickupTitle isEqualToString:cleanPickupSub] && ![cleanPickupSub hasPrefix:cleanPickupTitle]) {
-            if (![self rawSegmentLooksLikePureStreetPrefix:pickupTitle cleanSeg:cleanPickupTitle]) {
+            if (![self rawSegmentLooksLikePureStreetPrefix:effPickupTitle cleanSeg:cleanPickupTitle]) {
                 popupShowsExplicitShopName = YES;
             }
         }
@@ -1652,8 +1772,14 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     // Lookup merchant in 17,765-store 3-platform Hanoi offline DB (0.2ms)
     NSIndexSet *matchedIdxs = [self lookupCandidateMerchantsForTitle:cleanPickupTitle
                                                             subtitle:cleanPickupSub
-                                                            rawTitle:pickupTitle
-                                                         rawSubtitle:pickupSubtitle];
+                                                            rawTitle:effPickupTitle
+                                                         rawSubtitle:effPickupSubtitle];
+    if (matchedIdxs.count == 0 && sniffedOrder && (ocrCleanTitle.length >= 4 || ocrCleanSub.length >= 6)) {
+        matchedIdxs = [self lookupCandidateMerchantsForTitle:ocrCleanTitle
+                                                    subtitle:ocrCleanSub
+                                                    rawTitle:pickupTitle
+                                                 rawSubtitle:pickupSubtitle];
+    }
     BOOL singleExactMerchant    = (matchedIdxs.count == 1);
     BOOL hiddenNameAddressMatch = (!popupShowsExplicitShopName && matchedIdxs.count >= 1 && matchedIdxs.count <= 4);
     BOOL allCandidatesMall      = (matchedIdxs.count > 0);
@@ -1824,31 +1950,53 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         return ev;
     }
 
-    // Weak-4G Skeleton Guard on Dropoff text when we actually need distance measurement!
-    NSString *cleanDropCheck = [self cleanLookupKeyFromString:(dropoffSubtitle.length > 0 ? dropoffSubtitle : dropoffTitle)];
-    if (cleanDropCheck.length < 6) {
-        if (retryCount < 6) {
-            ev.decision = FoodFilterDecisionWaitTextLoading;
-            ev.reasonSummary = @"Đang chờ load chữ Điểm giao để đo km (Chống lag 4G)...";
-            return ev;
-        } else {
-            ev.decision = FoodFilterDecisionRejectLowShort;
-            ev.reasonSummary = [NSString stringWithFormat:@"Green Food %ldđ (Không rõ Điểm giao sau 6 nhịp) -> HỦY [X]",
-                                (long)detectedFareVND];
-            return ev;
-        }
-    }
-
+    // Priority 1 (0ms, immune to "..." truncation): Use exact distance or exact GPS coordinates from sniffed GSM payload!
     double distKm = 0.0;
     NSString *distSrc = @"";
-    BOOL gotDist = [self computeMotorbikeDistanceKmForPickupTitle:pickupTitle
-                                                   pickupSubtitle:pickupSubtitle
-                                                   matchedIndices:matchedIdxs
-                                                     dropoffTitle:dropoffTitle
-                                                  dropoffSubtitle:dropoffSubtitle
+    BOOL gotDist = NO;
+
+    if (sniffedOrder) {
+        if (sniffedOrder.serverDistanceKm > 0.05 && sniffedOrder.serverDistanceKm < 150.0) {
+            distKm  = sniffedOrder.serverDistanceKm;
+            distSrc = [NSString stringWithFormat:@"GóiTin-%@", sniffedOrder.sniffSourceTag ?: @"GSM"];
+            gotDist = YES;
+        } else if (sniffedOrder.hasPickupCoords && sniffedOrder.hasDropoffCoords) {
+            gotDist = [self computeMotorbikeDistanceFromExactLatA:sniffedOrder.pickupLat
+                                                             lngA:sniffedOrder.pickupLng
+                                                           toLatB:sniffedOrder.dropoffLat
+                                                             lngB:sniffedOrder.dropoffLng
                                                       thresholdKm:config.minFoodDistanceKm
                                                             outKm:&distKm
                                                         outSource:&distSrc];
+        }
+    }
+
+    if (!gotDist) {
+        // Weak-4G Skeleton Guard on Dropoff text when we actually need text-based distance measurement!
+        NSString *cleanDropCheck = [self cleanLookupKeyFromString:(effDropoffSub.length > 0 ? effDropoffSub : effDropoffTitle)];
+        if (cleanDropCheck.length < 6) {
+            if (retryCount < 6) {
+                ev.decision = FoodFilterDecisionWaitTextLoading;
+                ev.reasonSummary = @"Đang chờ load chữ Điểm giao để đo km (Chống lag 4G)...";
+                return ev;
+            } else {
+                ev.decision = FoodFilterDecisionRejectLowShort;
+                ev.reasonSummary = [NSString stringWithFormat:@"Green Food %ldđ (Không rõ Điểm giao sau 6 nhịp) -> HỦY [X]",
+                                    (long)detectedFareVND];
+                return ev;
+            }
+        }
+
+        gotDist = [self computeMotorbikeDistanceKmForPickupTitle:effPickupTitle
+                                                  pickupSubtitle:effPickupSubtitle
+                                                  matchedIndices:matchedIdxs
+                                                    dropoffTitle:effDropoffTitle
+                                                 dropoffSubtitle:effDropoffSub
+                                                     thresholdKm:config.minFoodDistanceKm
+                                                           outKm:&distKm
+                                                       outSource:&distSrc];
+    }
+
     ev.estimatedDistanceKm = distKm;
     ev.distanceSourceTag   = distSrc ?: @"";
 

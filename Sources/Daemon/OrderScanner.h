@@ -31,6 +31,8 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, copy)   NSString *dropoffSubtitle;
 @property (nonatomic, assign) double estimatedDistanceKm;
 @property (nonatomic, copy)   NSString *orderFingerprint;
+@property (nonatomic, assign) BOOL priceVerifiedByPayload; // YES when fare came directly from GSM JSON payload
+@property (nonatomic, copy)   NSString *sniffedOrderId;    // 26-char ULID from GSMOrderPayloadSniffer (if matched)
 
 // 2. Lobby & Payment States
 @property (nonatomic, assign) BOOL isLobbyOnline;          // 'Đang trực tuyến'

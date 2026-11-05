@@ -16,6 +16,7 @@
 #import "ScreenTouchEngine.h"
 #import "OrderScanner.h"
 #import "HanoiFoodFilterEngine.h"
+#import "GSMOrderPayloadSniffer.h"
 
 #ifndef POSIX_SPAWN_CLOEXEC_DEFAULT
 #define POSIX_SPAWN_CLOEXEC_DEFAULT 0x4000
@@ -520,7 +521,8 @@ static void prepareWorkerSession(void) {
         setgid(501);
     }
     if (getuid() != 501) {
-        setuid(501);
+        setegid(501);
+        seteuid(501);
     }
 }
 
@@ -1537,8 +1539,9 @@ static int runWorkerMain(void) {
                     if (ana.orderAction == OrderActionTapAccept || ana.orderAction == OrderActionTapRejectX) {
                         uint32_t spentVerifyMs = 0;
 
-                        // KHÓA KIỂM CHỨNG GIÁ 2 KHUNG HÌNH CHO ĐƠN GREEN FOOD (CHỐNG NHÒE 17k -> 77k)
-                        if (ana.isGreenFood && !config.rejectAllFood) {
+                        // KHÓA KIỂM CHỨNG GIÁ 2 KHUNG HÌNH CHO ĐƠN GREEN FOOD (CHỐNG NHÒE 17k -> 77k KHI DÙNG OCR THUẦN)
+                        // Nếu đã xác thực giá số nguyên 100% từ gói tin ngầm GSM (priceVerifiedByPayload), bỏ qua chờ 95ms để đớp/hủy tức thì!
+                        if (ana.isGreenFood && !config.rejectAllFood && !ana.priceVerifiedByPayload) {
                             double tVerifyStart = CFAbsoluteTimeGetCurrent();
                             usleep(95000);
                             if (gShouldExit) break;
@@ -1607,6 +1610,22 @@ static int runWorkerMain(void) {
                                     notify_post(kNotifyStatsUpdated);
                                     turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 4.5;
                                     continue;
+                                }
+                                // Nếu đúng lúc sắp hạ ngón tay bấm [X] mà có Banner thông báo trượt xuống đè lên vùng y=52pt (!lastFrameHasOrderHeaderAtTop):
+                                // Vuốt hất Banner bay lên trước rồi mới bấm [X], tuyệt đối không bấm trúng Banner!
+                                if (!engine.lastFrameHasOrderHeaderAtTop) {
+                                    CGFloat midX = engine.logicalScreenSize.width * 0.5;
+                                    [engine performQuickSwipeFromPoint:CGPointMake(midX, 62.0)
+                                                               toPoint:CGPointMake(midX, 6.0)
+                                                            durationMs:50];
+                                    appendDaemonLog(@"[CHỐNG CHE] Phát hiện Banner đè lên nút [X] -> Đã vuốt hất Banner lên trước khi bấm [X]!");
+                                    usleep(145000);
+                                    preTapImg = [engine captureScreenCIImage];
+                                    if (!preTapImg || !engine.lastFrameLikelyHasOrderPopup) {
+                                        [engine invalidateAnalyzedBaseline];
+                                        turboUntilEpoch = [[NSDate date] timeIntervalSince1970] + 4.5;
+                                        continue;
+                                    }
                                 }
                             }
 
@@ -1744,6 +1763,9 @@ static int runWorkerMain(void) {
                                     lastHandledOrderFingerprint = ana.orderFingerprint;
                                     lastHandledOrderEpoch       = doneNow;
                                     lastHandledWasAccept        = isAccept;
+                                }
+                                if (ana.sniffedOrderId.length > 0 && (!isAccept || confirmedGone)) {
+                                    [[GSMOrderPayloadSniffer sharedSniffer] markOrderHandled:ana.sniffedOrderId];
                                 }
                                 if (isAccept) {
                                     if (confirmedGone) {
