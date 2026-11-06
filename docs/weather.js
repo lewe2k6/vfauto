@@ -279,14 +279,16 @@
     return dirs[Math.round(((deg %= 360) < 0 ? deg + 360 : deg) / 45) % 8];
   }
 
-  function wmoCodeToVN(code, rainMm) {
-    if (rainMm >= 12 || code >= 95) return 'Mưa dông lớn';
-    if (rainMm >= 4 || (code >= 63 && code <= 67) || (code >= 81 && code <= 82)) return 'Mưa rào vừa - to';
-    if (rainMm > 0.1 || (code >= 51 && code <= 61) || code === 80) return 'Mưa nhỏ / Mưa phùn';
-    if (code === 3) return 'Nhiều mây âm u';
-    if (code === 2) return 'Mây rải rác';
-    if (code === 1) return 'Ít mây, nắng nhẹ';
-    return 'Trời quang tạnh ráo';
+  function wmoCodeToVN(code, rainMm, isDay) {
+    if (rainMm >= 10) return 'Mưa to / Dông lốc';
+    if (rainMm >= 2.5) return 'Mưa rào vừa';
+    if (rainMm >= 0.35) return 'Mưa nhỏ cục bộ';
+    if (isDay !== 0) {
+      if (code <= 1) return 'Trời nắng quang';
+      if (code === 2) return 'Nắng, mây rải rác';
+      return 'Nắng nhẹ / Có mây, tạnh ráo';
+    }
+    return 'Tạnh ráo';
   }
 
   function computeFloodStatusForHotspot(hotspot) {
@@ -359,7 +361,9 @@
       }
     }
 
-    var rainNow = Math.max(Number(cur.precipitation || 0), Number(cur.rain || 0), Number(cur.showers || 0));
+    var modelRain = Math.max(Number(cur.precipitation || 0), Number(cur.rain || 0), Number(cur.showers || 0));
+    // Suppress NWP sub-grid convective drizzle bias (< 0.45mm) unless confirmed by physical Doppler Radar pixel
+    var rainNow = modelRain >= 0.5 ? modelRain : 0;
     var rainNext1h = Number(hPrecip[Math.min(hTimes.length - 1, nowIdx + 1)] || 0);
     var rainProb = Number(hProb[nowIdx] || 0);
     var uvIndex = Number(hUv[nowIdx] || 0);
@@ -367,19 +371,23 @@
     var rainAccum3h = rainNow;
     for (var b = 1; b <= 2; b++) {
       if (nowIdx - b >= 0) {
-        rainAccum3h += Number(hPrecip[nowIdx - b] || 0);
+        var pastH = Number(hPrecip[nowIdx - b] || 0);
+        if (pastH >= 0.5) rainAccum3h += pastH;
       }
     }
 
     return {
-      temp: Number(cur.temperature_2m != null ? cur.temperature_2m : 27),
-      feelsLike: Number(cur.apparent_temperature != null ? cur.apparent_temperature : 29),
-      humidity: Number(cur.relative_humidity_2m != null ? cur.relative_humidity_2m : 75),
+      temp: Number(cur.temperature_2m != null ? cur.temperature_2m : 29),
+      feelsLike: Number(cur.apparent_temperature != null ? cur.apparent_temperature : 32),
+      humidity: Number(cur.relative_humidity_2m != null ? cur.relative_humidity_2m : 65),
+      modelRain: modelRain,
+      radarDbz: 0,
       rainNow: rainNow,
       rainNext1h: rainNext1h,
       rainAccum3h: rainAccum3h,
       rainProb: rainProb,
       weatherCode: Number(cur.weather_code || 0),
+      isDay: cur.is_day != null ? Number(cur.is_day) : 1,
       windSpeed: Number(cur.wind_speed_10m || 0),
       windGust: Number(cur.wind_gusts_10m || 0),
       windDir: Number(cur.wind_direction_10m || 0),
@@ -398,9 +406,9 @@
       ? (workerUrl.replace(/\/+$/, '') + '/hanoi-batch')
       : ('https://api.open-meteo.com/v1/forecast?latitude=' + lats +
          '&longitude=' + lngs +
-         '&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,showers,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m' +
+         '&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,showers,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,is_day' +
          '&hourly=precipitation_probability,precipitation,uv_index' +
-         '&timezone=Asia%2FBangkok&forecast_days=1');
+         '&models=gfs_seamless&timezone=Asia%2FBangkok&forecast_days=1');
 
     var aqiUrl = 'https://air-quality-api.open-meteo.com/v1/air-quality?latitude=' + lats +
                  '&longitude=' + lngs +
@@ -445,14 +453,102 @@
       renderLiveSummaryBanner();
       renderBottomRanking();
       updateRouteReport();
+      for (var k = 0; k < radarFrames.length; k++) {
+        if (radarFrames[k].isLatestPast) {
+          sampleRadarPixelsFor60Zones(radarFrames[k]);
+          break;
+        }
+      }
     }).catch(function () {
       liveUpdatedMeta.textContent = 'Lỗi mạng — thử lại';
     });
   }
 
   // =========================================================================
-  // 8. RAINVIEWER LIVE DOPPLER RADAR + 30M NOWCAST
+  // 8. RAINVIEWER LIVE DOPPLER RADAR + PIXEL-TRUTH SAMPLER FOR 60 ZONES
   // =========================================================================
+  function decodeRadarPixelToRain(r, g, b, a) {
+    if (a < 55) return { dbz: 0, mmh: 0 };
+    var maxC = Math.max(r, g, b);
+    var minC = Math.min(r, g, b);
+    // Ignore faint grey/beige clutter edges (non-chromatic pixels)
+    if (maxC - minC < 28) return { dbz: 0, mmh: 0 };
+
+    // Red / Magenta core (Heavy storm >= 42 dBZ)
+    if (r >= 190 && g < 110) {
+      return { dbz: 45, mmh: 18.5 };
+    }
+    // Yellow / Orange core (Moderate-Heavy shower 32-40 dBZ)
+    if (r >= 180 && g >= 110 && b < 90) {
+      return { dbz: 35, mmh: 6.2 };
+    }
+    // Green / Deep Cyan-Blue core (Light-Moderate rain 22-30 dBZ)
+    if (b >= 130 || g >= 130) {
+      return { dbz: 24, mmh: 1.4 };
+    }
+    return { dbz: 0, mmh: 0 };
+  }
+
+  function sampleRadarPixelsFor60Zones(frame) {
+    if (!frame || !frame.path) return;
+    var z = 7;
+    var neededTiles = {};
+
+    HANOI_ZONES.forEach(function (zone) {
+      var xFloat = ((zone.lng + 180) / 360) * Math.pow(2, z);
+      var latRad = (zone.lat * Math.PI) / 180;
+      var yFloat = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * Math.pow(2, z);
+      var tX = Math.floor(xFloat);
+      var tY = Math.floor(yFloat);
+      var pX = Math.max(0, Math.min(255, Math.floor((xFloat - tX) * 256)));
+      var pY = Math.max(0, Math.min(255, Math.floor((yFloat - tY) * 256)));
+      var key = tX + '_' + tY;
+      if (!neededTiles[key]) {
+        neededTiles[key] = { tX: tX, tY: tY, points: [] };
+      }
+      neededTiles[key].points.push({ zone: zone, pX: pX, pY: pY });
+    });
+
+    var keys = Object.keys(neededTiles);
+    var completed = 0;
+
+    keys.forEach(function (key) {
+      var bucket = neededTiles[key];
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function () {
+        try {
+          var cv = document.createElement('canvas');
+          cv.width = 256;
+          cv.height = 256;
+          var ctx = cv.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          bucket.points.forEach(function (pt) {
+            var px = ctx.getImageData(pt.pX, pt.pY, 1, 1).data;
+            var res = decodeRadarPixelToRain(px[0], px[1], px[2], px[3]);
+            var w = weatherDataByZone[pt.zone.id];
+            if (w) {
+              w.radarDbz = res.dbz;
+              // Physical Doppler Radar pixel is ground truth for localized rain vs sunny sky
+              w.rainNow = res.mmh > 0 ? Math.max(w.rainNow, res.mmh) : 0;
+            }
+          });
+        } catch (_) {}
+        completed++;
+        if (completed === keys.length) {
+          renderMapOverlays();
+          renderLiveSummaryBanner();
+          renderBottomRanking();
+          updateRouteReport();
+        }
+      };
+      img.onerror = function () {
+        completed++;
+      };
+      img.src = radarHost + frame.path + '/256/' + z + '/' + bucket.tX + '/' + bucket.tY + '/2/1_1.png';
+    });
+  }
+
   function fetchRainViewerManifest() {
     return fetch('https://api.rainviewer.com/public/weather-maps.json')
       .then(function (r) { return r.json(); })
@@ -487,6 +583,7 @@
           radarTimelineSlider.max = radarFrames.length - 1;
           radarTimelineSlider.value = latestPastIdx;
           showRadarFrameAtIndex(latestPastIdx);
+          sampleRadarPixelsFor60Zones(radarFrames[latestPastIdx]);
         }
       })
       .catch(function () {});
@@ -552,17 +649,16 @@
 
     if (currentMode === 'rain') {
       var r = w.rainNow;
-      var prob = w.rainProb;
       if (r >= 8) {
         return { cls: 'lvl-heavy', val: r.toFixed(1) + 'mm/h' };
       }
       if (r >= 1.5) {
         return { cls: 'lvl-mod', val: r.toFixed(1) + 'mm/h' };
       }
-      if (r > 0.1 || prob >= 55) {
-        return { cls: 'lvl-light', val: r > 0.1 ? (r.toFixed(1) + 'mm') : (prob + '% mưa') };
+      if (r >= 0.35) {
+        return { cls: 'lvl-light', val: r.toFixed(1) + 'mm' };
       }
-      return { cls: 'lvl-clear', val: Math.round(w.temp) + '° • Khô' };
+      return { cls: 'lvl-clear', val: Math.round(w.temp) + '° • ' + (w.isDay !== 0 ? 'Nắng/Khô' : 'Khô') };
     }
 
     if (currentMode === 'temp') {

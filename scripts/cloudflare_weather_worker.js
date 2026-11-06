@@ -75,9 +75,9 @@ export default {
     if (path === '/hanoi-batch') {
       const upstream =
         `https://api.open-meteo.com/v1/forecast?latitude=${HANOI_LATS}&longitude=${HANOI_LNGS}` +
-        `&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,showers,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m` +
-        `&hourly=precipitation_probability,precipitation,uv_index&timezone=Asia%2FBangkok&forecast_days=1`;
-      return fetchWithEdgeCache(ctx, `${url.origin}/__cache/hanoi-batch-v1`, upstream, 120);
+        `&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,showers,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,is_day` +
+        `&hourly=precipitation_probability,precipitation,uv_index&models=gfs_seamless&timezone=Asia%2FBangkok&forecast_days=1`;
+      return fetchWithEdgeCache(ctx, `${url.origin}/__cache/hanoi-batch-v2`, upstream, 120);
     }
 
     if (path === '/hanoi-aqi') {

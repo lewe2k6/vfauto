@@ -1,10 +1,10 @@
-const CACHE_NAME = 'vf-bss-qr-rescue-v10';
+const CACHE_NAME = 'vf-bss-qr-rescue-v11';
 const CORE_ASSETS = [
   './',
   './index.html',
   './map.html',
   './weather.html',
-  './weather.js?v=2',
+  './weather.js?v=3',
   './styles.css?v=4',
   './vision.js?v=4',
   './ocr_qr.js?v=4',

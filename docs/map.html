@@ -918,12 +918,13 @@
 
         var apiUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + item.lat.toFixed(4) +
                      '&longitude=' + item.lng.toFixed(4) +
-                     '&current=temperature_2m,apparent_temperature,precipitation,rain,showers,wind_gusts_10m&timezone=Asia%2FBangkok';
+                     '&current=temperature_2m,apparent_temperature,precipitation,rain,showers,wind_gusts_10m&models=gfs_seamless&timezone=Asia%2FBangkok';
         fetch(apiUrl).then(function (r) { return r.json(); }).then(function (d) {
           var cur = (d && d.current) || {};
-          var rain = Math.max(Number(cur.precipitation || 0), Number(cur.rain || 0), Number(cur.showers || 0));
-          var temp = Math.round(cur.temperature_2m != null ? cur.temperature_2m : 27);
-          var fl = Math.round(cur.apparent_temperature != null ? cur.apparent_temperature : 29);
+          var rawRain = Math.max(Number(cur.precipitation || 0), Number(cur.rain || 0), Number(cur.showers || 0));
+          var rain = rawRain >= 0.5 ? rawRain : 0;
+          var temp = Math.round(cur.temperature_2m != null ? cur.temperature_2m : 29);
+          var fl = Math.round(cur.apparent_temperature != null ? cur.apparent_temperature : 32);
           var gust = Math.round(cur.wind_gusts_10m || 0);
 
           if (rain > 0.2) {
