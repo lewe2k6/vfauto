@@ -750,22 +750,13 @@
     for (OCRTextBlock *hb in headerBlocks) {
         [headerNormParts addObject:hb.normText];
         [headerRawParts addObject:hb.rawText];
+        // ONLY latch foodAnchorBlk onto actual recognized Xanh SM service header tokens ("Green Food", "Express", "Siêu tốc", etc.).
+        // NEVER fall back to arbitrary unmatched headerBlocks, otherwise a Zalo/SMS notification banner covering y=20..80pt
+        // would set foodAnchorBlk != nil and defeat headerWasCoveredByBanner!
         if (!foodAnchorBlk &&
             ([self headerNormMatchesFood:hb.normText] ||
-             [self headerNormMatchesNonFoodService:hb.normText] ||
-             [hb.normText containsString:@"green"])) {
+             [self headerNormMatchesNonFoodService:hb.normText])) {
             foodAnchorBlk = hb;
-        }
-    }
-    if (!foodAnchorBlk) {
-        for (OCRTextBlock *hb in headerBlocks) {
-            if (hb.uiCenter.y >= 32.0 && hb.uiCenter.y <= 68.0) {
-                foodAnchorBlk = hb;
-                break;
-            }
-        }
-        if (!foodAnchorBlk) {
-            foodAnchorBlk = headerBlocks.firstObject ?: headerBlocks.lastObject;
         }
     }
 
@@ -1326,22 +1317,13 @@
     for (OCRTextBlock *hb in headerBlocks) {
         [headerNormParts addObject:hb.normText];
         [headerRawParts addObject:hb.rawText];
+        // ONLY latch foodAnchorBlk onto actual recognized Xanh SM service header tokens ("Green Food", "Express", "Siêu tốc", etc.).
+        // NEVER fall back to arbitrary unmatched headerBlocks, otherwise a Zalo/SMS notification banner covering y=20..80pt
+        // would set foodAnchorBlk != nil and defeat headerWasCoveredByBanner!
         if (!foodAnchorBlk &&
             ([self headerNormMatchesFood:hb.normText] ||
-             [self headerNormMatchesNonFoodService:hb.normText] ||
-             [hb.normText containsString:@"green"])) {
+             [self headerNormMatchesNonFoodService:hb.normText])) {
             foodAnchorBlk = hb;
-        }
-    }
-    if (!foodAnchorBlk) {
-        for (OCRTextBlock *hb in headerBlocks) {
-            if (hb.uiCenter.y >= 32.0 && hb.uiCenter.y <= 68.0) {
-                foodAnchorBlk = hb;
-                break;
-            }
-        }
-        if (!foodAnchorBlk) {
-            foodAnchorBlk = headerBlocks.firstObject ?: headerBlocks.lastObject;
         }
     }
     NSString *joinedHeaderNorm = [headerNormParts componentsJoinedByString:@" "];
