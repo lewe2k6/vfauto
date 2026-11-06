@@ -29,6 +29,7 @@
 - (void)markCurrentFrameAnalyzed;
 - (void)invalidateAnalyzedBaseline;
 - (void)refreshHIDClient;
+- (void)ensureFreshHIDClientBeforeTouch;
 
 - (BOOL)performHumanTapAtPoint:(CGPoint)logicalPoint
                   jitterRadius:(double)jitterRadiusPt

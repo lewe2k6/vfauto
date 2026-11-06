@@ -7,6 +7,7 @@
 #import <spawn.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <sys/select.h>
 #import <sys/wait.h>
 #import <unistd.h>
 #import <stdlib.h>
@@ -547,9 +548,60 @@ static volatile BOOL gNeedsReload        = YES;
 static volatile BOOL gSkipPauseRequested = NO;
 static volatile BOOL gResetCntRequested  = NO;
 static volatile BOOL gDiagRequested      = NO;
+static volatile double gAmbushUntilEpoch = 0.0;
+static int gWakeupPipe[2]                = { -1, -1 };
+
+static void initWakeupPipeIfNeeded(void) {
+    if (gWakeupPipe[0] >= 0 && gWakeupPipe[1] >= 0) return;
+    if (pipe(gWakeupPipe) == 0) {
+        for (int i = 0; i < 2; i++) {
+            int fl = fcntl(gWakeupPipe[i], F_GETFL, 0);
+            if (fl >= 0) fcntl(gWakeupPipe[i], F_SETFL, fl | O_NONBLOCK);
+            int fdfl = fcntl(gWakeupPipe[i], F_GETFD, 0);
+            if (fdfl >= 0) fcntl(gWakeupPipe[i], F_SETFD, fdfl | FD_CLOEXEC);
+        }
+    }
+}
+
+static void triggerRealtimeOrderAmbushWakeup(double ambushDurationSec) {
+    if (ambushDurationSec > 0.0) {
+        double now = [[NSDate date] timeIntervalSince1970];
+        double target = now + ambushDurationSec;
+        if (target > gAmbushUntilEpoch) {
+            gAmbushUntilEpoch = target;
+        }
+    }
+    if (gWakeupPipe[1] >= 0) {
+        const uint8_t b = 'W';
+        ssize_t unused __attribute__((unused)) = write(gWakeupPipe[1], &b, 1);
+    }
+}
+
+static BOOL waitInterruptibleMs(NSInteger ms) {
+    if (ms <= 0 || gShouldExit) return NO;
+    int rfd = gWakeupPipe[0];
+    if (rfd < 0) {
+        usleep((useconds_t)(ms * 1000));
+        return NO;
+    }
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(rfd, &rfds);
+    struct timeval tv;
+    tv.tv_sec  = (time_t)(ms / 1000);
+    tv.tv_usec = (suseconds_t)((ms % 1000) * 1000);
+    int rv = select(rfd + 1, &rfds, NULL, NULL, &tv);
+    if (rv > 0 && FD_ISSET(rfd, &rfds)) {
+        uint8_t drainBuf[64];
+        while (read(rfd, drainBuf, sizeof(drainBuf)) > 0) {}
+        return YES;
+    }
+    return NO;
+}
 
 static void handleWorkerSignal(int sig) {
     gShouldExit = YES;
+    triggerRealtimeOrderAmbushWakeup(0.0);
 }
 
 static void prepareWorkerSession(void) {
@@ -716,6 +768,7 @@ static void runDiagnosticCapture4Sec(FilterConfig *config,
                                     hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
                                    headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
                                    headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                  hasLobbyPowerButton:engine.lastFrameLikelyHasLobbyPowerButton
                                                config:config
                                       priceRetryCount:6];
 
@@ -816,6 +869,7 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                                 hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
                                                headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
                                                headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                              hasLobbyPowerButton:engine.lastFrameLikelyHasLobbyPowerButton
                                                            config:config
                                                   priceRetryCount:0];
 
@@ -1059,6 +1113,7 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                                              hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
                                                             headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
                                                             headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                                           hasLobbyPowerButton:engine.lastFrameLikelyHasLobbyPowerButton
                                                                         config:config
                                                                priceRetryCount:0];
                         if (!pauseAna.isLobbyOffline && pauseAna.hasOrderPopup && pauseAna.orderAction != OrderActionSkipDisabled) {
@@ -1236,6 +1291,7 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
                                                      hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
                                                     headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
                                                     headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                                   hasLobbyPowerButton:engine.lastFrameLikelyHasLobbyPowerButton
                                                                 config:config
                                                        priceRetryCount:0];
                     if (!vAna.isLobbyOffline && vAna.hasOrderPopup) {
@@ -1274,6 +1330,7 @@ static BOOL runOfflinePauseAndRestartCycle(FilterConfig **ioConfig,
 
 static int runWorkerMain(void) {
     prepareWorkerSession();
+    initWakeupPipeIfNeeded();
 
     @autoreleasepool {
         ignoreBenignDaemonSignals();
@@ -1287,11 +1344,11 @@ static int runWorkerMain(void) {
         dispatch_queue_t bgQ = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
         int reloadTok = 0, stopTok = 0, skipTok = 0, resetCntTok = 0, diagTok = 0, mapRelayTok = 0;
 
-        notify_register_dispatch(kNotifyReloadConfig,  &reloadTok,   bgQ, ^(int t) { gNeedsReload = YES; });
-        notify_register_dispatch(kNotifyStopDaemon,    &stopTok,     bgQ, ^(int t) { gShouldExit = YES; });
-        notify_register_dispatch(kNotifySkipPause,     &skipTok,     bgQ, ^(int t) { gSkipPauseRequested = YES; });
-        notify_register_dispatch(kNotifyResetCounters, &resetCntTok, bgQ, ^(int t) { gResetCntRequested = YES; });
-        notify_register_dispatch(kNotifyDiagCapture,   &diagTok,     bgQ, ^(int t) { gDiagRequested = YES; });
+        notify_register_dispatch(kNotifyReloadConfig,  &reloadTok,   bgQ, ^(int t) { gNeedsReload = YES; triggerRealtimeOrderAmbushWakeup(0.0); });
+        notify_register_dispatch(kNotifyStopDaemon,    &stopTok,     bgQ, ^(int t) { gShouldExit = YES; triggerRealtimeOrderAmbushWakeup(0.0); });
+        notify_register_dispatch(kNotifySkipPause,     &skipTok,     bgQ, ^(int t) { gSkipPauseRequested = YES; triggerRealtimeOrderAmbushWakeup(0.0); });
+        notify_register_dispatch(kNotifyResetCounters, &resetCntTok, bgQ, ^(int t) { gResetCntRequested = YES; triggerRealtimeOrderAmbushWakeup(0.0); });
+        notify_register_dispatch(kNotifyDiagCapture,   &diagTok,     bgQ, ^(int t) { gDiagRequested = YES; triggerRealtimeOrderAmbushWakeup(0.0); });
         notify_register_dispatch(kNotifySendMapRelay,  &mapRelayTok, bgQ, ^(int t) {
             processPendingMapRelayQueueIfAny(nil);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), bgQ, ^{
@@ -1299,7 +1356,7 @@ static int runWorkerMain(void) {
             });
         });
 
-        FilterConfig *config      = [FilterConfig loadFromDisk];
+        __block FilterConfig *config = [FilterConfig loadFromDisk];
         if (!config.masterEnabled && readMasterEnabledSafely(YES)) {
             config.masterEnabled = YES;
         }
@@ -1330,6 +1387,16 @@ static int runWorkerMain(void) {
         [[StealthStatusPillHUD sharedHUD] configureWithLogicalScreenSize:engine.logicalScreenSize
                                                                    scale:engine.screenScale];
 
+        // Start 2-Phase Kernel kqueue VNODE Sniffer (0% Idle CPU, <0.2ms wakeup on vn.gsm.md.plist & Cache.db-wal):
+        [[GSMOrderPayloadSniffer sharedSniffer] startRealtimeKernelMonitorWithConfigProvider:^FilterConfig *{
+            return config;
+        } eventHandler:^(NSString *ambushULID, GSMSniffedOrder *sniffedOrder) {
+            if (sniffedOrder) {
+                [scanner preEvaluateSniffedOrder:sniffedOrder withConfig:config];
+            }
+            triggerRealtimeOrderAmbushWakeup(1.65);
+        }];
+
         BOOL lowRAMMode           = isLowRAMDevice();
         uint64_t sleepTrimMB      = lowRAMMode ? 185 : 240;
         uint64_t idleActiveTrimMB = lowRAMMode ? 215 : 280;
@@ -1337,7 +1404,7 @@ static int runWorkerMain(void) {
         if (!hadPreviousVersion) {
             CIImage *probeImg = [engine captureScreenCIImage];
             BOOL screenOk = (probeImg != nil && engine.lastCaptureHadPixels);
-            appendDaemonLog(@"pind v%@ Siêu Nhẹ RAM%@ + Bắn Map + DB 3 Sàn (%ld quán + %ld ghim) chạy (WD:%d WK:%d, Quét:%@)",
+            appendDaemonLog(@"pind v%@ Siêu Nhẹ RAM%@ + Snipe kqueue + Bắn Map + DB 3 Sàn (%ld quán + %ld ghim) chạy (WD:%d WK:%d, Quét:%@)",
                             kCurrentDaemonVersion,
                             lowRAMMode ? @" (2GB)" : @"",
                             (long)foodEngine.loadedMerchantCount,
@@ -1376,6 +1443,10 @@ static int runWorkerMain(void) {
                 @try {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
                 double now = [[NSDate date] timeIntervalSince1970];
+                BOOL inAmbushMode = (now < gAmbushUntilEpoch);
+                if (inAmbushMode) {
+                    [engine ensureFreshHIDClientBeforeTouch];
+                }
 
                 if (now - lastHeartbeatSaveEpoch >= 5.0) {
                     if (readRawPidValueFromFile(kDaemonPidPath) != myPid) {
@@ -1421,7 +1492,7 @@ static int runWorkerMain(void) {
                         config.masterEnabled = YES;
                     } else {
                         [[StealthStatusPillHUD sharedHUD] hideImmediately];
-                        usleep(650000);
+                        waitInterruptibleMs(650);
                         continue;
                     }
                 }
@@ -1448,7 +1519,7 @@ static int runWorkerMain(void) {
                         malloc_zone_pressure_relief(NULL, 0);
                         lastPressureReliefEpoch = now;
                     }
-                    usleep(750000);
+                    waitInterruptibleMs(750);
                     continue;
                 } else if (lockedSinceEpoch > 0.0) {
                     lockedSinceEpoch = 0.0;
@@ -1469,12 +1540,12 @@ static int runWorkerMain(void) {
                     // SELF-HEAL PIXEL PROBE:
                     // Even if BKSApplicationStateMonitor / FBSDisplayLayoutMonitor got stuck reporting a stale app
                     // (e.g. PinNhietDo after Map Relay bounce-back, SpringBoard banner, phone call, or Camera),
-                    // probe screen pixels every 2 ticks (~1.2s) in 0.02ms (0 CIImage allocation) to wake up immediately when Xanh SM is on screen!
+                    // probe screen pixels every 2 ticks (~1.2s) in 0.02ms (0 CIImage allocation) — or IMMEDIATELY on kqueue Ambush — to wake up when Xanh SM is on screen!
                     if (!canScan) {
                         coolSleepTickCounter++;
                         BOOL isGoogleMapsFront = [frontBid isEqualToString:@"com.google.Maps"];
                         int probeMod = isGoogleMapsFront ? 4 : 2;
-                        if ((coolSleepTickCounter % probeMod) == 0) {
+                        if (inAmbushMode || (coolSleepTickCounter % probeMod) == 0) {
                             BOOL probeOk = [engine captureScreenSensorsOnly];
                             if (probeOk && !engine.lastFrameLooksLikeGoogleMapsNav &&
                                 (engine.lastFrameLikelyHasOrderPopup ||
@@ -1516,7 +1587,7 @@ static int runWorkerMain(void) {
                             lastPressureReliefEpoch = now;
                         }
 
-                        usleep(600000);
+                        waitInterruptibleMs(inAmbushMode ? 55 : 600);
                         continue;
                     } else if (wasInCoolSleep) {
                         wasInCoolSleep = NO;
@@ -1539,7 +1610,7 @@ static int runWorkerMain(void) {
                 // --- CHỤP KHUNG HÌNH & TẦNG HẠ NHIỆT 2: CẢM BIẾN PIXEL 0.02ms CHẶN VISION OCR + 0 CIIMAGE ALLOC KHI MÀN HÌNH ĐỨNG YÊN ---
                 BOOL hasCapturedPixels = preCapturedSensors ? engine.lastCaptureHadPixels : [engine captureScreenSensorsOnly];
                 if (!hasCapturedPixels) {
-                    usleep((useconds_t)(MAX(250, config.scanIntervalMs) * 1000));
+                    waitInterruptibleMs(inAmbushMode ? 35 : MAX(250, config.scanIntervalMs));
                     continue;
                 }
 
@@ -1553,7 +1624,7 @@ static int runWorkerMain(void) {
                                                    pauseRemainingSec:0
                                                    orderPopupVisible:NO
                                                              enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
-                    usleep(600000);
+                    waitInterruptibleMs(600);
                     continue;
                 }
 
@@ -1575,7 +1646,7 @@ static int runWorkerMain(void) {
                         malloc_zone_pressure_relief(NULL, 0);
                         lastPressureReliefEpoch = now;
                     }
-                    usleep(480000);
+                    waitInterruptibleMs(inAmbushMode ? 65 : 480);
                     continue;
                 }
 
@@ -1588,6 +1659,7 @@ static int runWorkerMain(void) {
                 if (config.smartCoolMode && !hasPopupOrActionCandidate) {
                     // CASE A: Uncovered bright teal Lobby [Power] circle is visible at (40, 455) in 0.01ms!
                     // We know with 100% certainty: in Lobby Online, NO order popup, NO '0.0/8' modal sheet -> SKIP Vision OCR & 0 CIImage alloc!
+                    // During Ambush Mode (after kqueue detects a new order ULID), strobe the 0.02ms pixel sensors every 25ms until the card slides up!
                     if (engine.lastFrameLikelyHasLobbyPowerButton && frameChangedBeforeMark < 28) {
                         if (inActiveTripSession ||
                             ![state.phaseDescription isEqualToString:@"Đang trực tuyến / Canh đơn"]) {
@@ -1604,8 +1676,8 @@ static int runWorkerMain(void) {
                                                                  enabled:(config.masterEnabled && config.statusPillHUDEnabled)];
                         consecutiveOfflineInterrupts = 0;
                         [engine markCurrentFrameAnalyzed];
-                        NSInteger idleMs = MAX(260, config.scanIntervalMs);
-                        usleep((useconds_t)(idleMs * 1000));
+                        NSInteger idleMs = inAmbushMode ? 25 : MAX(260, config.scanIntervalMs);
+                        waitInterruptibleMs(idleMs);
                         continue;
                     }
 
@@ -1616,11 +1688,13 @@ static int runWorkerMain(void) {
                     //   throttle OCR to once every 1.6s during an active trip (or 0.85s in Lobby) so live Camera video NEVER triggers a 5.5x/sec OCR storm!
                     //   The millisecond a real order popup appears, hasPopupOrActionCandidate flips to YES in 0.02ms and runs OCR in 0ms!
                     double highMotionInterval = inActiveTripSession ? 1.60 : 0.85;
-                    BOOL shouldSkipIdleOCR = (now >= turboUntilEpoch &&
+                    BOOL shouldSkipIdleOCR = (!inAmbushMode &&
+                                              now >= turboUntilEpoch &&
                                               now >= postTransitionUntilEpoch &&
                                               ((frameChangedBeforeMark <= 4 && (now - lastFullOCREpoch) < 2.4) ||
                                                (frameChangedBeforeMark < 16 && (now - lastFullOCREpoch) < 0.85) ||
-                                               (frameChangedBeforeMark >= 16 && (now - lastFullOCREpoch) < highMotionInterval)));
+                                               (frameChangedBeforeMark >= 16 && (now - lastFullOCREpoch) < highMotionInterval))) ||
+                                             (inAmbushMode && frameChangedBeforeMark <= 6);
                     if (shouldSkipIdleOCR) {
                         [[StealthStatusPillHUD sharedHUD] updateWithMode:(inActiveTripSession ? StealthPillModeActiveTrip : StealthPillModeScanning)
                                                            acceptedCount:state.statAcceptedCount
@@ -1634,15 +1708,15 @@ static int runWorkerMain(void) {
                             malloc_zone_pressure_relief(NULL, 0);
                             lastPressureReliefEpoch = now;
                         }
-                        NSInteger idleMs = MAX(260, config.scanIntervalMs);
-                        usleep((useconds_t)(idleMs * 1000));
+                        NSInteger idleMs = inAmbushMode ? 25 : MAX(260, config.scanIntervalMs);
+                        waitInterruptibleMs(idleMs);
                         continue;
                     }
                 }
 
                 CIImage *screenImg = [engine currentCapturedCIImage];
                 if (!screenImg) {
-                    usleep((useconds_t)(MAX(250, config.scanIntervalMs) * 1000));
+                    waitInterruptibleMs(inAmbushMode ? 25 : MAX(250, config.scanIntervalMs));
                     continue;
                 }
 
@@ -1656,6 +1730,7 @@ static int runWorkerMain(void) {
                                                 hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
                                                headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
                                                headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                              hasLobbyPowerButton:engine.lastFrameLikelyHasLobbyPowerButton
                                                            config:config
                                                   priceRetryCount:retryCount];
 
@@ -1758,6 +1833,7 @@ static int runWorkerMain(void) {
                                                                       hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
                                                                      headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
                                                                      headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                                                    hasLobbyPowerButton:engine.lastFrameLikelyHasLobbyPowerButton
                                                                                  config:config
                                                                         priceRetryCount:retryCount + 1];
                                 if (!verifyAna.hasOrderPopup) {
@@ -1913,6 +1989,7 @@ static int runWorkerMain(void) {
                                                                    hasTopWhiteHeader:engine.lastFrameHasOrderHeaderAtTop
                                                                   headerIconWarmFood:engine.lastFrameHeaderIconWarmFood
                                                                   headerIconCoolRide:engine.lastFrameHeaderIconCoolRide
+                                                                 hasLobbyPowerButton:engine.lastFrameLikelyHasLobbyPowerButton
                                                                               config:config
                                                                      priceRetryCount:2];
                                 if (chkAna.isAnyActiveTripScreen) {
@@ -2097,20 +2174,23 @@ static int runWorkerMain(void) {
                     }
                 }
 
-                // Turbo 180ms right after switching into Xanh SM or seeing an order card / transition; normal scanIntervalMs otherwise
-                NSInteger sleepMs = (now < turboUntilEpoch || now < postTransitionUntilEpoch || engine.lastFrameLikelyHasOrderPopup)
-                    ? MIN(180, MAX(140, config.scanIntervalMs))
-                    : MAX(150, config.scanIntervalMs);
-                usleep((useconds_t)(sleepMs * 1000));
+                // Ambush 25ms strobe when kqueue detected a live ULID/order; Turbo 180ms right after transitions; normal scanIntervalMs otherwise
+                NSInteger sleepMs = inAmbushMode
+                    ? 25
+                    : ((now < turboUntilEpoch || now < postTransitionUntilEpoch || engine.lastFrameLikelyHasOrderPopup)
+                        ? MIN(180, MAX(140, config.scanIntervalMs))
+                        : MAX(150, config.scanIntervalMs));
+                waitInterruptibleMs(sleepMs);
                 } @catch (NSException *ex) {
                     appendDaemonLog(@"[TỰ PHỤC HỒI] Bắt ngoại lệ %@ -> Tự làm mới và tiếp tục canh đơn!", ex.name ?: @"ObjC");
                     resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
-                    usleep(250000);
+                    waitInterruptibleMs(250);
                 }
             }
         }
 
+        [[GSMOrderPayloadSniffer sharedSniffer] stopRealtimeKernelMonitor];
         [[StealthStatusPillHUD sharedHUD] hideImmediately];
         unlinkPidFileIfOwnedByMe(kDaemonPidPath);
         notify_cancel(reloadTok);

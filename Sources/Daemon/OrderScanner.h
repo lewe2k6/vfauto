@@ -6,6 +6,8 @@
 #import <CoreImage/CoreImage.h>
 #import "SharedConfig.h"
 
+@class GSMSniffedOrder;
+
 typedef NS_ENUM(NSInteger, OrderActionType) {
     OrderActionNone           = 0,
     OrderActionWaitRetryPrice = 1,
@@ -61,6 +63,9 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 
 + (instancetype)sharedScanner;
 
+- (void)preEvaluateSniffedOrder:(GSMSniffedOrder *)sniffedOrder
+                     withConfig:(FilterConfig *)config;
+
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize
                                 config:(FilterConfig *)config
@@ -79,6 +84,17 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
                      hasTopWhiteHeader:(BOOL)hasTopWhiteHeader
                     headerIconWarmFood:(BOOL)headerIconWarmFood
                     headerIconCoolRide:(BOOL)headerIconCoolRide
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount;
+
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                            yellowDotY:(double)yellowDotY
+                      hasBottomTealBar:(BOOL)hasBottomTealBar
+                     hasTopWhiteHeader:(BOOL)hasTopWhiteHeader
+                    headerIconWarmFood:(BOOL)headerIconWarmFood
+                    headerIconCoolRide:(BOOL)headerIconCoolRide
+                   hasLobbyPowerButton:(BOOL)hasLobbyPowerButton
                                 config:(FilterConfig *)config
                        priceRetryCount:(NSInteger)retryCount;
 

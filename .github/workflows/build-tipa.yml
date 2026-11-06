@@ -54,9 +54,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.2.0-ts
-          name: "Pin & Nhiệt Độ v5.2.0 (Bắt Gói Tin Đơn Ngầm GSM + Chống Cắt Chữ ... + Chống Che Banner)"
-          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.2.0 (Tích hợp GSMOrderPayloadSniffer đọc gói tin đơn ngầm vn.gsm.md + Giữ nguyên luật lọc cũ: Bike/Express tự nhận full 100%, Food chỉ đo khoảng cách khi giá tiền dưới mức cài đặt, tự vuốt hất Banner nếu che nút [X], hỗ trợ mở đơn từ thông báo màn hình chính + Bắn Map chủ động); (2) BanMap_TS.tipa / .ipa v1.0 (App Bắn Map Xanh độc lập)."
+          tag_name: v5.3.0-ts
+          name: "Pin & Nhiệt Độ v5.3.0 (Snipe kqueue 2 Pha + Dual-Strip Micro-OCR 15ms + 5 Khóa Chống Bấm Nhầm + Tối Ưu RAM/Mạng)"
+          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.3.0 (Tích hợp Quả 30: Kernel kqueue 2 Pha + Delta-Offset/Head-Tail WAL Reader + Hỗ trợ MDModels.GroupOrder đơn ghép + Pre-Evaluation Cache + Dual-Strip Micro-OCR 15ms + 5 Khóa Chống Bấm Nhầm + Tối ưu 0KB NSURLCache RAM & DoH Fast-Switch 180s); (2) BanMap_TS.tipa / .ipa v1.0."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

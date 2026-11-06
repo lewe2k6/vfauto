@@ -267,6 +267,12 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
         sc.timeoutIntervalForResource = 0.50;
         sc.waitsForConnectivity       = NO; // Crucial for weak 4G: NEVER stall waiting for radio!
         sc.HTTPMaximumConnectionsPerHost = 2;
+        sc.HTTPShouldUsePipelining    = YES;
+        sc.requestCachePolicy         = NSURLRequestReloadIgnoringLocalCacheData;
+        // Zero RAM overhead for cache/cookies/credentials inside daemon
+        sc.URLCache                   = nil;
+        sc.HTTPCookieStorage          = nil;
+        sc.URLCredentialStorage       = nil;
         _fastNetSession = [NSURLSession sessionWithConfiguration:sc];
 
         [self loadEmbeddedHanoiIndex];
@@ -317,7 +323,7 @@ static BOOL containsNormalizedPhraseOnWordBoundary(NSString *haystack, NSString 
     NSString *zlibPath = [self locateIndexFilePath];
     if (!zlibPath) return;
 
-    NSData *compData = [NSData dataWithContentsOfFile:zlibPath options:NSDataReadingUncached error:nil];
+    NSData *compData = [NSData dataWithContentsOfFile:zlibPath options:(NSDataReadingMappedIfSafe | NSDataReadingUncached) error:nil];
     if (!compData || compData.length < 64) return;
 
     size_t cap = compData.length * 7;

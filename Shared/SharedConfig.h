@@ -7,7 +7,7 @@
 #ifdef MAP_RELAY_STANDALONE
 #define kAppBundleID            @"com.vn.utility.maprelay"
 #define kAppBundleFolderName    @"BanMapXanh.app"
-#define kCurrentDaemonVersion   @"5.2.2"
+#define kCurrentDaemonVersion   @"5.3.0"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.maprelay.plist"
@@ -28,7 +28,7 @@
 #else
 #define kAppBundleID            @"com.vn.utility.batterycheck"
 #define kAppBundleFolderName    @"PinNhietDo.app"
-#define kCurrentDaemonVersion   @"5.2.2"
+#define kCurrentDaemonVersion   @"5.3.0"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"

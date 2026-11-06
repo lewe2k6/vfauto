@@ -3091,28 +3091,64 @@ static NSURLSession *sharedMapRelayURLSession(void) {
     static dispatch_once_t onceTok;
     dispatch_once(&onceTok, ^{
         NSURLSessionConfiguration *sc = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        sc.timeoutIntervalForRequest  = 3.2;
-        sc.timeoutIntervalForResource = 4.2;
+        sc.timeoutIntervalForRequest  = 2.8;
+        sc.timeoutIntervalForResource = 3.8;
         sc.waitsForConnectivity       = NO;
-        sc.HTTPMaximumConnectionsPerHost = 2;
+        sc.HTTPMaximumConnectionsPerHost = 3;
+        sc.HTTPShouldUsePipelining    = YES;
+        sc.requestCachePolicy         = NSURLRequestReloadIgnoringLocalCacheData;
+        // Zero RAM overhead for cache/cookies/credentials inside daemon & helper
+        sc.URLCache                   = nil;
+        sc.HTTPCookieStorage          = nil;
+        sc.URLCredentialStorage       = nil;
         sSess = [NSURLSession sessionWithConfiguration:sc];
     });
     return sSess;
 }
 
+static NSLock *dohCacheLock(void) {
+    static NSLock *sLock = nil;
+    static dispatch_once_t onceTok;
+    dispatch_once(&onceTok, ^{
+        sLock = [[NSLock alloc] init];
+    });
+    return sLock;
+}
+
+static NSMutableDictionary<NSString *, NSString *> *sDoHIPCache = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *sDoHTimeCache = nil;
+static double sSystemDNSBypassUntilEpoch = 0.0;
+
 static NSString *resolveHostIPv4ViaCloudflareDoH(NSString *domain, NSString *fallbackIP) {
+    NSString *hostKey = (domain.length > 0) ? domain.lowercaseString : @"ntfy.sh";
+    double now = [[NSDate date] timeIntervalSince1970];
+
+    NSLock *lk = dohCacheLock();
+    [lk lock];
+    if (!sDoHIPCache) {
+        sDoHIPCache   = [NSMutableDictionary dictionaryWithCapacity:4];
+        sDoHTimeCache = [NSMutableDictionary dictionaryWithCapacity:4];
+    }
+    NSString *cachedIP = sDoHIPCache[hostKey];
+    double cachedAt    = [sDoHTimeCache[hostKey] doubleValue];
+    [lk unlock];
+
+    if (cachedIP.length >= 7 && (now - cachedAt) < 600.0) {
+        return cachedIP;
+    }
+
     // Queries literal 1.1.1.1 over HTTPS (zero local DNS lookup!) when iOS 16 mDNSResponder is poisoned on Hotspot
-    NSString *qUrl = [NSString stringWithFormat:@"https://1.1.1.1/dns-query?name=%@&type=A", domain ?: @"ntfy.sh"];
+    NSString *qUrl = [NSString stringWithFormat:@"https://1.1.1.1/dns-query?name=%@&type=A", hostKey];
     NSURL *dohURL = [NSURL URLWithString:qUrl];
-    if (!dohURL) return fallbackIP;
+    if (!dohURL) return cachedIP.length >= 7 ? cachedIP : fallbackIP;
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:dohURL
                                                        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                   timeoutInterval:1.5];
+                                                   timeoutInterval:1.3];
     [req setValue:@"application/dns-json" forHTTPHeaderField:@"Accept"];
 
     __block NSString *resolvedIP = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+    NSURLSessionDataTask *task = [sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         if (data && !err) {
             NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
             NSArray *ans = [json isKindOfClass:[NSDictionary class]] ? json[@"Answer"] : nil;
@@ -3129,9 +3165,20 @@ static NSString *resolveHostIPv4ViaCloudflareDoH(NSString *domain, NSString *fal
             }
         }
         dispatch_semaphore_signal(sem);
-    }] resume];
-    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)));
-    return resolvedIP.length >= 7 ? resolvedIP : fallbackIP;
+    }];
+    [task resume];
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.4 * NSEC_PER_SEC))) != 0) {
+        [task cancel];
+    }
+
+    if (resolvedIP.length >= 7) {
+        [lk lock];
+        sDoHIPCache[hostKey]   = resolvedIP;
+        sDoHTimeCache[hostKey] = @(now);
+        [lk unlock];
+        return resolvedIP;
+    }
+    return cachedIP.length >= 7 ? cachedIP : fallbackIP;
 }
 
 static NSString *resolveNtfyIPv4ViaCloudflareDoH(void) {
@@ -3151,7 +3198,7 @@ static BOOL postBarkRequestSynchronously(NSString *endpointURLString,
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
                                                        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                   timeoutInterval:2.8];
+                                                   timeoutInterval:2.5];
     req.HTTPMethod = @"POST";
     req.HTTPBody   = jsonBody;
     [req setValue:@"application/json; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
@@ -3162,7 +3209,7 @@ static BOOL postBarkRequestSynchronously(NSString *endpointURLString,
     __block BOOL success = NO;
     __block NSError *reqErr = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+    NSURLSessionDataTask *task = [sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         NSHTTPURLResponse *http = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)resp : nil;
         if (!err && http && http.statusCode >= 200 && http.statusCode < 300) {
             success = YES;
@@ -3170,8 +3217,11 @@ static BOOL postBarkRequestSynchronously(NSString *endpointURLString,
             reqErr = err;
         }
         dispatch_semaphore_signal(sem);
-    }] resume];
-    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)));
+    }];
+    [task resume];
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.7 * NSEC_PER_SEC))) != 0) {
+        [task cancel];
+    }
     if (outError) *outError = reqErr;
     return success;
 }
@@ -3214,14 +3264,29 @@ static BOOL postBarkPayloadSynchronously(NSString *barkKeyOrURL,
     NSData *barkData = [NSJSONSerialization dataWithJSONObject:barkDict options:0 error:nil];
     if (!barkData) return NO;
 
+    double now = [[NSDate date] timeIntervalSince1970];
+    BOOL preferDirectIP = (isOfficialDayApp && deviceKeyOnly.length >= 6 && now < sSystemDNSBypassUntilEpoch);
+
     NSError *err = nil;
-    BOOL ok = postBarkRequestSynchronously(endpointURL, nil, barkData, &err);
-    if (!ok && isOfficialDayApp && deviceKeyOnly.length >= 6) {
+    BOOL ok = NO;
+    if (preferDirectIP) {
         NSString *barkIP = resolveBarkIPv4ViaCloudflareDoH();
         NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", barkIP, deviceKeyOnly];
         ok = postBarkRequestSynchronously(fallbackURL, @"api.day.app", barkData, &err);
         if (ok && outUsedDirectIP) {
             *outUsedDirectIP = YES;
+        }
+    }
+    if (!ok) {
+        ok = postBarkRequestSynchronously(endpointURL, nil, barkData, &err);
+    }
+    if (!ok && !preferDirectIP && isOfficialDayApp && deviceKeyOnly.length >= 6) {
+        NSString *barkIP = resolveBarkIPv4ViaCloudflareDoH();
+        NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", barkIP, deviceKeyOnly];
+        ok = postBarkRequestSynchronously(fallbackURL, @"api.day.app", barkData, &err);
+        if (ok) {
+            sSystemDNSBypassUntilEpoch = [[NSDate date] timeIntervalSince1970] + 180.0;
+            if (outUsedDirectIP) *outUsedDirectIP = YES;
         }
     }
     if (outError) *outError = err;
@@ -3238,7 +3303,7 @@ static BOOL postNtfyPayloadSynchronously(NSString *urlString,
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
                                                        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                   timeoutInterval:3.2];
+                                                   timeoutInterval:2.8];
     req.HTTPMethod = @"POST";
     req.HTTPBody   = jsonBody;
     [req setValue:@"application/json; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
@@ -3258,7 +3323,7 @@ static BOOL postNtfyPayloadSynchronously(NSString *urlString,
     __block BOOL success = NO;
     __block NSError *reqErr = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+    NSURLSessionDataTask *task = [sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         NSHTTPURLResponse *http = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)resp : nil;
         if (!err && http && http.statusCode >= 200 && http.statusCode < 300) {
             success = YES;
@@ -3266,8 +3331,11 @@ static BOOL postNtfyPayloadSynchronously(NSString *urlString,
             reqErr = err;
         }
         dispatch_semaphore_signal(sem);
-    }] resume];
-    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)));
+    }];
+    [task resume];
+    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC))) != 0) {
+        [task cancel];
+    }
     if (outError) *outError = reqErr;
     return success;
 }
@@ -3356,12 +3424,26 @@ static void dispatchMapRelayPayloadWithNonceAsync(double lat,
             dispatch_group_async(grp, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
                 NSString *primaryURL = [NSString stringWithFormat:@"https://ntfy.sh/%@", topic];
                 NSError *nErr = nil;
-                BOOL ok = postNtfyPayloadSynchronously(primaryURL, nil, gmapsWebURL, jsonData, &nErr);
-                if (!ok) {
+                BOOL ok = NO;
+                double now = [[NSDate date] timeIntervalSince1970];
+                BOOL preferDirectIP = (now < sSystemDNSBypassUntilEpoch);
+                if (preferDirectIP) {
                     NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
                     NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", directIP, topic];
                     ok = postNtfyPayloadSynchronously(fallbackURL, @"ntfy.sh", gmapsWebURL, jsonData, &nErr);
                     if (ok) {
+                        ntfyUsedDirectIP = YES;
+                    }
+                }
+                if (!ok) {
+                    ok = postNtfyPayloadSynchronously(primaryURL, nil, gmapsWebURL, jsonData, &nErr);
+                }
+                if (!ok && !preferDirectIP) {
+                    NSString *directIP = resolveNtfyIPv4ViaCloudflareDoH();
+                    NSString *fallbackURL = [NSString stringWithFormat:@"http://%@/%@", directIP, topic];
+                    ok = postNtfyPayloadSynchronously(fallbackURL, @"ntfy.sh", gmapsWebURL, jsonData, &nErr);
+                    if (ok) {
+                        sSystemDNSBypassUntilEpoch = [[NSDate date] timeIntervalSince1970] + 180.0;
                         ntfyUsedDirectIP = YES;
                     }
                 }
@@ -3487,7 +3569,7 @@ void fetchBarkKeyFromNtfyTopicAsync(NSString *topic,
                 [req setValue:hostHdr forHTTPHeaderField:@"Host"];
             }
             dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-            [[sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+            NSURLSessionDataTask *task = [sharedMapRelayURLSession() dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
                 NSHTTPURLResponse *http = [resp isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)resp : nil;
                 if (!err && http && http.statusCode >= 200 && http.statusCode < 300 && data.length > 0) {
                     respData = data;
@@ -3495,8 +3577,11 @@ void fetchBarkKeyFromNtfyTopicAsync(NSString *topic,
                     respErr = err;
                 }
                 dispatch_semaphore_signal(sem);
-            }] resume];
-            dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)));
+            }];
+            [task resume];
+            if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC))) != 0) {
+                [task cancel];
+            }
         };
 
         runFetch(pollURLStr, nil);

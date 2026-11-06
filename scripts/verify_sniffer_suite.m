@@ -403,10 +403,10 @@ int main(int argc, const char *argv[]) {
                     elapsedOfflineMs);
 
         // ---------------------------------------------------------------------
-        // TEST 11: v5.2.2 Regression Guards — Food Pause 'NGHỈ 120s' & Active Trip 'TRONG CUỐC' Pill Rendering
+        // TEST 11: v5.3.0 Regression Guards — Food Pause 'NGHỈ 120s' & Active Trip 'TRONG CUỐC' Pill Rendering
         // ---------------------------------------------------------------------
-        ASSERT_TRUE([kCurrentDaemonVersion isEqualToString:@"5.2.2"],
-                    "kCurrentDaemonVersion must be 5.2.2 (got %s)", [kCurrentDaemonVersion UTF8String]);
+        ASSERT_TRUE([kCurrentDaemonVersion isEqualToString:@"5.3.0"],
+                    "kCurrentDaemonVersion must be 5.3.0 (got %s)", [kCurrentDaemonVersion UTF8String]);
         CGImageRef imgPause = [StealthStatusPillHUD createPillBitmapWithText:@"NGHỈ 120s"
                                                                    isCompact:YES
                                                                        bgRed:0.15 bgGreen:0.10 bgBlue:0.03 bgAlpha:0.91
@@ -426,6 +426,97 @@ int main(int argc, const char *argv[]) {
         ASSERT_TRUE(imgTrip != NULL && CGImageGetWidth(imgTrip) == 184 && CGImageGetHeight(imgTrip) == 32,
                     "Active Trip 'TRONG CUỐC' compact @2x pill must render cleanly at 184x32px");
         if (imgTrip) CGImageRelease(imgTrip);
+
+        // ---------------------------------------------------------------------
+        // TEST 12: v5.3.0 MDModels.GroupOrder (group_data, orders[], fee_data, shuttle_path[])
+        // ---------------------------------------------------------------------
+        NSDictionary *groupOrderJson = @{
+            @"group_data": @{
+                @"id": @"01HKCAB44HEK87D5KXJCFGBMW7",
+                @"distance": @(4.85),
+                @"fee_data": @{
+                    @"total_pay": @(34000),
+                    @"total_fee": @(34000),
+                    @"fee_breakdown": @{ @"base_fee": @(34000) }
+                },
+                @"shuttle_path": @[
+                    @{
+                        @"type": @"PICK UP",
+                        @"name": @"Cơm Thố Bách Khoa",
+                        @"short_address": @"112 Tạ Quang Bửu",
+                        @"address": @"112 Tạ Quang Bửu, Bách Khoa, Hai Bà Trưng, Hà Nội",
+                        @"latitude": @(21.0042),
+                        @"longitude": @(105.8468)
+                    },
+                    @{
+                        @"type": @"DROP OFF",
+                        @"name": @"Khach A",
+                        @"short_address": @"88 Láng Hạ",
+                        @"address": @"88 Láng Hạ, Đống Đa, Hà Nội",
+                        @"latitude": @(21.0168),
+                        @"longitude": @(105.8124)
+                    }
+                ],
+                @"orders": @[
+                    @{
+                        @"id": @"01HKCAB44HEK87D5KXJCFGBMW8",
+                        @"service": @{
+                            @"display_name": @"Green Food Ghép",
+                            @"service_type": @"FOOD-DELIVERY"
+                        }
+                    }
+                ]
+            }
+        };
+        GSMSniffedOrder *grpOrd = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:groupOrderJson sourceTag:@"GroupWAL"];
+        ASSERT_TRUE(grpOrd != nil && grpOrd.isGroupOrder == YES, "MDModels.GroupOrder must parse with isGroupOrder == YES");
+        ASSERT_TRUE([grpOrd.orderId isEqualToString:@"01HKCAB44HEK87D5KXJCFGBMW7"], "GroupOrder top-level ULID must match");
+        ASSERT_TRUE(grpOrd.isGreenFood == YES && grpOrd.totalPayVND == 34000, "GroupOrder Food classification & 34k fee_data must match");
+        ASSERT_TRUE([grpOrd.pickupName isEqualToString:@"Cơm Thố Bách Khoa"] && [grpOrd.dropoffShortAddress isEqualToString:@"88 Láng Hạ"],
+                    "GroupOrder shuttle_path pickup & dropoff must extract cleanly");
+
+        // ---------------------------------------------------------------------
+        // TEST 13: v5.3.0 Delta-Offset + SQLite WAL Checkpoint Head Wrap-Around Reader
+        // ---------------------------------------------------------------------
+        NSString *tmpWalPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"test_gsm_cache.db-wal"];
+        NSMutableData *walData = [NSMutableData dataWithLength:320 * 1024]; // 320 KB (> 256 KB tail window)
+        memset(walData.mutableBytes, 'A', walData.length);
+        // Simulate SQLite WAL wrapping around to offset 64 (near head of 320KB file) after a checkpoint:
+        NSString *headOrderStr = @"{\"id\":\"01HKCAB44HEK87D5KXJCFGBMW5\",\"distance\":3.7,\"fee_data\":{\"total_pay\":29000},"
+                                 @"\"service\":{\"display_name\":\"Green Bike\",\"service_type\":\"BIKE\"},"
+                                 @"\"shuttle_path\":[{\"type\":\"PICK UP\",\"short_address\":\"100 Kim Mã\",\"address\":\"100 Kim Mã, Ba Đình, Hà Nội\"},"
+                                 @"{\"type\":\"DROP OFF\",\"short_address\":\"200 Cầu Giấy\",\"address\":\"200 Cầu Giấy, Hà Nội\"}]}";
+        NSData *headJsonBytes = [headOrderStr dataUsingEncoding:NSUTF8StringEncoding];
+        [walData replaceBytesInRange:NSMakeRange(64, headJsonBytes.length) withBytes:headJsonBytes.bytes];
+        [walData writeToFile:tmpWalPath atomically:YES];
+
+        NSMutableArray<GSMSniffedOrder *> *walCands = [NSMutableArray array];
+        [sniffer scanFileTailAtPath:tmpWalPath
+                          maxAgeSec:60.0
+                           nowEpoch:[[NSDate date] timeIntervalSince1970]
+                        targetULIDs:@[@"01HKCAB44HEK87D5KXJCFGBMW5"]
+                          sourceTag:@"CacheWAL"
+                     intoCandidates:walCands];
+        ASSERT_TRUE(walCands.count == 1 && [walCands.firstObject.orderId isEqualToString:@"01HKCAB44HEK87D5KXJCFGBMW5"],
+                    "Head/Tail WAL Reader must find wrapped-around order at offset 64 of a 320KB WAL file");
+
+        // Now simulate Delta-Offset append of a new order at the end of the 320KB WAL file:
+        NSString *tailOrderStr = @"   {\"id\":\"01HKCAB44HEK87D5KXJCFGBMW6\",\"distance\":2.4,\"fee\":{\"total_pay\":22000},"
+                                 @"\"service\":{\"display_name\":\"Giao Hàng\",\"service_type\":\"EXPRESS-ONDEMAND\"},"
+                                 @"\"path\":[{\"type\":\"PICK UP\",\"short_address\":\"15 Xuân Thủy\"},{\"type\":\"DROP OFF\",\"short_address\":\"80 Duy Tân\"}]}";
+        [walData appendData:[tailOrderStr dataUsingEncoding:NSUTF8StringEncoding]];
+        [walData writeToFile:tmpWalPath atomically:YES];
+
+        NSMutableArray<GSMSniffedOrder *> *deltaCands = [NSMutableArray array];
+        [sniffer scanFileTailAtPath:tmpWalPath
+                          maxAgeSec:60.0
+                           nowEpoch:[[NSDate date] timeIntervalSince1970]
+                        targetULIDs:@[@"01HKCAB44HEK87D5KXJCFGBMW6"]
+                          sourceTag:@"CacheWAL"
+                     intoCandidates:deltaCands];
+        ASSERT_TRUE(deltaCands.count == 1 && [deltaCands.firstObject.orderId isEqualToString:@"01HKCAB44HEK87D5KXJCFGBMW6"],
+                    "Delta-Offset Reader must read newly appended bytes at tail of WAL file in <0.05ms");
+        [[NSFileManager defaultManager] removeItemAtPath:tmpWalPath error:nil];
 
         printf("==> Verification Suite Complete: %d passed, %d failed.\n", gPasses, gFailures);
         return (gFailures == 0) ? 0 : 1;

@@ -9,6 +9,7 @@
 @property (nonatomic, copy)   NSString *orderId;             // 26-char ULID (e.g. "01HJN66X4T48BY3M7NA34XZZJW")
 @property (nonatomic, assign) BOOL isGreenFood;              // YES = Green Food; NO = Bike / Express / Ride
 @property (nonatomic, assign) BOOL isBikeOrExpress;          // YES = Bike / Express / Express 2H / Taxi / Car
+@property (nonatomic, assign) BOOL isGroupOrder;             // YES = MDModels.GroupOrder (Express 2H / Grouped Food)
 @property (nonatomic, copy)   NSString *serviceTypeRaw;      // e.g. "EXPRESS-ONDEMAND", "FOOD-DELIVERY", "RIDE-TAXI"
 @property (nonatomic, copy)   NSString *serviceDisplayName;  // e.g. "Green Bike", "Express", "Green Food"
 @property (nonatomic, assign) NSInteger totalPayVND;         // Exact integer VND displayed on card (fee.total_pay / total_fee)
@@ -55,8 +56,20 @@
 
 // Marks an orderId as already acted upon (Accepted or Rejected) so it can never match a future popup.
 - (void)markOrderHandled:(NSString *)orderId;
+- (BOOL)isOrderIdHandled:(NSString *)orderId;
 
-// Exposed for unit/self-test verification of JSON parsing, raw buffer extraction & ULID decoding
+// Fast (<0.15ms) pre-UI peek for OrderScanner's Dual-Strip Micro-OCR fast path.
+// Returns a fresh, unhandled GSMSniffedOrder if one arrived within maxAgeSec (or is currently active in Preferences).
+- (GSMSniffedOrder *)peekFreshUnverifiedOrderWithConfig:(FilterConfig *)config
+                                              maxAgeSec:(double)maxAgeSec;
+
+// Starts the 0%-CPU kernel kqueue (EVFILT_VNODE) 2-Phase monitor on Preferences & Cache.db-wal / fsCachedData.
+// Phase 1 fires when a new ULID lands in vn.gsm.md.plist; Phase 2 fires when the full Order JSON lands in Cache.db-wal.
+- (void)startRealtimeKernelMonitorWithConfigProvider:(FilterConfig *(^)(void))configProvider
+                                        eventHandler:(void (^)(NSString *ambushULID, GSMSniffedOrder *preSniffedOrder))eventHandler;
+- (void)stopRealtimeKernelMonitor;
+
+// Exposed for unit/self-test verification of JSON parsing, raw buffer extraction, delta WAL reading & ULID decoding
 + (double)decodeULIDTimestampEpoch:(NSString *)ulid;
 + (GSMSniffedOrder *)parseOrderFromJSONDictionary:(NSDictionary *)rootDict
                                         sourceTag:(NSString *)sourceTag;
@@ -64,6 +77,12 @@
                                      inBuffer:(const uint8_t *)buf
                                        length:(size_t)bufLen
                                     sourceTag:(NSString *)sourceTag;
+- (void)scanFileTailAtPath:(NSString *)filePath
+                 maxAgeSec:(double)maxAgeSec
+                  nowEpoch:(double)now
+               targetULIDs:(NSArray<NSString *> *)targetULIDs
+                 sourceTag:(NSString *)sourceTag
+            intoCandidates:(NSMutableArray<GSMSniffedOrder *> *)candidates;
 - (void)cacheParsedOrder:(GSMSniffedOrder *)ord;
 
 @end

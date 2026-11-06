@@ -2,8 +2,10 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <mach/mach.h>
 #import <dlfcn.h>
+#import <sys/event.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <pthread.h>
 #import <signal.h>
 #import <dirent.h>
 #import <fcntl.h>
@@ -11,6 +13,10 @@
 #import <stdlib.h>
 #import <string.h>
 #import <math.h>
+
+#ifndef O_EVTONLY
+#define O_EVTONLY 0x8000
+#endif
 
 typedef kern_return_t (*task_for_pid_f)(
     mach_port_name_t target_tport,
@@ -109,8 +115,11 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     NSMutableDictionary<NSString *, GSMSniffedOrder *> *_parsedOrderCache;
     NSMutableArray<NSString *> *_parsedOrderLRU;
     NSMutableDictionary<NSString *, NSString *> *_fileStatCache;
+    NSMutableDictionary<NSString *, NSNumber *> *_fileLastSizeMap;
 
     GSMSniffedOrder *_latestSniffedOrder;
+    NSString *_lastNotifiedAmbushULID;
+    NSString *_lastNotifiedOrderJSONId;
     double _lastHeapScanEpoch;
     double _lastDeepDirScanEpoch;
     pid_t _cachedDriverPid;
@@ -118,6 +127,9 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     double _lastPidLookupEpoch;
     uint8_t *_reusableScanBuf;
     uint8_t *_reusableFileBuf;
+
+    volatile BOOL _kqueueMonitorRunning;
+    int _kqueueFd;
 }
 
 + (instancetype)sharedSniffer {
@@ -138,14 +150,18 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         _parsedOrderCache   = [NSMutableDictionary dictionaryWithCapacity:24];
         _parsedOrderLRU     = [NSMutableArray arrayWithCapacity:24];
         _fileStatCache      = [NSMutableDictionary dictionaryWithCapacity:128];
+        _fileLastSizeMap    = [NSMutableDictionary dictionaryWithCapacity:64];
         _deniedTaskForPid   = 0;
         _reusableScanBuf    = (uint8_t *)malloc(kHeapScanChunkBytes + kHeapScanOverlap + 64);
         _reusableFileBuf    = (uint8_t *)malloc(kMaxDiskTailReadBytes + 64);
+        _kqueueMonitorRunning = NO;
+        _kqueueFd           = -1;
     }
     return self;
 }
 
 - (void)dealloc {
+    [self stopRealtimeKernelMonitor];
     if (_reusableScanBuf) {
         free(_reusableScanBuf);
         _reusableScanBuf = NULL;
@@ -206,27 +222,98 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     NSDictionary *d = rootDict;
     if ([rootDict[@"data"] isKindOfClass:[NSDictionary class]]) {
         NSDictionary *inner = (NSDictionary *)rootDict[@"data"];
-        if (inner[@"id"] || inner[@"path"] || inner[@"service"]) {
+        if (inner[@"id"] || inner[@"path"] || inner[@"service"] ||
+            inner[@"orders"] || inner[@"group_data"] || inner[@"groupData"] ||
+            inner[@"shuttle_path"] || inner[@"shuttlePath"] || inner[@"fee_data"] || inner[@"feeData"]) {
             d = inner;
         }
     }
 
+    // Support MDModels.GroupOrder (Express 2H / Grouped Food: group_data, orders[], fee_data, shuttle_path[])
+    NSDictionary *groupDataDict = [d[@"group_data"] isKindOfClass:[NSDictionary class]]
+        ? d[@"group_data"]
+        : ([d[@"groupData"] isKindOfClass:[NSDictionary class]] ? d[@"groupData"] : nil);
+    NSArray *ordersArr = [d[@"orders"] isKindOfClass:[NSArray class]] ? d[@"orders"] : nil;
+    NSDictionary *firstSubOrder = (ordersArr.count > 0 && [ordersArr.firstObject isKindOfClass:[NSDictionary class]])
+        ? (NSDictionary *)ordersArr.firstObject
+        : nil;
+    NSDictionary *lastSubOrder = (ordersArr.count > 0 && [ordersArr.lastObject isKindOfClass:[NSDictionary class]])
+        ? (NSDictionary *)ordersArr.lastObject
+        : firstSubOrder;
+    BOOL isGroup = (groupDataDict != nil || ordersArr.count > 0 ||
+                    [d[@"shuttle_path"] isKindOfClass:[NSArray class]] ||
+                    [d[@"shuttlePath"] isKindOfClass:[NSArray class]] ||
+                    ([d[@"is_group_order"] respondsToSelector:@selector(boolValue)] && [d[@"is_group_order"] boolValue]));
+
     NSString *orderId = [d[@"id"] isKindOfClass:[NSString class]] ? d[@"id"] : nil;
+    if (!isValidGSMOrderULIDString(orderId) && [d[@"order_id"] isKindOfClass:[NSString class]]) {
+        orderId = d[@"order_id"];
+    }
+    if (!isValidGSMOrderULIDString(orderId) && groupDataDict) {
+        if ([groupDataDict[@"id"] isKindOfClass:[NSString class]]) orderId = groupDataDict[@"id"];
+        else if ([groupDataDict[@"group_id"] isKindOfClass:[NSString class]]) orderId = groupDataDict[@"group_id"];
+    }
+    if (!isValidGSMOrderULIDString(orderId) && firstSubOrder) {
+        if ([firstSubOrder[@"id"] isKindOfClass:[NSString class]]) orderId = firstSubOrder[@"id"];
+    }
     if (!isValidGSMOrderULIDString(orderId)) {
         return nil;
     }
 
     NSDictionary *serviceDict = [d[@"service"] isKindOfClass:[NSDictionary class]] ? d[@"service"] : nil;
-    NSArray *pathArr          = [d[@"path"] isKindOfClass:[NSArray class]] ? d[@"path"] : nil;
-    NSDictionary *feeDict     = [d[@"fee"] isKindOfClass:[NSDictionary class]] ? d[@"fee"] : nil;
+    if (!serviceDict && groupDataDict && [groupDataDict[@"service"] isKindOfClass:[NSDictionary class]]) {
+        serviceDict = groupDataDict[@"service"];
+    }
+    if (!serviceDict && firstSubOrder && [firstSubOrder[@"service"] isKindOfClass:[NSDictionary class]]) {
+        serviceDict = firstSubOrder[@"service"];
+    }
 
-    // Must be an actual Order object (not a bare Path stop or sub-object)
-    if (!serviceDict && !pathArr && !feeDict) {
+    NSArray *pathArr = [d[@"path"] isKindOfClass:[NSArray class]] ? d[@"path"] : nil;
+    if (!pathArr && [d[@"shuttle_path"] isKindOfClass:[NSArray class]]) {
+        pathArr = d[@"shuttle_path"];
+    }
+    if (!pathArr && [d[@"shuttlePath"] isKindOfClass:[NSArray class]]) {
+        pathArr = d[@"shuttlePath"];
+    }
+    if ((!pathArr || pathArr.count == 0) && firstSubOrder) {
+        NSMutableArray *combinedSubPath = [NSMutableArray arrayWithCapacity:4];
+        NSArray *firstPath = [firstSubOrder[@"path"] isKindOfClass:[NSArray class]] ? firstSubOrder[@"path"] : nil;
+        if (firstPath.count > 0) {
+            [combinedSubPath addObject:firstPath.firstObject];
+        }
+        NSArray *lastPath = [lastSubOrder[@"path"] isKindOfClass:[NSArray class]] ? lastSubOrder[@"path"] : nil;
+        if (lastPath.count > 1) {
+            [combinedSubPath addObject:lastPath.lastObject];
+        } else if (firstPath.count > 1) {
+            [combinedSubPath addObject:firstPath.lastObject];
+        }
+        if (combinedSubPath.count > 0) {
+            pathArr = combinedSubPath;
+        }
+    }
+
+    NSDictionary *feeDict = [d[@"fee"] isKindOfClass:[NSDictionary class]] ? d[@"fee"] : nil;
+    if (!feeDict && [d[@"fee_data"] isKindOfClass:[NSDictionary class]]) {
+        feeDict = d[@"fee_data"];
+    }
+    if (!feeDict && [d[@"feeData"] isKindOfClass:[NSDictionary class]]) {
+        feeDict = d[@"feeData"];
+    }
+    if (!feeDict && groupDataDict && [groupDataDict[@"fee"] isKindOfClass:[NSDictionary class]]) {
+        feeDict = groupDataDict[@"fee"];
+    }
+    if (!feeDict && firstSubOrder && [firstSubOrder[@"fee"] isKindOfClass:[NSDictionary class]]) {
+        feeDict = firstSubOrder[@"fee"];
+    }
+
+    // Must be an actual Order / GroupOrder object (not a bare Path stop or sub-object)
+    if (!serviceDict && !pathArr && !feeDict && !ordersArr) {
         return nil;
     }
 
     GSMSniffedOrder *ord = [[GSMSniffedOrder alloc] init];
     ord.orderId          = orderId;
+    ord.isGroupOrder     = isGroup;
     ord.sniffSourceTag   = sourceTag ?: @"JSON";
     ord.sniffedAtEpoch   = [[NSDate date] timeIntervalSince1970];
 
@@ -238,6 +325,12 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     NSString *svcDispRaw = [serviceDict[@"display_name"] isKindOfClass:[NSString class]] ? serviceDict[@"display_name"] : @"";
     if (svcTypeRaw.length == 0 && [d[@"service_type"] isKindOfClass:[NSString class]]) {
         svcTypeRaw = d[@"service_type"];
+    }
+    if (svcTypeRaw.length == 0 && groupDataDict && [groupDataDict[@"service_type"] isKindOfClass:[NSString class]]) {
+        svcTypeRaw = groupDataDict[@"service_type"];
+    }
+    if (svcDispRaw.length == 0 && groupDataDict && [groupDataDict[@"display_name"] isKindOfClass:[NSString class]]) {
+        svcDispRaw = groupDataDict[@"display_name"];
     }
     ord.serviceTypeRaw     = svcTypeRaw;
     ord.serviceDisplayName = svcDispRaw;
@@ -262,7 +355,8 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 
     BOOL hasFoodDetailObj = ([d[@"food_detail"] isKindOfClass:[NSDictionary class]] && [(NSDictionary *)d[@"food_detail"] count] > 0) ||
                             ([d[@"food_fee"] isKindOfClass:[NSDictionary class]] && [(NSDictionary *)d[@"food_fee"] count] > 0) ||
-                            ([d[@"is_food_delivery"] respondsToSelector:@selector(boolValue)] && [d[@"is_food_delivery"] boolValue]);
+                            ([d[@"is_food_delivery"] respondsToSelector:@selector(boolValue)] && [d[@"is_food_delivery"] boolValue]) ||
+                            (firstSubOrder && [firstSubOrder[@"food_detail"] isKindOfClass:[NSDictionary class]] && [(NSDictionary *)firstSubOrder[@"food_detail"] count] > 0);
 
     BOOL explicitFood = ([normType containsString:@"food"] ||
                          [normDisp containsString:@"food"] ||
@@ -284,7 +378,10 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     } else {
         // Unknown service_type -> require either food_detail or path inspection
         ord.isGreenFood     = hasFoodDetailObj;
-        ord.isBikeOrExpress = !hasFoodDetailObj && (svcTypeRaw.length > 0 || svcDispRaw.length > 0);
+        ord.isBikeOrExpress = !hasFoodDetailObj && (svcTypeRaw.length > 0 || svcDispRaw.length > 0 || isGroup);
+        if (ord.isBikeOrExpress && ord.serviceDisplayName.length == 0) {
+            ord.serviceDisplayName = isGroup ? @"Express Ghép" : @"Green Bike";
+        }
     }
 
     // 2. Extract Exact Fare VND
@@ -294,8 +391,24 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     NSInteger baseFee  = [self extractFareIntegerFromValue:fb[@"base_fee"]];
     if (totalPay <= 0) totalPay = [self extractFareIntegerFromValue:feeDict[@"total_pay_display"]];
     if (totalPay <= 0) totalPay = [self extractFareIntegerFromValue:feeDict[@"display"]];
+    if (totalPay <= 0) totalPay = [self extractFareIntegerFromValue:feeDict[@"driver_receive"]];
+    if (totalPay <= 0) totalPay = [self extractFareIntegerFromValue:feeDict[@"amount"]];
     if (totalPay <= 0) totalPay = [self extractFareIntegerFromValue:d[@"total_pay"]];
     if (totalFee <= 0) totalFee = [self extractFareIntegerFromValue:feeDict[@"total_fee_display"]];
+
+    if (totalPay <= 0 && totalFee <= 0 && ordersArr.count > 0) {
+        NSInteger sumPay = 0;
+        for (id subItem in ordersArr) {
+            if (![subItem isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary *subFee = [subItem[@"fee"] isKindOfClass:[NSDictionary class]] ? subItem[@"fee"] : nil;
+            NSInteger sp = [self extractFareIntegerFromValue:subFee[@"total_pay"]];
+            if (sp <= 0) sp = [self extractFareIntegerFromValue:subFee[@"total_fee"]];
+            if (sp >= 1000) sumPay += sp;
+        }
+        if (sumPay >= 5000) {
+            totalPay = sumPay;
+        }
+    }
 
     ord.totalPayVND = (totalPay >= 5000) ? totalPay : ((totalFee >= 5000) ? totalFee : baseFee);
     ord.totalFeeVND = (totalFee >= 5000) ? totalFee : ord.totalPayVND;
@@ -306,14 +419,28 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     if (!distVal && [d[@"trip_data"] isKindOfClass:[NSDictionary class]]) {
         distVal = d[@"trip_data"][@"distance"];
     }
+    if (!distVal && groupDataDict) {
+        distVal = groupDataDict[@"distance"] ?: groupDataDict[@"total_distance"];
+    }
     if ([distVal respondsToSelector:@selector(doubleValue)]) {
         double km = [distVal doubleValue];
         if (km > 0.02 && km < 200.0) {
             ord.serverDistanceKm = km;
         }
+    } else if (ordersArr.count > 0) {
+        double sumKm = 0.0;
+        for (id subItem in ordersArr) {
+            if ([subItem isKindOfClass:[NSDictionary class]] && [subItem[@"distance"] respondsToSelector:@selector(doubleValue)]) {
+                double skm = [subItem[@"distance"] doubleValue];
+                if (skm > 0.01 && skm < 100.0) sumKm += skm;
+            }
+        }
+        if (sumKm > 0.02 && sumKm < 200.0) {
+            ord.serverDistanceKm = sumKm;
+        }
     }
 
-    // 4. Extract Pickup & Dropoff Stops from path[]
+    // 4. Extract Pickup & Dropoff Stops from path[] / shuttle_path[]
     if (pathArr.count > 0) {
         BOOL foundPickup  = NO;
         BOOL foundDropoff = NO;
@@ -341,16 +468,19 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                     ord.pickupLat       = lat;
                     ord.pickupLng       = lng;
                 }
-            } else if (!foundDropoff && ([pType containsString:@"DROP"] || (foundPickup && (sAddr.length > 0 || fAddr.length > 0 || validCoord)))) {
-                foundDropoff            = YES;
-                ord.dropoffName         = name;
-                ord.dropoffShortAddress = sAddr;
-                ord.dropoffFullAddress  = fAddr;
-                ord.dropoffNote         = note;
-                if (validCoord) {
-                    ord.hasDropoffCoords = YES;
-                    ord.dropoffLat       = lat;
-                    ord.dropoffLng       = lng;
+            } else if ([pType containsString:@"DROP"] || [pType containsString:@"END"] || (foundPickup && (sAddr.length > 0 || fAddr.length > 0 || validCoord))) {
+                // For GroupOrder shuttle_path with multiple stops, keep updating Dropoff to the final destination stop
+                if (!foundDropoff || isGroup) {
+                    foundDropoff            = YES;
+                    ord.dropoffName         = name;
+                    ord.dropoffShortAddress = sAddr;
+                    ord.dropoffFullAddress  = fAddr;
+                    ord.dropoffNote         = note;
+                    if (validCoord) {
+                        ord.hasDropoffCoords = YES;
+                        ord.dropoffLat       = lat;
+                        ord.dropoffLng       = lng;
+                    }
                 }
             }
         }
@@ -448,11 +578,14 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
             size_t sliceLen = endPos - pos + 1;
             const uint8_t *slicePtr = buf + pos;
 
-            // Fast check: slice must contain "id" and ("path" or "service" or "fee")
+            // Fast check: slice must contain "id" and ("path" or "service" or "fee" or "orders" or "shuttle_path" or "fee_data")
             if (memmem(slicePtr, sliceLen, "\"id\"", 4) != NULL &&
                 (memmem(slicePtr, sliceLen, "\"path\"", 6) != NULL ||
                  memmem(slicePtr, sliceLen, "\"service\"", 9) != NULL ||
-                 memmem(slicePtr, sliceLen, "\"fee\"", 5) != NULL)) {
+                 memmem(slicePtr, sliceLen, "\"fee\"", 5) != NULL ||
+                 memmem(slicePtr, sliceLen, "\"orders\"", 8) != NULL ||
+                 memmem(slicePtr, sliceLen, "\"shuttle_path\"", 14) != NULL ||
+                 memmem(slicePtr, sliceLen, "\"fee_data\"", 10) != NULL)) {
                 NSData *jsonData = [NSData dataWithBytesNoCopy:(void *)slicePtr length:sliceLen freeWhenDone:NO];
                 NSDictionary *dict = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:nil];
                 if ([dict isKindOfClass:[NSDictionary class]]) {
@@ -700,11 +833,16 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         }
     }
 
-    // 1B. Also scan for any recent JSON containing "fee_breakdown" or "service_type" (in case plist hasn't flushed ULID yet)
-    static const char *kAnchors[2] = { "\"fee_breakdown\"", "\"service_type\"" };
-    static const size_t kAnchorLens[2] = { 15, 14 };
+    // 1B. Also scan for any recent JSON containing "fee_breakdown", "service_type", "shuttle_path", or "fee_data" (in case plist hasn't flushed ULID yet)
+    static const char *kAnchors[4] = {
+        "\"fee_breakdown\"",
+        "\"service_type\"",
+        "\"shuttle_path\"",
+        "\"fee_data\""
+    };
+    static const size_t kAnchorLens[4] = { 15, 14, 14, 10 };
 
-    for (int a = 0; a < 2; a++) {
+    for (int a = 0; a < 4; a++) {
         const char *needle = kAnchors[a];
         size_t needleLen   = kAnchorLens[a];
         const uint8_t *cur = buf;
@@ -767,18 +905,64 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     }
     _fileStatCache[filePath] = statSig;
 
-    int fd = open(cPath, O_RDONLY);
-    if (fd < 0) return;
-    size_t maxRead = kMaxDiskTailReadBytes; // 256 KB tail is 150x larger than a ~1.5KB GSM order JSON
-    size_t readLen = ((size_t)st.st_size > maxRead) ? maxRead : (size_t)st.st_size;
-    off_t startOff = ((size_t)st.st_size > maxRead) ? (st.st_size - (off_t)maxRead) : 0;
+    NSNumber *prevSizeNum = _fileLastSizeMap[filePath];
+    off_t prevSize = prevSizeNum ? (off_t)[prevSizeNum longLongValue] : 0;
+    if (_fileLastSizeMap.count >= 160) {
+        [_fileLastSizeMap removeAllObjects];
+    }
+    _fileLastSizeMap[filePath] = @(st.st_size);
 
-    uint8_t *buf = _reusableFileBuf ?: (uint8_t *)malloc(readLen);
+    int fd = open(cPath, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+
+    size_t maxRead = kMaxDiskTailReadBytes; // 256 KB
+    uint8_t *buf = _reusableFileBuf ?: (uint8_t *)malloc(maxRead);
     if (buf) {
-        ssize_t n = pread(fd, buf, readLen, startOff);
-        if (n > 64) {
-            [self scanRawBuffer:buf length:(size_t)n targetULIDs:targetULIDs sourceTag:sourceTag intoCandidates:candidates];
+        NSUInteger beforeCount = candidates.count;
+        BOOL matchedTarget = NO;
+
+        // 1. Delta-Offset Fast Read (<0.05ms):
+        // When the file grew by <= 224KB since last scan, read ONLY the newly appended bytes (+32KB overlap) first!
+        if (prevSize > 0 && st.st_size > prevSize && (st.st_size - prevSize) < (off_t)(maxRead - 32768)) {
+            off_t deltaStart = (prevSize > 32768) ? (prevSize - 32768) : 0;
+            size_t deltaLen = (size_t)(st.st_size - deltaStart);
+            if (deltaLen > maxRead) deltaLen = maxRead;
+            ssize_t dn = pread(fd, buf, deltaLen, deltaStart);
+            if (dn > 64) {
+                [self scanRawBuffer:buf length:(size_t)dn targetULIDs:targetULIDs sourceTag:sourceTag intoCandidates:candidates];
+                if (firstUlid.length == 26 && _parsedOrderCache[firstUlid] != nil) {
+                    matchedTarget = YES;
+                } else if (firstUlid.length == 0 && candidates.count > beforeCount) {
+                    matchedTarget = YES;
+                }
+            }
         }
+
+        // 2. Tail 256KB Read:
+        if (!matchedTarget) {
+            size_t readLen = ((size_t)st.st_size > maxRead) ? maxRead : (size_t)st.st_size;
+            off_t startOff = ((size_t)st.st_size > maxRead) ? (st.st_size - (off_t)maxRead) : 0;
+            ssize_t n = pread(fd, buf, readLen, startOff);
+            if (n > 64) {
+                [self scanRawBuffer:buf length:(size_t)n targetULIDs:targetULIDs sourceTag:sourceTag intoCandidates:candidates];
+                if (firstUlid.length == 26 && _parsedOrderCache[firstUlid] != nil) {
+                    matchedTarget = YES;
+                } else if (firstUlid.length == 0 && candidates.count > beforeCount) {
+                    matchedTarget = YES;
+                }
+            }
+        }
+
+        // 3. SQLite WAL Checkpoint Wrap-Around Head Read:
+        // When SQLite checkpoints Cache.db-wal, the file size stays >256KB on disk while new frames wrap around to offset 32 (Head)!
+        if (!matchedTarget && (size_t)st.st_size > maxRead) {
+            size_t headLen = MIN(maxRead, (size_t)st.st_size);
+            ssize_t hn = pread(fd, buf, headLen, 0);
+            if (hn > 64) {
+                [self scanRawBuffer:buf length:(size_t)hn targetULIDs:targetULIDs sourceTag:sourceTag intoCandidates:candidates];
+            }
+        }
+
         if (buf != _reusableFileBuf) {
             free(buf);
         }
@@ -1108,6 +1292,287 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     }
     if ([_latestSniffedOrder.orderId isEqualToString:orderId]) {
         _latestSniffedOrder = nil;
+    }
+    [_lock unlock];
+}
+
+- (BOOL)isOrderIdHandled:(NSString *)orderId {
+    if (!orderId || orderId.length == 0) return NO;
+    [_lock lock];
+    BOOL handled = [_handledOrderIds containsObject:orderId];
+    [_lock unlock];
+    return handled;
+}
+
+- (GSMSniffedOrder *)peekFreshUnverifiedOrderWithConfig:(FilterConfig *)config
+                                              maxAgeSec:(double)maxAgeSec {
+    [_lock lock];
+    @try {
+        double now = [[NSDate date] timeIntervalSince1970];
+        double effectiveMaxAge = (maxAgeSec > 0.0) ? maxAgeSec : 7.5;
+        NSArray<NSString *> *activeULIDs = [self readActiveOrderULIDsFromPreferencesWithConfig:config];
+
+        // 1. Check in-memory cached order first
+        if (_latestSniffedOrder &&
+            _latestSniffedOrder.orderId.length == 26 &&
+            ![_handledOrderIds containsObject:_latestSniffedOrder.orderId]) {
+            BOOL isInActivePrefs = [activeULIDs containsObject:_latestSniffedOrder.orderId];
+            double orderAge = (_latestSniffedOrder.orderTimestampEpoch > 0.0) ? fabs(now - _latestSniffedOrder.orderTimestampEpoch) : fabs(now - _latestSniffedOrder.sniffedAtEpoch);
+            double sniffAge = fabs(now - _latestSniffedOrder.sniffedAtEpoch);
+            double effectiveAge = MIN(orderAge, sniffAge);
+            if ((isInActivePrefs || effectiveAge <= effectiveMaxAge) &&
+                (activeULIDs.count == 0 || [activeULIDs.firstObject isEqualToString:_latestSniffedOrder.orderId])) {
+                return _latestSniffedOrder;
+            }
+        }
+
+        // 2. Scan disk caches (Delta-Offset + Head/Tail WAL Reader)
+        NSMutableArray<GSMSniffedOrder *> *candidates = [NSMutableArray arrayWithCapacity:6];
+        [self scanDiskCachesWithConfig:config targetULIDs:activeULIDs intoCandidates:candidates];
+
+        [candidates sortUsingComparator:^NSComparisonResult(GSMSniffedOrder *a, GSMSniffedOrder *b) {
+            return [b.orderId compare:a.orderId];
+        }];
+
+        for (GSMSniffedOrder *cand in candidates) {
+            if (!cand || cand.orderId.length != 26) continue;
+            if ([_handledOrderIds containsObject:cand.orderId]) continue;
+            BOOL isInActivePrefs = [activeULIDs containsObject:cand.orderId];
+            double orderAge = (cand.orderTimestampEpoch > 0.0) ? fabs(now - cand.orderTimestampEpoch) : fabs(now - cand.sniffedAtEpoch);
+            double sniffAge = fabs(now - cand.sniffedAtEpoch);
+            double effectiveAge = MIN(orderAge, sniffAge);
+            if (isInActivePrefs || effectiveAge <= effectiveMaxAge) {
+                _latestSniffedOrder = cand;
+                return cand;
+            }
+        }
+        return nil;
+    } @catch (NSException *ex) {
+        return nil;
+    } @finally {
+        [_lock unlock];
+    }
+}
+
+#pragma mark - 2-Phase Kernel kqueue VNODE Monitor (0% Idle CPU, <0.2ms Wakeup)
+
+- (void)startRealtimeKernelMonitorWithConfigProvider:(FilterConfig *(^)(void))configProvider
+                                        eventHandler:(void (^)(NSString *ambushULID, GSMSniffedOrder *sniffedOrder))eventHandler {
+    if (!configProvider || !eventHandler) return;
+    [_lock lock];
+    if (_kqueueMonitorRunning) {
+        [_lock unlock];
+        return;
+    }
+    _kqueueMonitorRunning = YES;
+    [_lock unlock];
+
+    FilterConfig *(^cfgCopy)(void) = [configProvider copy];
+    void (^evtCopy)(NSString *, GSMSniffedOrder *) = [eventHandler copy];
+
+    dispatch_queue_t kqQueue = dispatch_queue_create("com.shadow.pind.kqueue_sniffer", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(kqQueue, ^{
+        int kq = kqueue();
+        if (kq < 0) {
+            [self->_lock lock];
+            self->_kqueueMonitorRunning = NO;
+            [self->_lock unlock];
+            return;
+        }
+        [self->_lock lock];
+        self->_kqueueFd = kq;
+        [self->_lock unlock];
+
+        int watchedFds[5] = { -1, -1, -1, -1, -1 };
+        NSString *watchedPaths[5] = { nil, nil, nil, nil, nil };
+
+        void (^closeAllWatched)(void) = ^{
+            for (int i = 0; i < 5; i++) {
+                if (watchedFds[i] >= 0) {
+                    close(watchedFds[i]);
+                    watchedFds[i] = -1;
+                }
+                watchedPaths[i] = nil;
+            }
+        };
+
+        while (YES) {
+            @autoreleasepool {
+                [self->_lock lock];
+                BOOL keepRunning = self->_kqueueMonitorRunning;
+                [self->_lock unlock];
+                if (!keepRunning) break;
+
+                FilterConfig *cfg = cfgCopy();
+                if (!cfg || !cfg.masterEnabled) {
+                    closeAllWatched();
+                    usleep(500 * 1000);
+                    continue;
+                }
+
+                [self->_lock lock];
+                [self ensureGSMContainerPathsResolvedWithConfig:cfg];
+                NSString *contPath  = self->_cachedContainerPath;
+                NSString *prefsFile = self->_cachedPrefsPlistPath;
+                NSString *cacheDir  = self->_cachedCacheDirPath;
+                [self->_lock unlock];
+
+                if (contPath.length == 0 && cacheDir.length == 0) {
+                    usleep(800 * 1000);
+                    continue;
+                }
+
+                NSString *prefsDir = prefsFile.length > 0 ? [prefsFile stringByDeletingLastPathComponent] : [contPath stringByAppendingPathComponent:@"Library/Preferences"];
+                NSString *walFile  = cacheDir.length > 0 ? [cacheDir stringByAppendingPathComponent:@"Cache.db-wal"] : @"";
+                NSString *fsDir    = cacheDir.length > 0 ? [cacheDir stringByAppendingPathComponent:@"fsCachedData"] : @"";
+
+                NSArray<NSString *> *desiredPaths = @[
+                    prefsDir ?: @"",
+                    prefsFile ?: @"",
+                    cacheDir ?: @"",
+                    walFile ?: @"",
+                    fsDir ?: @""
+                ];
+
+                // Ensure EVFILT_VNODE watches are registered for all existing target files/dirs
+                for (int i = 0; i < 5; i++) {
+                    NSString *p = desiredPaths[i];
+                    if (p.length == 0) continue;
+                    if (watchedFds[i] >= 0 && watchedPaths[i] && [watchedPaths[i] isEqualToString:p]) {
+                        continue;
+                    }
+                    if (watchedFds[i] >= 0) {
+                        close(watchedFds[i]);
+                        watchedFds[i] = -1;
+                        watchedPaths[i] = nil;
+                    }
+
+                    __block int fd = open([p fileSystemRepresentation], O_EVTONLY | O_CLOEXEC);
+                    if (fd < 0) {
+                        [self performWithRootPrivileges:^{
+                            fd = open([p fileSystemRepresentation], O_EVTONLY | O_CLOEXEC);
+                        }];
+                    }
+                    if (fd >= 0) {
+                        struct kevent kev;
+                        EV_SET(&kev,
+                               fd,
+                               EVFILT_VNODE,
+                               EV_ADD | EV_ENABLE | EV_CLEAR,
+                               NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_RENAME | NOTE_DELETE | NOTE_REVOKE,
+                               0,
+                               (void *)(intptr_t)i);
+                        if (kevent(kq, &kev, 1, NULL, 0, NULL) == 0) {
+                            watchedFds[i] = fd;
+                            watchedPaths[i] = p;
+                        } else {
+                            close(fd);
+                        }
+                    }
+                }
+
+                struct kevent events[8];
+                struct timespec timeout;
+                timeout.tv_sec = 1;
+                timeout.tv_nsec = 200000000L; // 1.2s periodic refresh in case new files (e.g. Cache.db-wal) appear
+
+                int nev = kevent(kq, NULL, 0, events, 8, &timeout);
+                if (nev < 0) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+                if (nev == 0) {
+                    continue;
+                }
+
+                // Re-open any rotated/deleted vnode immediately
+                for (int e = 0; e < nev; e++) {
+                    int idx = (int)(intptr_t)events[e].udata;
+                    if (idx >= 0 && idx < 5 &&
+                        (events[e].fflags & (NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE)) != 0) {
+                        if (watchedFds[idx] >= 0) {
+                            close(watchedFds[idx]);
+                            watchedFds[idx] = -1;
+                            watchedPaths[idx] = nil;
+                        }
+                    }
+                }
+
+                // Phase 1 & Phase 2 Check upon VNODE write/extend/rename
+                NSString *ambushToFire = nil;
+                GSMSniffedOrder *orderToFire = nil;
+
+                [self->_lock lock];
+                @try {
+                    double now = [[NSDate date] timeIntervalSince1970];
+                    NSArray<NSString *> *activeULIDs = [self readActiveOrderULIDsFromPreferencesWithConfig:cfg];
+                    NSString *newestULID = activeULIDs.firstObject;
+
+                    // Phase 1: New ULID detected in Preferences!
+                    if (newestULID.length == 26 &&
+                        ![self->_handledOrderIds containsObject:newestULID] &&
+                        ![newestULID isEqualToString:self->_lastNotifiedAmbushULID]) {
+                        double ulidEpoch = [GSMOrderPayloadSniffer decodeULIDTimestampEpoch:newestULID];
+                        if (ulidEpoch <= 0.0 || fabs(now - ulidEpoch) <= 20.0) {
+                            self->_lastNotifiedAmbushULID = newestULID;
+                            ambushToFire = newestULID;
+                        }
+                    }
+
+                    // Phase 2: Check Disk Caches for full Order / GroupOrder JSON
+                    NSMutableArray<GSMSniffedOrder *> *candidates = [NSMutableArray arrayWithCapacity:6];
+                    [self scanDiskCachesWithConfig:cfg targetULIDs:activeULIDs intoCandidates:candidates];
+                    [candidates sortUsingComparator:^NSComparisonResult(GSMSniffedOrder *a, GSMSniffedOrder *b) {
+                        return [b.orderId compare:a.orderId];
+                    }];
+
+                    for (GSMSniffedOrder *cand in candidates) {
+                        if (!cand || cand.orderId.length != 26) continue;
+                        if ([self->_handledOrderIds containsObject:cand.orderId]) continue;
+                        BOOL isInActivePrefs = [activeULIDs containsObject:cand.orderId];
+                        double orderAge = (cand.orderTimestampEpoch > 0.0) ? fabs(now - cand.orderTimestampEpoch) : fabs(now - cand.sniffedAtEpoch);
+                        double sniffAge = fabs(now - cand.sniffedAtEpoch);
+                        double effectiveAge = MIN(orderAge, sniffAge);
+                        if (isInActivePrefs || effectiveAge <= 10.0) {
+                            self->_latestSniffedOrder = cand;
+                            if (![cand.orderId isEqualToString:self->_lastNotifiedOrderJSONId]) {
+                                self->_lastNotifiedOrderJSONId = cand.orderId;
+                                orderToFire = cand;
+                                if (!ambushToFire) {
+                                    ambushToFire = cand.orderId;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                } @catch (NSException *ex) {
+                } @finally {
+                    [self->_lock unlock];
+                }
+
+                if (ambushToFire || orderToFire) {
+                    evtCopy(ambushToFire, orderToFire);
+                }
+            }
+        }
+
+        closeAllWatched();
+        [self->_lock lock];
+        if (self->_kqueueFd >= 0) {
+            close(self->_kqueueFd);
+            self->_kqueueFd = -1;
+        }
+        self->_kqueueMonitorRunning = NO;
+        [self->_lock unlock];
+    });
+}
+
+- (void)stopRealtimeKernelMonitor {
+    [_lock lock];
+    _kqueueMonitorRunning = NO;
+    if (_kqueueFd >= 0) {
+        close(_kqueueFd);
+        _kqueueFd = -1;
     }
     [_lock unlock];
 }

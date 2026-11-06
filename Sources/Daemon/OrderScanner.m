@@ -27,6 +27,24 @@
 @implementation OCRMergedRouteLine
 @end
 
+@interface PreEvaluatedOrderEntry : NSObject
+@property (nonatomic, copy)   NSString *orderId;
+@property (nonatomic, strong) GSMSniffedOrder *sniffedOrder;
+@property (nonatomic, assign) BOOL isGreenFood;
+@property (nonatomic, assign) OrderActionType orderAction;
+@property (nonatomic, copy)   NSString *orderReason;
+@property (nonatomic, assign) double estimatedDistanceKm;
+@property (nonatomic, copy)   NSString *pickupTitle;
+@property (nonatomic, copy)   NSString *pickupSubtitle;
+@property (nonatomic, copy)   NSString *dropoffTitle;
+@property (nonatomic, copy)   NSString *dropoffSubtitle;
+@property (nonatomic, copy)   NSString *orderFingerprint;
+@property (nonatomic, copy)   NSString *configSignature;
+@end
+
+@implementation PreEvaluatedOrderEntry
+@end
+
 @implementation OrderScanner {
     CIContext *_ciContext;
     NSRegularExpression *_thousandsFareRegex;
@@ -35,6 +53,9 @@
     NSRegularExpression *_nonFoodHeaderRegex;
     NSRegularExpression *_foodHeaderRegex;
     NSRegularExpression *_foodPickupHintRegex;
+    NSLock *_preEvalLock;
+    NSMutableDictionary<NSString *, PreEvaluatedOrderEntry *> *_preEvalCache;
+    NSMutableArray<NSString *> *_preEvalLRU;
 }
 
 + (instancetype)sharedScanner {
@@ -53,6 +74,9 @@
             kCIContextCacheIntermediates: @NO,
             kCIContextUseSoftwareRenderer: @NO
         }];
+        _preEvalLock  = [[NSLock alloc] init];
+        _preEvalCache = [[NSMutableDictionary alloc] initWithCapacity:16];
+        _preEvalLRU   = [[NSMutableArray alloc] initWithCapacity:16];
         _thousandsFareRegex = [NSRegularExpression regularExpressionWithPattern:@"(?:^|[^0-9])([1-9][0-9]{0,2})[., ]([0-9]{3})"
                                                                         options:0
                                                                           error:nil];
@@ -291,6 +315,434 @@
     return merged;
 }
 
+#pragma mark - Pre-Evaluation Decision Cache & Dual-Strip Micro-OCR (~15ms, 5 Anti-Mis-Tap Locks)
+
+- (NSString *)configSignatureForConfig:(FilterConfig *)config {
+    if (!config) return @"nil";
+    return [NSString stringWithFormat:@"%d|%d|%ld|%d|%d|%ld|%d|%.2f|%lu|%lu",
+            config.autoAcceptBike ? 1 : 0,
+            config.rejectAllFood ? 1 : 0,
+            (long)config.minFoodPriceVND,
+            config.foodBlockMallAndBasement ? 1 : 0,
+            config.foodBlockCrowdedChains ? 1 : 0,
+            (long)config.foodMaxMerchantOrders,
+            config.foodAcceptLongDistance ? 1 : 0,
+            config.minFoodDistanceKm,
+            (unsigned long)(config.foodMallKeywords.hash),
+            (unsigned long)(config.foodChainKeywords.hash)];
+}
+
+- (PreEvaluatedOrderEntry *)evaluateOrFetchCachedOrder:(GSMSniffedOrder *)sniffed
+                                            withConfig:(FilterConfig *)config {
+    if (!sniffed || sniffed.orderId.length != 26 || !config) return nil;
+    if (!sniffed.isGreenFood && !sniffed.isBikeOrExpress) return nil;
+
+    NSString *cfgSig = [self configSignatureForConfig:config];
+    [_preEvalLock lock];
+    PreEvaluatedOrderEntry *cached = _preEvalCache[sniffed.orderId];
+    if (cached && [cached.configSignature isEqualToString:cfgSig]) {
+        [_preEvalLock unlock];
+        return cached;
+    }
+    [_preEvalLock unlock];
+
+    NSString *sName  = sniffed.pickupName ?: @"";
+    NSString *sShort = sniffed.pickupShortAddress ?: @"";
+    NSString *pTit = (sName.length > 0 && sShort.length > 0 && ![sShort.lowercaseString containsString:sName.lowercaseString])
+        ? [NSString stringWithFormat:@"%@ - %@", sName, sShort]
+        : (sShort.length > 0 ? sShort : sName);
+    NSString *pSub = sniffed.pickupFullAddress ?: pTit;
+    NSString *dTit = sniffed.dropoffShortAddress ?: (sniffed.dropoffName ?: @"");
+    NSString *dSub = sniffed.dropoffFullAddress ?: dTit;
+
+    NSInteger fare = sniffed.totalPayVND;
+    PreEvaluatedOrderEntry *entry = [[PreEvaluatedOrderEntry alloc] init];
+    entry.orderId          = sniffed.orderId;
+    entry.sniffedOrder     = sniffed;
+    entry.isGreenFood      = sniffed.isGreenFood;
+    entry.pickupTitle      = pTit ?: @"";
+    entry.pickupSubtitle   = pSub ?: @"";
+    entry.dropoffTitle     = dTit ?: @"";
+    entry.dropoffSubtitle  = dSub ?: @"";
+    entry.configSignature  = cfgSig;
+
+    NSString *baseFp = [self buildOrderFingerprintForFood:sniffed.isGreenFood
+                                                 priceVND:fare
+                                              pickupTitle:(pTit.length > 0 ? pTit : pSub)
+                                             dropoffTitle:(dTit.length > 0 ? dTit : dSub)];
+    entry.orderFingerprint = [NSString stringWithFormat:@"%@_%@", baseFp, sniffed.orderId];
+
+    if (sniffed.isGreenFood) {
+        if (config.rejectAllFood) {
+            entry.orderAction = OrderActionTapRejectX;
+            entry.orderReason = @"Green Food (Chế độ Hủy sạch Food) -> BẤM [X]";
+        } else if (fare <= 0) {
+            // Require valid fare to pre-evaluate Food
+            return nil;
+        } else {
+            FoodFilterEvaluation *eval = [[HanoiFoodFilterEngine sharedEngine] evaluateGreenFoodWithFare:fare
+                                                                                             pickupTitle:entry.pickupTitle
+                                                                                          pickupSubtitle:entry.pickupSubtitle
+                                                                                            dropoffTitle:entry.dropoffTitle
+                                                                                         dropoffSubtitle:entry.dropoffSubtitle
+                                                                                            sniffedOrder:sniffed
+                                                                                                  config:config
+                                                                                              retryCount:3];
+            if (!eval || eval.decision == FoodFilterDecisionWaitTextLoading) {
+                return nil;
+            }
+            entry.estimatedDistanceKm = eval.estimatedDistanceKm;
+            entry.orderAction = (eval.decision == FoodFilterDecisionAccept) ? OrderActionTapAccept : OrderActionTapRejectX;
+            entry.orderReason = eval.reasonSummary;
+        }
+    } else {
+        NSString *svcLabel = sniffed.serviceDisplayName.length > 0 ? sniffed.serviceDisplayName : @"Bike/Express";
+        if (!config.autoAcceptBike) {
+            entry.orderAction = OrderActionSkipDisabled;
+            entry.orderReason = [NSString stringWithFormat:@"%@ (Tự nhận đang TẮT)", svcLabel];
+        } else {
+            entry.orderAction = OrderActionTapAccept;
+            entry.orderReason = (fare > 0)
+                ? [NSString stringWithFormat:@"%@ (%ldđ) -> NHẬN CHUYẾN", svcLabel, (long)fare]
+                : [NSString stringWithFormat:@"%@ -> NHẬN CHUYẾN", svcLabel];
+        }
+    }
+
+    [_preEvalLock lock];
+    if (!_preEvalCache[sniffed.orderId]) {
+        if (_preEvalLRU.count >= 16) {
+            NSString *oldest = _preEvalLRU.firstObject;
+            if (oldest) {
+                [_preEvalCache removeObjectForKey:oldest];
+                [_preEvalLRU removeObjectAtIndex:0];
+            }
+        }
+        [_preEvalLRU addObject:sniffed.orderId];
+    }
+    _preEvalCache[sniffed.orderId] = entry;
+    [_preEvalLock unlock];
+
+    return entry;
+}
+
+- (void)preEvaluateSniffedOrder:(GSMSniffedOrder *)sniffedOrder
+                     withConfig:(FilterConfig *)config {
+    [self evaluateOrFetchCachedOrder:sniffedOrder withConfig:config];
+}
+
+- (ScreenAnalysis *)tryFastMicroStripAnalysisOnImage:(CIImage *)ciImage
+                                          screenSize:(CGSize)screenSize
+                                    hasBottomTealBar:(BOOL)hasBottomTealBar
+                                   hasTopWhiteHeader:(BOOL)hasTopWhiteHeader
+                                  headerIconWarmFood:(BOOL)headerIconWarmFood
+                                  headerIconCoolRide:(BOOL)headerIconCoolRide
+                                 hasLobbyPowerButton:(BOOL)hasLobbyPowerButton
+                                              config:(FilterConfig *)config {
+    if (!ciImage || !config) return nil;
+
+    // LOCK 2 (Pixel Sensor Dual-Lock):
+    // Both bottom teal bar (y ~ 640pt) AND top white card header (y ~ 52pt) must be simultaneously present!
+    // This guarantees FittedSheets.SheetViewController has finished sliding all the way up to y=52pt AND is not covered by a banner.
+    if (!hasBottomTealBar || !hasTopWhiteHeader) {
+        return nil;
+    }
+
+    // LOCK 3 (Anti-Lobby Lock):
+    // Lobby [Power] circle at (40, 455) must be covered by the order sheet.
+    if (hasLobbyPowerButton) {
+        return nil;
+    }
+
+    // LOCK 1 (Fresh Unhandled ULID Payload Lock):
+    GSMSniffedOrder *freshOrder = [[GSMOrderPayloadSniffer sharedSniffer] peekFreshUnverifiedOrderWithConfig:config maxAgeSec:7.5];
+    if (!freshOrder || freshOrder.orderId.length != 26) {
+        return nil;
+    }
+    if ([[GSMOrderPayloadSniffer sharedSniffer] isOrderIdHandled:freshOrder.orderId]) {
+        return nil;
+    }
+    if (!freshOrder.isGreenFood && !freshOrder.isBikeOrExpress) {
+        return nil;
+    }
+
+    // LOCK 4 (Chromatic Service Icon Lock at (18..54, 34..70)):
+    // Never allow a Food payload if the screen icon is pure Cool Cyan (Bike/Express), or vice-versa!
+    if (freshOrder.isGreenFood && headerIconCoolRide) {
+        return nil;
+    }
+    if (freshOrder.isBikeOrExpress && headerIconWarmFood) {
+        return nil;
+    }
+
+    PreEvaluatedOrderEntry *preEval = [self evaluateOrFetchCachedOrder:freshOrder withConfig:config];
+    if (!preEval || preEval.orderAction == OrderActionNone) {
+        return nil;
+    }
+
+    // LOCK 5 (Dual-Strip Micro-OCR ~15ms):
+    // Stitch Top Header Strip (uiY = 20..140pt, height 120pt) directly onto Bottom Button Strip (uiY = 582..H, height 85pt)
+    // with ZERO vertical gap so Vision only processes a 375x205pt image (~30% of screen area) in a single ~15ms pass!
+    CGRect extent = ciImage.extent;
+    if (extent.size.width < 100.0 || extent.size.height < 200.0 || screenSize.width < 100.0 || screenSize.height < 400.0) {
+        return nil;
+    }
+
+    CGFloat topStripMinUIY = 20.0;
+    CGFloat topStripMaxUIY = 140.0;
+    CGFloat topStripUIH    = topStripMaxUIY - topStripMinUIY; // 120pt
+    CGFloat botStripMinUIY = MAX(topStripMaxUIY + 40.0, screenSize.height - 85.0); // 582pt on 667pt screen
+    CGFloat botStripUIH    = screenSize.height - botStripMinUIY; // 85pt
+    CGFloat totalStripUIH  = topStripUIH + botStripUIH; // 205pt
+
+    CGFloat scaleY = extent.size.height / screenSize.height;
+
+    CGRect ciBotRect = CGRectMake(extent.origin.x,
+                                  extent.origin.y,
+                                  extent.size.width,
+                                  botStripUIH * scaleY);
+    CGRect ciTopRect = CGRectMake(extent.origin.x,
+                                  extent.origin.y + (screenSize.height - topStripMaxUIY) * scaleY,
+                                  extent.size.width,
+                                  topStripUIH * scaleY);
+
+    CIImage *botCrop = [[ciImage imageByCroppingToRect:ciBotRect]
+        imageByApplyingTransform:CGAffineTransformMakeTranslation(-ciBotRect.origin.x, -ciBotRect.origin.y)];
+    CIImage *topCrop = [[ciImage imageByCroppingToRect:ciTopRect]
+        imageByApplyingTransform:CGAffineTransformMakeTranslation(-ciTopRect.origin.x, -ciTopRect.origin.y + (botStripUIH * scaleY))];
+    CIImage *compositeStrip = [topCrop imageByCompositingOverImage:botCrop];
+
+    __block NSMutableArray<OCRTextBlock *> *stripBlocks = [NSMutableArray arrayWithCapacity:12];
+
+    @autoreleasepool {
+        VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
+            if (error) return;
+            for (VNRecognizedTextObservation *obs in request.results) {
+                VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+                if (!top || top.string.length == 0) continue;
+
+                CGRect bb = obs.boundingBox;
+                CGFloat uiX = bb.origin.x * screenSize.width;
+                CGFloat uiW = bb.size.width * screenSize.width;
+                CGFloat stripUIH = bb.size.height * totalStripUIH;
+                CGFloat stripUIY = (1.0 - (bb.origin.y + bb.size.height)) * totalStripUIH;
+                CGFloat stripCenterY = stripUIY + stripUIH * 0.5;
+
+                // Map stitched strip coordinate back to exact full-screen UI Y coordinate:
+                CGFloat fullUIY = (stripCenterY < topStripUIH)
+                    ? (topStripMinUIY + stripUIY)
+                    : (botStripMinUIY + (stripUIY - topStripUIH));
+                CGFloat fullCenterY = fullUIY + stripUIH * 0.5;
+
+                // Ignore iOS status bar (< 21pt)
+                if (fullCenterY < MAX(21.0, screenSize.height * 0.0315)) {
+                    continue;
+                }
+
+                OCRTextBlock *blk = [[OCRTextBlock alloc] init];
+                blk.rawText  = top.string;
+                blk.normText = NormalizeVNText(top.string);
+                blk.uiRect   = CGRectMake(uiX, fullUIY, uiW, stripUIH);
+                blk.uiCenter = CGPointMake(uiX + uiW * 0.5, fullCenterY);
+                [stripBlocks addObject:blk];
+            }
+        }];
+
+        req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+        req.usesLanguageCorrection = NO;
+        if (@available(iOS 16.0, *)) {
+            req.recognitionLanguages = @[@"vi-VN", @"en-US"];
+        } else {
+            req.recognitionLanguages = @[@"en-US"];
+        }
+
+        NSDictionary *vnOpts = _ciContext ? @{ VNImageOptionCIContext: _ciContext } : @{};
+        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:compositeStrip options:vnOpts];
+        [handler performRequests:@[req] error:nil];
+    }
+
+    if (stripBlocks.count == 0) {
+        return nil;
+    }
+
+    NSArray<OCRTextBlock *> *rowMerged = [self buildRowMergedBlocksFrom:stripBlocks];
+    NSMutableArray<OCRTextBlock *> *scanBlocks = [NSMutableArray arrayWithCapacity:(stripBlocks.count + rowMerged.count)];
+    [scanBlocks addObjectsFromArray:rowMerged];
+    [scanBlocks addObjectsFromArray:stripBlocks];
+
+    OCRTextBlock *acceptBlock  = nil;
+    OCRTextBlock *cuocPhiBlock = nil;
+
+    for (OCRTextBlock *b in scanBlocks) {
+        NSString *t = b.normText;
+
+        // Hard guard: reject immediately if any Active Trip, Lobby, or Collapsible Stop header appears in either strip!
+        if ([t containsString:@"mo nhan chuyen"] ||
+            [t containsString:@"dang truc tuyen"] ||
+            [t containsString:@"xac nhan hoan thanh"] ||
+            [t containsString:@"diem giao"] ||
+            [t containsString:@"diem nhan"] ||
+            [t containsString:@"diem don"] ||
+            [t containsString:@"diem den"] ||
+            [t containsString:@"mo rong"] ||
+            [t containsString:@"thu gon"] ||
+            [t containsString:@"da den diem"] ||
+            [t containsString:@"da den quan"] ||
+            [t containsString:@"da lay hang"] ||
+            [t containsString:@"bat dau giao"] ||
+            [t containsString:@"bat dau chuyen"] ||
+            [t containsString:@"hoan thanh chuyen"] ||
+            [t containsString:@"hoan thanh don"] ||
+            [t containsString:@"giao hang thanh cong"] ||
+            [t containsString:@"chup anh"] ||
+            [t containsString:@"huy chuyen"] ||
+            [t containsString:@"huy don"]) {
+            return nil;
+        }
+
+        if (!cuocPhiBlock && b.uiCenter.y < topStripMaxUIY) {
+            if ([t containsString:@"cuoc phi"] || [t containsString:@"cuocphi"]) {
+                cuocPhiBlock = b;
+            }
+        }
+
+        if (!acceptBlock && b.uiCenter.y > screenSize.height * 0.82) {
+            BOOL isNotLobbyOrStop = (![t containsString:@"mo nhan"] &&
+                                     ![t containsString:@"tat nhan"] &&
+                                     ![t containsString:@"ngung nhan"] &&
+                                     ![t containsString:@"da nhan"] &&
+                                     ![t containsString:@"xac nhan"] &&
+                                     ![t containsString:@"nhan hang"] &&
+                                     ![t containsString:@"da den"] &&
+                                     ![t containsString:@"bat dau"] &&
+                                     ![t containsString:@"giao hang"] &&
+                                     ![t containsString:@"lay hang"] &&
+                                     ![t containsString:@"hoan thanh"] &&
+                                     ![t containsString:@"chuyen cua toi"]);
+            if (isNotLobbyOrStop &&
+                ([t containsString:@"nhan chuyen"] ||
+                 [t containsString:@"nhanchuyen"] ||
+                 [t containsString:@"nhan chuven"] ||
+                 [t containsString:@"nhan chuy"] ||
+                 [t containsString:@"nhan don"] ||
+                 [t containsString:@"nhandon"] ||
+                 [t containsString:@"nhan ngay"] ||
+                 [t containsString:@"nhanngay"] ||
+                 [t containsString:@"chap nhan"] ||
+                 [t containsString:@"chapnhan"])) {
+                acceptBlock = b;
+            }
+        }
+    }
+
+    // Bottom button MUST explicitly read "Nhận chuyến" (never partial guess in micro-strip mode!)
+    if (!acceptBlock) {
+        return nil;
+    }
+
+    // Inspect Top Header Strip blocks (y = 20..92pt)
+    CGFloat headerMaxY = cuocPhiBlock ? MAX(68.0, cuocPhiBlock.uiCenter.y - 10.0) : 92.0;
+    NSMutableArray<OCRTextBlock *> *headerBlocks = [NSMutableArray array];
+    NSInteger stripFare = 0;
+
+    for (OCRTextBlock *b in stripBlocks) {
+        if (b.uiCenter.y >= 20.0 && b.uiCenter.y <= headerMaxY && b.uiCenter.x < screenSize.width * 0.84) {
+            [headerBlocks addObject:b];
+        }
+        if (b.uiCenter.y >= 22.0 && b.uiCenter.y <= topStripMaxUIY && b.uiCenter.x >= screenSize.width * 0.38) {
+            NSInteger f = [self extractFareVNDFromString:b.rawText];
+            if (f > stripFare) {
+                stripFare = f;
+            }
+        }
+    }
+
+    [headerBlocks sortUsingComparator:^NSComparisonResult(OCRTextBlock *a, OCRTextBlock *b) {
+        if (a.uiCenter.x < b.uiCenter.x) return NSOrderedAscending;
+        if (a.uiCenter.x > b.uiCenter.x) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+
+    NSMutableArray<NSString *> *headerNormParts = [NSMutableArray array];
+    NSMutableArray<NSString *> *headerRawParts  = [NSMutableArray array];
+    OCRTextBlock *foodAnchorBlk = nil;
+    for (OCRTextBlock *hb in headerBlocks) {
+        [headerNormParts addObject:hb.normText];
+        [headerRawParts addObject:hb.rawText];
+        if (!foodAnchorBlk && ([self headerNormMatchesFood:hb.normText] || [hb.normText containsString:@"green"])) {
+            foodAnchorBlk = hb;
+        }
+    }
+    if (!foodAnchorBlk) {
+        foodAnchorBlk = headerBlocks.lastObject;
+    }
+
+    NSString *joinedHeaderNorm = [headerNormParts componentsJoinedByString:@" "];
+    NSString *joinedHeaderRaw  = [headerRawParts componentsJoinedByString:@" "];
+    BOOL isStripHeaderFood     = [self headerNormMatchesFood:joinedHeaderNorm];
+    BOOL isStripHeaderNonFood  = (!isStripHeaderFood && [self headerNormMatchesNonFoodService:joinedHeaderNorm]);
+
+    // Require positive top-card header evidence ("Green Food"/"Bike"/"Express" OR "Cước phí" + matching chromatic icon)
+    if (freshOrder.isGreenFood) {
+        if (isStripHeaderNonFood) return nil;
+        if (!isStripHeaderFood && !(headerIconWarmFood && cuocPhiBlock != nil)) {
+            return nil;
+        }
+    } else if (freshOrder.isBikeOrExpress) {
+        if (isStripHeaderFood) return nil;
+        if (!isStripHeaderNonFood && !(headerIconCoolRide && cuocPhiBlock != nil)) {
+            return nil;
+        }
+    }
+
+    // If top strip OCR also read a fare, verify it matches one of the payload's fee fields (totalPay, totalFee, or baseFee)
+    if (stripFare >= 8000 && freshOrder.totalPayVND >= 8000) {
+        if (stripFare != freshOrder.totalPayVND &&
+            stripFare != freshOrder.totalFeeVND &&
+            stripFare != freshOrder.baseFeeVND) {
+            return nil;
+        }
+    }
+
+    // All 5 Anti-Mis-Tap Locks PASSED! Construct ScreenAnalysis in ~15ms:
+    ScreenAnalysis *res = [[ScreenAnalysis alloc] init];
+    res.offlinePowerPoint      = CGPointMake(config.manualOfflineX, config.manualOfflineY);
+    res.onlineStartPoint       = CGPointMake(config.manualOnlineX, config.manualOnlineY);
+    res.hasOrderPopup          = YES;
+    res.isGreenFood            = freshOrder.isGreenFood;
+    res.sniffedOrderId         = freshOrder.orderId;
+    res.priceVerifiedByPayload = YES;
+    res.detectedPriceVND       = freshOrder.totalPayVND;
+    res.detectedServiceTitle   = joinedHeaderRaw.length > 0 ? joinedHeaderRaw : (freshOrder.serviceDisplayName ?: @"");
+    res.pickupTitle            = preEval.pickupTitle;
+    res.pickupSubtitle         = preEval.pickupSubtitle;
+    res.dropoffTitle           = preEval.dropoffTitle;
+    res.dropoffSubtitle        = preEval.dropoffSubtitle;
+    res.estimatedDistanceKm    = preEval.estimatedDistanceKm;
+    res.orderFingerprint       = preEval.orderFingerprint;
+    res.orderAction            = preEval.orderAction;
+    res.orderReason            = [NSString stringWithFormat:@"[⚡SNIPE] %@", preEval.orderReason ?: @""];
+    res.ocrBlockCount          = stripBlocks.count;
+
+    NSMutableArray<NSString *> *previewArr = [NSMutableArray array];
+    for (NSUInteger i = 0; i < MIN((NSUInteger)6, stripBlocks.count); i++) {
+        [previewArr addObject:stripBlocks[i].rawText];
+    }
+    res.ocrSampleSummary = [previewArr componentsJoinedByString:@" | "];
+
+    if (preEval.orderAction == OrderActionTapAccept) {
+        res.orderTargetPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock
+                                                            screenSize:screenSize
+                                                                config:config];
+    } else if (preEval.orderAction == OrderActionTapRejectX) {
+        res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
+                                                         cuocPhiBlock:cuocPhiBlock
+                                                           screenSize:screenSize
+                                                               config:config];
+    }
+
+    return res;
+}
+
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize
                                 config:(FilterConfig *)config
@@ -302,6 +754,7 @@
                   hasTopWhiteHeader:NO
                  headerIconWarmFood:NO
                  headerIconCoolRide:NO
+                hasLobbyPowerButton:NO
                              config:config
                     priceRetryCount:retryCount];
 }
@@ -318,6 +771,7 @@
                   hasTopWhiteHeader:NO
                  headerIconWarmFood:NO
                  headerIconCoolRide:NO
+                hasLobbyPowerButton:NO
                              config:config
                     priceRetryCount:retryCount];
 }
@@ -331,11 +785,47 @@
                     headerIconCoolRide:(BOOL)headerIconCoolRide
                                 config:(FilterConfig *)config
                        priceRetryCount:(NSInteger)retryCount {
+    return [self analyzeScreenImage:ciImage
+                         screenSize:screenSize
+                         yellowDotY:yellowDotY
+                   hasBottomTealBar:hasBottomTealBar
+                  hasTopWhiteHeader:hasTopWhiteHeader
+                 headerIconWarmFood:headerIconWarmFood
+                 headerIconCoolRide:headerIconCoolRide
+                hasLobbyPowerButton:NO
+                             config:config
+                    priceRetryCount:retryCount];
+}
+
+- (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
+                            screenSize:(CGSize)screenSize
+                            yellowDotY:(double)yellowDotY
+                      hasBottomTealBar:(BOOL)hasBottomTealBar
+                     hasTopWhiteHeader:(BOOL)hasTopWhiteHeader
+                    headerIconWarmFood:(BOOL)headerIconWarmFood
+                    headerIconCoolRide:(BOOL)headerIconCoolRide
+                   hasLobbyPowerButton:(BOOL)hasLobbyPowerButton
+                                config:(FilterConfig *)config
+                       priceRetryCount:(NSInteger)retryCount {
     ScreenAnalysis *res = [[ScreenAnalysis alloc] init];
     res.offlinePowerPoint = CGPointMake(config.manualOfflineX, config.manualOfflineY);
     res.onlineStartPoint  = CGPointMake(config.manualOnlineX, config.manualOnlineY);
 
     if (!ciImage) return res;
+
+    // Fast Path (~15ms): Dual-Strip Micro-OCR + 5 Anti-Mis-Tap Locks when fresh payload is ready!
+    // Automatically falls back to Full-Screen OCR below in the same cycle if any of the 5 locks fails.
+    ScreenAnalysis *fastRes = [self tryFastMicroStripAnalysisOnImage:ciImage
+                                                          screenSize:screenSize
+                                                    hasBottomTealBar:hasBottomTealBar
+                                                   hasTopWhiteHeader:hasTopWhiteHeader
+                                                  headerIconWarmFood:headerIconWarmFood
+                                                  headerIconCoolRide:headerIconCoolRide
+                                                 hasLobbyPowerButton:hasLobbyPowerButton
+                                                              config:config];
+    if (fastRes) {
+        return fastRes;
+    }
 
     __block NSMutableArray<OCRTextBlock *> *blocks = [NSMutableArray array];
 
