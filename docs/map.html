@@ -516,6 +516,21 @@
       CHẠM 1 LẦN ĐỂ GIỮ SÁNG MÀN + BẬT CHUÔNG BÁO MAP
     </button>
 
+    <!-- Live Hanoi Weather & Flood Strip for Incoming Order -->
+    <div class="card" style="border-color:rgba(56,189,248,0.34);background:rgba(12,21,38,0.94);">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div>
+          <p class="card-title" style="color:#38bdf8;margin-bottom:2px;">Thời Tiết &amp; Điểm Ngập Tại Điểm Đến</p>
+          <div id="destWeatherLine" class="opt-sub" style="color:#e2e8f0;font-size:12.5px;">
+            Mở bản đồ Radar 60 tiểu vùng &amp; 45 điểm đen ngập úng Hà Nội
+          </div>
+        </div>
+        <a id="openWeatherRadarBtn" href="./weather.html" class="btn" style="background:linear-gradient(135deg,#0284c7,#0ea5e9);color:#fff;text-decoration:none;padding:9px 12px;font-size:12.5px;">
+          Soi Mưa &amp; Ngập
+        </a>
+      </div>
+    </div>
+
     <!-- Channel & Routing Config -->
     <div class="card">
       <p class="card-title">1. Kênh Kết Nối Với iPhone 8</p>
@@ -595,8 +610,10 @@
       </div>
     </div>
 
-    <div class="nav-footer">
-      <a href="./index.html">Chuyển sang Cứu Hộ Mã QR Trạm Pin Liệt Cảm Ứng</a>
+    <div class="nav-footer" style="display:flex;justify-content:center;gap:14px;flex-wrap:wrap;">
+      <a href="./weather.html">Radar Thời Tiết &amp; Điểm Ngập Hà Nội</a>
+      <span style="color:#475569;">•</span>
+      <a href="./index.html">Cứu Hộ Mã QR Trạm Pin Liệt Cảm Ứng</a>
     </div>
   </div>
 
@@ -857,18 +874,85 @@
         } catch (_) {}
       }
 
+      var destWeatherLine = document.getElementById('destWeatherLine');
+      var openWeatherRadarBtn = document.getElementById('openWeatherRadarBtn');
+
+      var KEY_FLOOD_SPOTS = [
+        { name: 'Thái Hà - Chùa Bộc', lat: 21.0098, lng: 105.8248 },
+        { name: 'Nguyễn Xiển - Hạ Đình', lat: 20.9845, lng: 105.8065 },
+        { name: 'Triều Khúc', lat: 20.9808, lng: 105.8012 },
+        { name: 'Tố Hữu - Lương Thế Vinh', lat: 20.9922, lng: 105.7862 },
+        { name: 'Dương Đình Nghệ - Keangnam', lat: 21.0185, lng: 105.7842 },
+        { name: 'Phan Văn Trường', lat: 21.0382, lng: 105.7852 },
+        { name: 'Vũ Trọng Phụng - Nguyễn Tuân', lat: 21.0012, lng: 105.8082 },
+        { name: 'Minh Khai - Chân Cầu Vĩnh Tuy', lat: 20.9978, lng: 105.8705 },
+        { name: 'Giải Phóng - Thịnh Liệt', lat: 20.9768, lng: 105.8415 },
+        { name: 'Võ Chí Công - UDIC', lat: 21.0732, lng: 105.8085 },
+        { name: 'Phạm Văn Đồng - Ecohome', lat: 21.0785, lng: 105.7858 },
+        { name: 'Hầm Chui Đại Lộ Thăng Long', lat: 21.0022, lng: 105.7215 },
+        { name: 'Cổ Linh - Long Biên', lat: 21.0245, lng: 105.8965 }
+      ];
+
+      function inspectDestWeather(item) {
+        if (!destWeatherLine || !openWeatherRadarBtn) return;
+        if (!item || !item.hasCoords || typeof item.lat !== 'number' || typeof item.lng !== 'number') {
+          openWeatherRadarBtn.href = './weather.html';
+          destWeatherLine.textContent = 'Mở bản đồ Radar 60 tiểu vùng & 45 điểm đen ngập úng Hà Nội';
+          return;
+        }
+        var qUrl = './weather.html?lat=' + item.lat.toFixed(6) + '&lng=' + item.lng.toFixed(6) + '&label=' + encodeURIComponent(item.label || 'Điểm giao');
+        openWeatherRadarBtn.href = qUrl;
+        destWeatherLine.textContent = 'Đang kiểm tra mưa & điểm ngập quanh tọa độ điểm đến...';
+
+        var nearFlood = null;
+        for (var i = 0; i < KEY_FLOOD_SPOTS.length; i++) {
+          var f = KEY_FLOOD_SPOTS[i];
+          var dLat = (f.lat - item.lat) * 111.32;
+          var dLng = (f.lng - item.lng) * 104.0;
+          var distKm = Math.sqrt(dLat * dLat + dLng * dLng);
+          if (distKm <= 0.9) {
+            nearFlood = f.name;
+            break;
+          }
+        }
+
+        var apiUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + item.lat.toFixed(4) +
+                     '&longitude=' + item.lng.toFixed(4) +
+                     '&current=temperature_2m,apparent_temperature,precipitation,rain,showers,wind_gusts_10m&timezone=Asia%2FBangkok';
+        fetch(apiUrl).then(function (r) { return r.json(); }).then(function (d) {
+          var cur = (d && d.current) || {};
+          var rain = Math.max(Number(cur.precipitation || 0), Number(cur.rain || 0), Number(cur.showers || 0));
+          var temp = Math.round(cur.temperature_2m != null ? cur.temperature_2m : 27);
+          var fl = Math.round(cur.apparent_temperature != null ? cur.apparent_temperature : 29);
+          var gust = Math.round(cur.wind_gusts_10m || 0);
+
+          if (rain > 0.2) {
+            destWeatherLine.innerHTML = '<strong style="color:#fca5a5;">ĐANG MƯA (' + rain.toFixed(1) + 'mm/h)</strong> • ' +
+              temp + '°C • Gió giật ' + gust + 'km/h' +
+              (nearFlood ? (' • <strong style="color:#fde047;">Gần rốn ngập ' + nearFlood + '!</strong>') : '');
+          } else {
+            destWeatherLine.innerHTML = '<strong style="color:#34d399;">Tạnh ráo (' + temp + '°C, mặt đường ' + fl + '°C)</strong> • Gió ' + gust + 'km/h' +
+              (nearFlood ? (' • Đi gần điểm trũng ' + nearFlood + ' (Hiện khô ráo)') : '');
+          }
+        }).catch(function () {
+          destWeatherLine.textContent = 'Bấm "Soi Mưa & Ngập" để xem Radar tại tọa độ này';
+        });
+      }
+
       function renderHero(item) {
         if (!item) {
           heroCard.className = 'hero-launch idle';
           heroTag.textContent = activeTopic ? ('ĐANG CANH KÊNH: ' + activeTopic) : 'CHƯA NHẬP MÃ KÊNH';
           heroCoords.textContent = 'Bấm "Điều hướng" trên iPhone 8';
           heroSub.textContent = 'Tọa độ vệ tinh sẽ nổ thẳng sang đây trong 0.2 giây và tự bung Google Maps dẫn đường.';
+          inspectDestWeather(null);
           return;
         }
         heroCard.className = 'hero-launch';
         heroTag.textContent = 'ĐIỂM ĐẾN MỚI LÚC ' + formatTimeStr(item.ts) + ' (' + (item.source || 'XanhSM') + ')';
         heroCoords.textContent = item.label || (item.lat + ', ' + item.lng);
         heroSub.textContent = 'Chạm bất kỳ đâu vào ô xanh này để mở lại Google Maps ngay lập tức';
+        inspectDestWeather(item);
       }
 
       function renderHistory() {
