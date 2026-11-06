@@ -209,7 +209,7 @@
   var rankingChips = document.getElementById('rankingChips');
 
   // =========================================================================
-  // 5. INITIALIZE LEAFLET MAP
+  // 5. INITIALIZE LEAFLET MAP (GOOGLE MAPS VIETNAMESE TILES — ZERO WATERMARK)
   // =========================================================================
   var map = L.map('hanoiMap', {
     center: [21.0245, 105.8292],
@@ -220,12 +220,14 @@
     attributionControl: false
   });
 
-  var darkTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    subdomains: 'abcd',
-    maxZoom: 19
+  var darkTileLayer = L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&hl=vi&x={x}&y={y}&z={z}', {
+    subdomains: ['0', '1', '2', '3'],
+    maxZoom: 19,
+    className: 'gmaps-dark-tiles'
   }).addTo(map);
 
-  var streetTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  var streetTileLayer = L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&hl=vi&x={x}&y={y}&z={z}', {
+    subdomains: ['0', '1', '2', '3'],
     maxZoom: 19
   });
 

@@ -59,6 +59,11 @@
       background: #070d17;
     }
 
+    /* Stealth Dark Filter on Google Maps Vietnamese Vector Raster Tiles (Zero Watermark) */
+    .leaflet-layer.gmaps-dark-tiles {
+      filter: invert(92%) hue-rotate(180deg) brightness(94%) contrast(93%) saturate(85%);
+    }
+
     /* Top HUD Overlay */
     .hud-top {
       position: relative;
@@ -767,6 +772,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="./weather.js?v=1"></script>
+  <script src="./weather.js?v=2"></script>
 </body>
 </html>
