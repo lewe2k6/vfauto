@@ -2,15 +2,18 @@
 #import "SharedConfig.h"
 #import "GSMOrderPayloadSniffer.h"
 #import "HanoiFoodFilterEngine.h"
+#import "OrderScanner.h"
 #import "StealthStatusPillHUD.h"
 
 @implementation FilterConfig
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _masterEnabled             = YES;
-        _autoAcceptBike            = YES;
-        _rejectAllFood             = NO;
+        _masterEnabled              = YES;
+        _autoAcceptBike             = YES;
+        _expressBlockLongChau       = YES;
+        _expressBlockedNoteKeywords = kDefaultExpressBlockedNotes;
+        _rejectAllFood              = NO;
         _minFoodPriceVND           = 25000;
         _foodBlockMallAndBasement  = YES;
         _foodBlockCrowdedChains    = YES;
@@ -403,10 +406,10 @@ int main(int argc, const char *argv[]) {
                     elapsedOfflineMs);
 
         // ---------------------------------------------------------------------
-        // TEST 11: v5.3.0 Regression Guards — Food Pause 'NGHỈ 120s' & Active Trip 'TRONG CUỐC' Pill Rendering
+        // TEST 11: v5.4.0 Regression Guards — Food Pause 'NGHỈ 120s' & Active Trip 'TRONG CUỐC' Pill Rendering
         // ---------------------------------------------------------------------
-        ASSERT_TRUE([kCurrentDaemonVersion isEqualToString:@"5.3.0"],
-                    "kCurrentDaemonVersion must be 5.3.0 (got %s)", [kCurrentDaemonVersion UTF8String]);
+        ASSERT_TRUE([kCurrentDaemonVersion isEqualToString:@"5.4.0"],
+                    "kCurrentDaemonVersion must be 5.4.0 (got %s)", [kCurrentDaemonVersion UTF8String]);
         CGImageRef imgPause = [StealthStatusPillHUD createPillBitmapWithText:@"NGHỈ 120s"
                                                                    isCompact:YES
                                                                        bgRed:0.15 bgGreen:0.10 bgBlue:0.03 bgAlpha:0.91
@@ -517,6 +520,116 @@ int main(int argc, const char *argv[]) {
         ASSERT_TRUE(deltaCands.count == 1 && [deltaCands.firstObject.orderId isEqualToString:@"01HKCAB44HEK87D5KXJCFGBMW6"],
                     "Delta-Offset Reader must read newly appended bytes at tail of WAL file in <0.05ms");
         [[NSFileManager defaultManager] removeItemAtPath:tmpWalPath error:nil];
+
+        // ---------------------------------------------------------------------
+        // TEST 14: v5.4.0 Express Long Châu Note Blocker ("TX đến Nhà Thuốc Long Châu")
+        // - 14A: Single Express order with "TX đến Nhà Thuốc Long Châu vui lòng..." in address_note -> REJECT
+        // - 14B: GroupOrder (Express 2H) where shuttle_path omits address_note and orders[1].path[0].address_note has "TX đến Nhà Thuốc Long Châu..." -> REJECT
+        // - 14C: Normal Express order where pickupName/short_address is "Nhà thuốc FPT Long Châu" but address_note is normal -> MUST NOT REJECT (0% false positive!)
+        // ---------------------------------------------------------------------
+        OrderScanner *scanner = [OrderScanner sharedScanner];
+
+        NSDictionary *longChauSingleJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMW9",
+            @"distance": @(2.80),
+            @"fee": @{ @"total_pay": @(24000) },
+            @"service": @{ @"display_name": @"Siêu tốc", @"service_type": @"EXPRESS-ONDEMAND" },
+            @"path": @[
+                @{
+                    @"type": @"PICK UP",
+                    @"name": @"Cửa hàng 125",
+                    @"short_address": @"125 Thái Hà",
+                    @"address": @"125 Thái Hà, Trung Liệt, Đống Đa, Hà Nội",
+                    @"address_note": @"TX đến Nhà Thuốc Long Châu vui lòng đọc mã đơn hàng cho dược sĩ, không ứng tiền"
+                },
+                @{
+                    @"type": @"DROP OFF",
+                    @"name": @"Anh Minh",
+                    @"short_address": @"88 Láng Hạ",
+                    @"address": @"88 Láng Hạ, Đống Đa, Hà Nội",
+                    @"address_note": @"Gọi khách trước 5 phút"
+                }
+            ]
+        };
+        GSMSniffedOrder *lcSingleOrd = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:longChauSingleJson sourceTag:@"TestLC1"];
+        NSString *matchedLC1 = [scanner matchedBlockedExpressNoteInSniffedOrder:lcSingleOrd config:cfg];
+        ASSERT_TRUE(matchedLC1 != nil && [matchedLC1 isEqualToString:@"TX đến Nhà Thuốc Long Châu"],
+                    "Single Express order with 'TX đến Nhà Thuốc Long Châu vui lòng...' in address_note must match blocked note");
+
+        NSDictionary *longChauGroupJson = @{
+            @"group_data": @{
+                @"id": @"01HKCAB44HEK87D5KXJCFGBMX0",
+                @"distance": @(5.20),
+                @"fee_data": @{ @"total_pay": @(38000) },
+                @"shuttle_path": @[
+                    @{
+                        @"type": @"PICK UP",
+                        @"short_address": @"104 Nguyễn Văn Cừ",
+                        @"address": @"104 Nguyễn Văn Cừ, Long Biên, Hà Nội"
+                    },
+                    @{
+                        @"type": @"DROP OFF",
+                        @"short_address": @"25 Lý Thường Kiệt",
+                        @"address": @"25 Lý Thường Kiệt, Hoàn Kiếm, Hà Nội"
+                    }
+                ],
+                @"orders": @[
+                    @{
+                        @"id": @"01HKCAB44HEK87D5KXJCFGBMX1",
+                        @"service": @{ @"display_name": @"Express 2H", @"service_type": @"EXPRESS-SAMEDAY" },
+                        @"path": @[
+                            @{
+                                @"type": @"PICK UP",
+                                @"short_address": @"104 Nguyễn Văn Cừ",
+                                @"address_note": @"Gửi đồ bình thường"
+                            }
+                        ]
+                    },
+                    @{
+                        @"id": @"01HKCAB44HEK87D5KXJCFGBMX2",
+                        @"service": @{ @"display_name": @"Express 2H", @"service_type": @"EXPRESS-SAMEDAY" },
+                        @"path": @[
+                            @{
+                                @"type": @"PICK UP",
+                                @"short_address": @"210 Ngọc Lâm",
+                                @"address_note": @"TX đến Nhà Thuốc Long Châu nhận túi thuốc niêm phong"
+                            }
+                        ]
+                    }
+                ]
+            }
+        };
+        GSMSniffedOrder *lcGroupOrd = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:longChauGroupJson sourceTag:@"TestLC2"];
+        NSString *matchedLC2 = [scanner matchedBlockedExpressNoteInSniffedOrder:lcGroupOrd config:cfg];
+        ASSERT_TRUE(matchedLC2 != nil && [matchedLC2 isEqualToString:@"TX đến Nhà Thuốc Long Châu"],
+                    "GroupOrder Express 2H with 'TX đến Nhà Thuốc Long Châu...' nested inside orders[1].path[0].address_note must match");
+
+        NSDictionary *normalNearLongChauJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMX3",
+            @"distance": @(3.40),
+            @"fee": @{ @"total_pay": @(26000) },
+            @"service": @{ @"display_name": @"Siêu tốc", @"service_type": @"EXPRESS-ONDEMAND" },
+            @"path": @[
+                @{
+                    @"type": @"PICK UP",
+                    @"name": @"Nhà Thuốc Long Châu - 125 Thái Hà",
+                    @"short_address": @"Nhà Thuốc FPT Long Châu",
+                    @"address": @"125 Thái Hà, Đống Đa, Hà Nội",
+                    @"address_note": @"Mình đứng ở cửa nhà thuốc, tới nơi gọi số 0912345678 nhé"
+                },
+                @{
+                    @"type": @"DROP OFF",
+                    @"name": @"Chị Lan Long Châu",
+                    @"short_address": @"45 Chùa Bộc",
+                    @"address": @"45 Chùa Bộc, Đống Đa, Hà Nội",
+                    @"address_note": @"Giao tận tay tại sảnh"
+                }
+            ]
+        };
+        GSMSniffedOrder *normalNearLCOrd = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:normalNearLongChauJson sourceTag:@"TestLC3"];
+        NSString *matchedLC3 = [scanner matchedBlockedExpressNoteInSniffedOrder:normalNearLCOrd config:cfg];
+        ASSERT_TRUE(matchedLC3 == nil,
+                    "Normal Express order with 'Nhà Thuốc Long Châu' in pickupName/short_address/dropoffName but NOT 'TX đến Nhà Thuốc Long Châu' in address_note must NEVER be falsely rejected");
 
         printf("==> Verification Suite Complete: %d passed, %d failed.\n", gPasses, gFailures);
         return (gFailures == 0) ? 0 : 1;

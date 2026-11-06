@@ -31,6 +31,8 @@
 @property (nonatomic, copy)   NSString *dropoffShortAddress;
 @property (nonatomic, copy)   NSString *dropoffFullAddress;
 @property (nonatomic, copy)   NSString *dropoffNote;
+@property (nonatomic, copy)   NSString *allNotesCombined;    // Aggregated address_note / note / instructions across all stops & sub-orders
+@property (nonatomic, copy)   NSString *allAddressesCombined;// Aggregated addresses across all stops & sub-orders (for GroupOrder coherence)
 @property (nonatomic, assign) BOOL hasDropoffCoords;
 @property (nonatomic, assign) double dropoffLat;
 @property (nonatomic, assign) double dropoffLng;

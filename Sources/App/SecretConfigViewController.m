@@ -22,6 +22,7 @@
     UISwitch *_swSmartCool;
     UISwitch *_swStatusPillHUD;
     UISwitch *_swAutoBike;
+    UISwitch *_swExpressBlockLongChau;
     UISwitch *_swRejectAllFood;
     UILabel  *_lblMinFoodPrice;
     UIView   *_priceControlRow;
@@ -544,8 +545,17 @@
 
     _swAutoBike = [self addSwitchRowTo:sec1
                                  title:@"Tự động [Nhận] Bike, Express, Express 2H..."
-                              subtitle:@"Đớp trọn mọi đơn chở khách & giao hàng (chỉ lọc riêng Green Food)"
+                              subtitle:@"Đớp trọn mọi đơn chở khách & giao hàng (chỉ lọc riêng Green Food & ghi chú cấm Express)"
                                 action:@selector(generalControlChanged)];
+
+    _swExpressBlockLongChau = [self addSwitchRowTo:sec1
+                                             title:@"Từ chối đơn Gửi Hàng có ghi chú Long Châu"
+                                          subtitle:@"Tự bấm [X] khi ghi chú (address_note) chứa cụm 'TX đến Nhà Thuốc Long Châu' (không quét tên điểm nhận/gửi, không nghỉ 2p)"
+                                            action:@selector(generalControlChanged)];
+
+    UIButton *editExpNoteBtn = [self makeStepButton:@"Sửa Cụm Ghi Chú Cấm Đơn Gửi Hàng (Express)" tag:3 action:@selector(openKeywordEditorTapped:)];
+    editExpNoteBtn.backgroundColor = [UIColor colorWithRed:0.55 green:0.22 blue:0.26 alpha:1.0];
+    [sec1 addArrangedSubview:editExpNoteBtn];
 
     _swRejectAllFood = [self addSwitchRowTo:sec1
                                       title:@"Hủy sạch 100% Green Food (Mọi giá)"
@@ -854,6 +864,7 @@
     _swSmartCool.on     = _cfg.smartCoolMode;
     _swStatusPillHUD.on = _cfg.statusPillHUDEnabled;
     _swAutoBike.on      = _cfg.autoAcceptBike;
+    _swExpressBlockLongChau.on = _cfg.expressBlockLongChau;
     _swRejectAllFood.on = _cfg.rejectAllFood;
     _swHaptic.on        = _cfg.hapticEnabled;
     _swDryRun.on        = _cfg.dryRunMode;
@@ -1078,6 +1089,7 @@
     _cfg.smartCoolMode          = _swSmartCool.isOn;
     _cfg.statusPillHUDEnabled   = _swStatusPillHUD.isOn;
     _cfg.autoAcceptBike         = _swAutoBike.isOn;
+    _cfg.expressBlockLongChau   = _swExpressBlockLongChau.isOn;
     _cfg.rejectAllFood          = _swRejectAllFood.isOn;
     _cfg.foodBlockMallAndBasement = _swBlockMall.isOn;
     _cfg.foodBlockCrowdedChains   = _swBlockChains.isOn;
@@ -1185,9 +1197,15 @@
 }
 
 - (void)openKeywordEditorTapped:(UIButton *)sender {
-    BOOL isMall = (sender.tag == 1);
+    NSInteger modeTag = sender.tag; // 1 = Mall, 2 = Chain, 3 = Express Note
     UIViewController *editorVC = [[UIViewController alloc] init];
-    editorVC.title = isMall ? @"Từ Khóa TTTM / Tầng Hầm" : @"Từ Khóa Chuỗi Quán Đông";
+    if (modeTag == 1) {
+        editorVC.title = @"Từ Khóa TTTM / Tầng Hầm";
+    } else if (modeTag == 2) {
+        editorVC.title = @"Từ Khóa Chuỗi Quán Đông";
+    } else {
+        editorVC.title = @"Ghi Chú Cấm Đơn Gửi Hàng";
+    }
     editorVC.view.backgroundColor = [UIColor colorWithRed:0.08 green:0.09 blue:0.12 alpha:1.0];
 
     UILabel *hint = [[UILabel alloc] init];
@@ -1195,7 +1213,9 @@
     hint.numberOfLines = 0;
     hint.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightRegular];
     hint.textColor = [UIColor colorWithWhite:0.75 alpha:1.0];
-    hint.text = @"Ngăn cách các từ khóa bằng dấu phẩy (,). Không phân biệt chữ hoa/thường hay có dấu/không dấu. Chỉ quét trên Điểm nhận:";
+    hint.text = (modeTag == 3)
+        ? @"Ngăn cách các cụm từ bằng dấu phẩy (,). Không phân biệt chữ hoa/thường hay có dấu/không dấu. CHỈ quét trong phần Ghi chú đơn hàng (address_note), tuyệt đối KHÔNG quét tên điểm nhận/gửi:"
+        : @"Ngăn cách các từ khóa bằng dấu phẩy (,). Không phân biệt chữ hoa/thường hay có dấu/không dấu. Chỉ quét trên Điểm nhận:";
     [editorVC.view addSubview:hint];
 
     UITextView *tv = [[UITextView alloc] init];
@@ -1206,9 +1226,13 @@
     tv.layer.cornerRadius = 10;
     tv.autocapitalizationType = UITextAutocapitalizationTypeNone;
     tv.autocorrectionType = UITextAutocorrectionTypeNo;
-    tv.text = isMall
-        ? (_cfg.foodMallKeywords ?: kDefaultFoodMallKeywords)
-        : (_cfg.foodChainKeywords ?: kDefaultFoodChainKeywords);
+    if (modeTag == 1) {
+        tv.text = _cfg.foodMallKeywords ?: kDefaultFoodMallKeywords;
+    } else if (modeTag == 2) {
+        tv.text = _cfg.foodChainKeywords ?: kDefaultFoodChainKeywords;
+    } else {
+        tv.text = _cfg.expressBlockedNoteKeywords ?: kDefaultExpressBlockedNotes;
+    }
     [editorVC.view addSubview:tv];
 
     UIButton *resetDefaultBtn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -1231,20 +1255,25 @@
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (strongSelf) {
             NSString *cleaned = [tv.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            if (isMall) {
+            if (modeTag == 1) {
                 strongSelf->_cfg.foodMallKeywords = cleaned;
-            } else {
+            } else if (modeTag == 2) {
                 strongSelf->_cfg.foodChainKeywords = cleaned;
+            } else {
+                strongSelf->_cfg.expressBlockedNoteKeywords = (cleaned.length > 0) ? cleaned : kDefaultExpressBlockedNotes;
             }
             [strongSelf->_cfg saveToDiskAndNotify:YES];
         }
         [nav dismissViewControllerAnimated:YES completion:nil];
     }];
+    NSString *defaultTextForMode = (modeTag == 1)
+        ? kDefaultFoodMallKeywords
+        : ((modeTag == 2) ? kDefaultFoodChainKeywords : kDefaultExpressBlockedNotes);
     UIAction *resetAct = [UIAction actionWithTitle:@"Mặc định gốc" image:nil identifier:nil handler:^(__kindof UIAction *action) {
-        tv.text = isMall ? kDefaultFoodMallKeywords : kDefaultFoodChainKeywords;
+        tv.text = defaultTextForMode;
     }];
     UIAction *resetBtnAct = [UIAction actionWithHandler:^(__kindof UIAction *action) {
-        tv.text = isMall ? kDefaultFoodMallKeywords : kDefaultFoodChainKeywords;
+        tv.text = defaultTextForMode;
     }];
     UIAction *hideKbAct = [UIAction actionWithTitle:@"Ẩn bàn phím" image:nil identifier:nil handler:^(__kindof UIAction *action) {
         [tv resignFirstResponder];

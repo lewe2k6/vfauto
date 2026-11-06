@@ -319,8 +319,10 @@
 
 - (NSString *)configSignatureForConfig:(FilterConfig *)config {
     if (!config) return @"nil";
-    return [NSString stringWithFormat:@"%d|%d|%ld|%d|%d|%ld|%d|%.2f|%lu|%lu",
+    return [NSString stringWithFormat:@"%d|%d|%lu|%d|%ld|%d|%d|%ld|%d|%.2f|%lu|%lu",
             config.autoAcceptBike ? 1 : 0,
+            config.expressBlockLongChau ? 1 : 0,
+            (unsigned long)(config.expressBlockedNoteKeywords.hash),
             config.rejectAllFood ? 1 : 0,
             (long)config.minFoodPriceVND,
             config.foodBlockMallAndBasement ? 1 : 0,
@@ -330,6 +332,49 @@
             config.minFoodDistanceKm,
             (unsigned long)(config.foodMallKeywords.hash),
             (unsigned long)(config.foodChainKeywords.hash)];
+}
+
+- (NSString *)matchedBlockedExpressNoteInSniffedOrder:(GSMSniffedOrder *)sniffed
+                                               config:(FilterConfig *)config {
+    if (!sniffed || !config || !config.expressBlockLongChau) return nil;
+
+    // STRICT RULE: ONLY inspect delivery note fields (allNotesCombined, pickupNote, dropoffNote).
+    // NEVER inspect pickupName, pickupShortAddress, pickupFullAddress, or dropoffName to avoid false positives!
+    NSMutableString *rawNotes = [NSMutableString stringWithCapacity:128];
+    if (sniffed.allNotesCombined.length > 0) {
+        [rawNotes appendString:sniffed.allNotesCombined];
+    }
+    if (sniffed.pickupNote.length > 0) {
+        if (rawNotes.length > 0) [rawNotes appendString:@" | "];
+        [rawNotes appendString:sniffed.pickupNote];
+    }
+    if (sniffed.dropoffNote.length > 0) {
+        if (rawNotes.length > 0) [rawNotes appendString:@" | "];
+        [rawNotes appendString:sniffed.dropoffNote];
+    }
+    if (rawNotes.length == 0) return nil;
+
+    NSString *normNotes = NormalizeVNText(rawNotes);
+    if (normNotes.length < 3) return nil;
+
+    NSString *kwSource = (config.expressBlockedNoteKeywords.length > 0)
+        ? config.expressBlockedNoteKeywords
+        : kDefaultExpressBlockedNotes;
+    NSCharacterSet *sepSet = [NSCharacterSet characterSetWithCharactersInString:@",;\n"];
+    NSArray<NSString *> *parts = [kwSource componentsSeparatedByCharactersInSet:sepSet];
+
+    for (NSString *rawPart in parts) {
+        NSString *trimmed = [rawPart stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length < 3) continue;
+        NSString *normKw = NormalizeVNText(trimmed);
+        if (normKw.length >= 3 && [normNotes containsString:normKw]) {
+            if ([normKw isEqualToString:@"tx den nha thuoc long chau"]) {
+                return @"TX đến Nhà Thuốc Long Châu";
+            }
+            return trimmed;
+        }
+    }
+    return nil;
 }
 
 - (PreEvaluatedOrderEntry *)evaluateOrFetchCachedOrder:(GSMSniffedOrder *)sniffed
@@ -397,7 +442,13 @@
         }
     } else {
         NSString *svcLabel = sniffed.serviceDisplayName.length > 0 ? sniffed.serviceDisplayName : @"Bike/Express";
-        if (!config.autoAcceptBike) {
+        NSString *blockedNoteKw = [self matchedBlockedExpressNoteInSniffedOrder:sniffed config:config];
+        if (blockedNoteKw.length > 0) {
+            entry.orderAction = OrderActionTapRejectX;
+            entry.orderReason = (fare > 0)
+                ? [NSString stringWithFormat:@"%@ (%ldđ - Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, (long)fare, blockedNoteKw]
+                : [NSString stringWithFormat:@"%@ (Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, blockedNoteKw];
+        } else if (!config.autoAcceptBike) {
             entry.orderAction = OrderActionSkipDisabled;
             entry.orderReason = [NSString stringWithFormat:@"%@ (Tự nhận đang TẮT)", svcLabel];
         } else {
@@ -1546,7 +1597,7 @@
             return res;
         }
 
-        // --- BRANCH B: CONFIRMED BIKE / EXPRESS / EXPRESS 2H (Immediate Accept) ---
+        // --- BRANCH B: CONFIRMED BIKE / EXPRESS / EXPRESS 2H ---
         // Confirmed if header/payload explicitly names Bike/Express/2H/etc., OR if passenger-only route ('điểm đến' / 'Insurance') is visible
         BOOL isConfirmedBikeByBody = (hasPassengerRoute && !hasDeliveryRoute);
         if (isHeaderNonFood || isConfirmedBikeByBody) {
@@ -1561,6 +1612,53 @@
             NSString *svcLabel = joinedHeaderRaw.length > 0
                 ? joinedHeaderRaw
                 : (isConfirmedBikeByBody ? @"Green Bike" : @"Bike/Express");
+
+            // Check Express Blocked Delivery Note ("TX đến Nhà Thuốc Long Châu") ONLY in JSON note fields!
+            if (config.expressBlockLongChau) {
+                NSString *blockedNoteKw = [self matchedBlockedExpressNoteInSniffedOrder:sniffed config:config];
+                if (blockedNoteKw.length > 0) {
+                    if (headerWasCoveredByBanner && retryCount < 4) {
+                        res.orderAction = OrderActionHeaderCovered;
+                        res.orderReason = [NSString stringWithFormat:@"%@ dính ghi chú cấm ('%@') nhưng Banner đang che nút [X] -> Vuốt hất Banner trước...",
+                                           svcLabel, blockedNoteKw];
+                        return res;
+                    }
+                    res.orderAction = OrderActionTapRejectX;
+                    res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
+                                                                     cuocPhiBlock:cuocPhiBlock
+                                                                       screenSize:screenSize
+                                                                           config:config];
+                    res.orderReason = (detectedFare > 0)
+                        ? [NSString stringWithFormat:@"%@ (%ldđ - Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, (long)detectedFare, blockedNoteKw]
+                        : [NSString stringWithFormat:@"%@ (Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, blockedNoteKw];
+                    return res;
+                }
+
+                // If this is an Express / Delivery popup (NOT passenger Bike) and JSON payload hasn't flushed at frame 0-1,
+                // wait up to 2 fast ticks (~220ms) so Cache.db-wal / fsCachedData can confirm address_note before tapping [Nhận]!
+                BOOL isExpressDeliveryOnScreen = (!isConfirmedBikeByBody &&
+                                                  (hasDeliveryRoute ||
+                                                   [joinedHeaderNorm containsString:@"express"] ||
+                                                   [joinedHeaderNorm containsString:@"expres"] ||
+                                                   [joinedHeaderNorm containsString:@"expre"] ||
+                                                   [joinedHeaderNorm containsString:@"giao hang"] ||
+                                                   [joinedHeaderNorm containsString:@"giaohang"] ||
+                                                   [joinedHeaderNorm containsString:@"gui hang"] ||
+                                                   [joinedHeaderNorm containsString:@"guihang"] ||
+                                                   [joinedHeaderNorm containsString:@"sieu toc"] ||
+                                                   [joinedHeaderNorm containsString:@"sieutoc"] ||
+                                                   [joinedHeaderNorm containsString:@"2h"] ||
+                                                   [joinedHeaderNorm containsString:@"4h"] ||
+                                                   [joinedHeaderNorm containsString:@"don ghep"] ||
+                                                   [joinedHeaderNorm containsString:@"donghep"] ||
+                                                   [joinedHeaderNorm containsString:@"chuyen ghep"] ||
+                                                   [joinedHeaderNorm containsString:@"dong gia"]));
+                if (!sniffed && isExpressDeliveryOnScreen && retryCount < 2) {
+                    res.orderAction = OrderActionWaitRetryPrice;
+                    res.orderReason = @"Đang đọc ghi chú ngầm đơn Express (Kiểm tra 'TX đến Nhà Thuốc Long Châu')...";
+                    return res;
+                }
+            }
 
             if (!config.autoAcceptBike) {
                 res.orderAction = OrderActionSkipDisabled;

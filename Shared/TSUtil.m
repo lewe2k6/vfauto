@@ -364,8 +364,10 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
 #else
         _masterEnabled            = NO;
 #endif
-        _autoAcceptBike           = YES;
-        _rejectAllFood            = NO;
+        _autoAcceptBike             = YES;
+        _expressBlockLongChau       = YES;
+        _expressBlockedNoteKeywords = kDefaultExpressBlockedNotes;
+        _rejectAllFood              = NO;
         _minFoodPriceVND          = 25000;
         _foodBlockMallAndBasement = YES;
         _foodBlockCrowdedChains   = YES;
@@ -458,6 +460,11 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
 
     if (dict[@"masterEnabled"])          cfg.masterEnabled          = [dict[@"masterEnabled"] boolValue];
     if (dict[@"autoAcceptBike"])         cfg.autoAcceptBike         = [dict[@"autoAcceptBike"] boolValue];
+    if (dict[@"expressBlockLongChau"])   cfg.expressBlockLongChau   = [dict[@"expressBlockLongChau"] boolValue];
+    if ([dict[@"expressBlockedNoteKeywords"] isKindOfClass:[NSString class]]) {
+        NSString *savedExpNotes = [dict[@"expressBlockedNoteKeywords"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        cfg.expressBlockedNoteKeywords = (savedExpNotes.length > 0) ? savedExpNotes : kDefaultExpressBlockedNotes;
+    }
     if (dict[@"rejectAllFood"])          cfg.rejectAllFood          = [dict[@"rejectAllFood"] boolValue];
     if (dict[@"minFoodPriceVND"])        cfg.minFoodPriceVND        = [dict[@"minFoodPriceVND"] integerValue];
     if (dict[@"foodBlockMallAndBasement"]) cfg.foodBlockMallAndBasement = [dict[@"foodBlockMallAndBasement"] boolValue];
@@ -579,9 +586,11 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
         self.mapRelayTopic = cleanTopic;
     }
     NSDictionary *dict = @{
-        @"masterEnabled":            @(self.masterEnabled),
-        @"autoAcceptBike":           @(self.autoAcceptBike),
-        @"rejectAllFood":            @(self.rejectAllFood),
+        @"masterEnabled":              @(self.masterEnabled),
+        @"autoAcceptBike":             @(self.autoAcceptBike),
+        @"expressBlockLongChau":       @(self.expressBlockLongChau),
+        @"expressBlockedNoteKeywords": self.expressBlockedNoteKeywords ?: kDefaultExpressBlockedNotes,
+        @"rejectAllFood":              @(self.rejectAllFood),
         @"minFoodPriceVND":          @(self.minFoodPriceVND),
         @"foodBlockMallAndBasement": @(self.foodBlockMallAndBasement),
         @"foodBlockCrowdedChains":   @(self.foodBlockCrowdedChains),

@@ -665,6 +665,18 @@ static NSString *buildPillToastSummaryForOrder(ScreenAnalysis *ana, BOOL isAccep
         svcShort = @"Car";
     }
 
+    if (!isAccept) {
+        NSString *reasonNorm = NormalizeVNText(ana.orderReason ?: @"");
+        if ([reasonNorm containsString:@"long chau"]) {
+            return (priceStr.length > 0)
+                ? [NSString stringWithFormat:@"%@ %@ Long Châu • %@", verb, svcShort, priceStr]
+                : [NSString stringWithFormat:@"%@ %@ Long Châu", verb, svcShort];
+        }
+        return (priceStr.length > 0)
+            ? [NSString stringWithFormat:@"%@ %@ (Note) • %@", verb, svcShort, priceStr]
+            : [NSString stringWithFormat:@"%@ %@ (Note)", verb, svcShort];
+    }
+
     if (priceStr.length > 0) {
         return [NSString stringWithFormat:@"%@ %@ • %@", verb, svcShort, priceStr];
     }
@@ -2023,15 +2035,14 @@ static int runWorkerMain(void) {
                                     break;
                                 }
 
-                                // Nếu vừa bấm [X] hủy Food xong mà nổ liền 1 đơn Bike/Express/Food ngon (hoặc đơn Food thứ 2 khác quán/khác giá):
-                                // DỪNG BỒI [X] NGAY LẬP TỨC để sang nhịp sau vồ đơn Bike/Express hoặc xử lý chuẩn đơn mới!
+                                // Nếu vừa bấm [X] hủy đơn (Food hoặc Express Long Châu) xong mà nổ liền 1 đơn mới ngon (hoặc đơn thứ 2 khác quán/khác giá):
+                                // DỪNG BỒI [X] NGAY LẬP TỨC để sang nhịp sau vồ đơn mới hoặc xử lý chuẩn đơn mới!
                                 if (!isAccept) {
                                     double chkEpoch = [[NSDate date] timeIntervalSince1970];
-                                    BOOL switchedToAcceptOrder = (chkAna.orderAction == OrderActionTapAccept || !chkAna.isGreenFood);
-                                    BOOL switchedToDifferentFood = (chkAna.isGreenFood &&
-                                                                    ana.orderFingerprint.length > 0 &&
-                                                                    !isSameSpinningOrderOnWeak4G(chkAna, ana.orderFingerprint, chkEpoch, NO, chkEpoch));
-                                    if (switchedToAcceptOrder || switchedToDifferentFood) {
+                                    BOOL switchedToAcceptOrder = (chkAna.orderAction == OrderActionTapAccept);
+                                    BOOL switchedToDifferentOrder = (ana.orderFingerprint.length > 0 &&
+                                                                     !isSameSpinningOrderOnWeak4G(chkAna, ana.orderFingerprint, chkEpoch, NO, chkEpoch));
+                                    if (switchedToAcceptOrder || switchedToDifferentOrder) {
                                         confirmedGone = YES;
                                         newOrderArrivedImmediately = YES;
                                         break;

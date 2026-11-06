@@ -66,6 +66,9 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 - (void)preEvaluateSniffedOrder:(GSMSniffedOrder *)sniffedOrder
                      withConfig:(FilterConfig *)config;
 
+- (NSString *)matchedBlockedExpressNoteInSniffedOrder:(GSMSniffedOrder *)sniffed
+                                               config:(FilterConfig *)config;
+
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize
                                 config:(FilterConfig *)config

@@ -7,7 +7,7 @@
 #ifdef MAP_RELAY_STANDALONE
 #define kAppBundleID            @"com.vn.utility.maprelay"
 #define kAppBundleFolderName    @"BanMapXanh.app"
-#define kCurrentDaemonVersion   @"5.3.0"
+#define kCurrentDaemonVersion   @"5.4.0"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.maprelay.plist"
@@ -28,7 +28,7 @@
 #else
 #define kAppBundleID            @"com.vn.utility.batterycheck"
 #define kAppBundleFolderName    @"PinNhietDo.app"
-#define kCurrentDaemonVersion   @"5.3.0"
+#define kCurrentDaemonVersion   @"5.4.0"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"
@@ -57,6 +57,8 @@
 #define kDefaultFoodMallKeywords @"vincom, vincommall, aeon, aeonmall, lotte mall, lottemall, lotte center, lotte centre, lotte dao tan, lotte mart, lottemart, royal city, times city, park hill, big c, bigc, go! thang long, go mall, tops market, top market, topmarket, mega market, the garden, indochina, iph, the loop, keangnam, landmark 72, tasco mall, tascomall, savico, artemis, discovery complex, trang tien plaza, ho guom plaza, mac plaza, machinco, mipec, the zei, tnr tower, sun plaza, cho dong xuan, rox center, ha noi centre, ebest, trung tam thuong mai, tttm, tang ham, ham b1, ham b2, ham b3, gian hang, kiosk, food court, goods court, tang l1, tang l2, tang l3, tang l4, tang l5, 72a nguyen trai, 458 minh khai, 191 ba trieu, 54a nguyen chi thanh, 119 tran duy hung, 222 tran duy hung, 272 vo chi cong, 54 lieu giai, 29 lieu giai, 241 xuan thuy, 27 co linh, 302 cau giay, 236 pham van dong"
 
 #define kDefaultFoodChainKeywords @"phe la, katinat, ca phe muoi chu long, phuc long, koi the, the alley, gong cha, chagee, starbucks, lotteria, kfc, jollibee, mcdonald, popeyes, texas chicken, burger king, pizza 4p, pizza hut, domino, al fresco, the pizza company, pizza home, don chicken, com tho anh nguyen, com suon cay himc, com suon dao duy tu, bami king, kaoya, yu tang, haidilao, dookki, manwah, gogi house, kichi kichi, marukame"
+
+#define kDefaultExpressBlockedNotes @"tx den nha thuoc long chau"
 
 typedef NS_ENUM(NSInteger, CoordMode) {
     CoordModeAutoOCRWithOffset = 0,
@@ -89,6 +91,8 @@ typedef NS_ENUM(NSInteger, CoordMode) {
 // 1. Master, Price Filter & Smart-Cool Toggles
 @property (nonatomic, assign) BOOL masterEnabled;
 @property (nonatomic, assign) BOOL autoAcceptBike;             // Auto-accept Bike, Express, Express 2H, etc.
+@property (nonatomic, assign) BOOL expressBlockLongChau;       // Default YES (Hard-reject [X] Express orders whose address_note matches expressBlockedNoteKeywords)
+@property (nonatomic, copy)   NSString *expressBlockedNoteKeywords; // Default "tx den nha thuoc long chau" (ONLY checks note fields, NEVER pickup/dropoff name)
 @property (nonatomic, assign) BOOL rejectAllFood;
 @property (nonatomic, assign) NSInteger minFoodPriceVND;       // Default 25000
 @property (nonatomic, assign) BOOL foodBlockMallAndBasement;   // Default YES (Hard-reject [X] TTTM / Basement / Booth on Pickup)

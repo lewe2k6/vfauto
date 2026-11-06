@@ -496,6 +496,105 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         }
     }
 
+    // 4B. Aggregate ALL Delivery Notes (address_note, note, instructions[]) and Stop Addresses across Single & GroupOrder sub-orders!
+    // CRITICAL: In MDModels.GroupOrder (Express 2H / SameDay), group_data.shuttle_path[] omits address_note;
+    // the actual "TX đến Nhà Thuốc Long Châu..." note is stored inside orders[k].path[i].address_note!
+    NSMutableArray<NSString *> *noteParts = [NSMutableArray arrayWithCapacity:6];
+    NSMutableArray<NSString *> *addrParts = [NSMutableArray arrayWithCapacity:8];
+
+    void (^appendUniqueStr)(NSMutableArray<NSString *> *, id) = ^(NSMutableArray<NSString *> *arr, id rawVal) {
+        if (![rawVal isKindOfClass:[NSString class]]) return;
+        NSString *trimmed = [(NSString *)rawVal stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length > 0 && ![arr containsObject:trimmed]) {
+            [arr addObject:trimmed];
+        }
+    };
+
+    void (^collectStopsBlock)(id) = ^(id maybeStops) {
+        if (![maybeStops isKindOfClass:[NSArray class]]) return;
+        for (id stopObj in (NSArray *)maybeStops) {
+            if (![stopObj isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary *sp = (NSDictionary *)stopObj;
+            NSString *spType = [sp[@"type"] isKindOfClass:[NSString class]] ? [sp[@"type"] uppercaseString] : @"";
+            NSString *spNote = [sp[@"address_note"] isKindOfClass:[NSString class]] ? sp[@"address_note"] : ([sp[@"note"] isKindOfClass:[NSString class]] ? sp[@"note"] : @"");
+            appendUniqueStr(noteParts, spNote);
+            appendUniqueStr(noteParts, sp[@"note"]);
+            if (spNote.length > 0) {
+                if (ord.pickupNote.length == 0 && ([spType containsString:@"PICK"] || ord.dropoffNote.length == 0)) {
+                    ord.pickupNote = spNote;
+                } else if (ord.dropoffNote.length == 0 && ([spType containsString:@"DROP"] || [spType containsString:@"END"] || [spType containsString:@"RETURN"])) {
+                    ord.dropoffNote = spNote;
+                }
+            }
+            appendUniqueStr(addrParts, sp[@"name"]);
+            appendUniqueStr(addrParts, sp[@"short_address"]);
+            appendUniqueStr(addrParts, sp[@"address"]);
+        }
+    };
+
+    void (^collectInstructionsBlock)(id) = ^(id maybeInst) {
+        if (![maybeInst isKindOfClass:[NSArray class]]) return;
+        for (id instObj in (NSArray *)maybeInst) {
+            if ([instObj isKindOfClass:[NSString class]]) {
+                appendUniqueStr(noteParts, instObj);
+            } else if ([instObj isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *instDict = (NSDictionary *)instObj;
+                appendUniqueStr(noteParts, instDict[@"note"]);
+                id contentVal = instDict[@"content"];
+                if ([contentVal isKindOfClass:[NSString class]]) {
+                    appendUniqueStr(noteParts, contentVal);
+                } else if ([contentVal isKindOfClass:[NSArray class]]) {
+                    for (id cLine in (NSArray *)contentVal) {
+                        appendUniqueStr(noteParts, cLine);
+                    }
+                }
+            }
+        }
+    };
+
+    collectStopsBlock(d[@"path"]);
+    collectStopsBlock(d[@"shuttle_path"]);
+    collectStopsBlock(d[@"shuttlePath"]);
+    if (groupDataDict) {
+        collectStopsBlock(groupDataDict[@"path"]);
+        collectStopsBlock(groupDataDict[@"shuttle_path"]);
+        collectStopsBlock(groupDataDict[@"shuttlePath"]);
+        appendUniqueStr(noteParts, groupDataDict[@"note"]);
+        appendUniqueStr(noteParts, groupDataDict[@"address_note"]);
+        collectInstructionsBlock(groupDataDict[@"instructions"]);
+    }
+    appendUniqueStr(noteParts, d[@"note"]);
+    appendUniqueStr(noteParts, d[@"address_note"]);
+    collectInstructionsBlock(d[@"instructions"]);
+
+    if ([d[@"express_detail"] isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *expDet = d[@"express_detail"];
+        appendUniqueStr(noteParts, expDet[@"note"]);
+        appendUniqueStr(noteParts, expDet[@"address_note"]);
+        collectInstructionsBlock(expDet[@"instructions"]);
+    }
+
+    if (ordersArr.count > 0) {
+        for (id subObj in ordersArr) {
+            if (![subObj isKindOfClass:[NSDictionary class]]) continue;
+            NSDictionary *subOrd = (NSDictionary *)subObj;
+            collectStopsBlock(subOrd[@"path"]);
+            collectStopsBlock(subOrd[@"shuttle_path"]);
+            appendUniqueStr(noteParts, subOrd[@"note"]);
+            appendUniqueStr(noteParts, subOrd[@"address_note"]);
+            collectInstructionsBlock(subOrd[@"instructions"]);
+            if ([subOrd[@"express_detail"] isKindOfClass:[NSDictionary class]]) {
+                NSDictionary *subExp = subOrd[@"express_detail"];
+                appendUniqueStr(noteParts, subExp[@"note"]);
+                appendUniqueStr(noteParts, subExp[@"address_note"]);
+                collectInstructionsBlock(subExp[@"instructions"]);
+            }
+        }
+    }
+
+    ord.allNotesCombined     = (noteParts.count > 0) ? [noteParts componentsJoinedByString:@" | "] : @"";
+    ord.allAddressesCombined = (addrParts.count > 0) ? [addrParts componentsJoinedByString:@" | "] : @"";
+
     // 5. Extract Order Timestamp (dispatch_time / order_time / create_time / ULID 48-bit ms timestamp)
     double ts = 0.0;
     for (NSString *tKey in @[@"dispatch_time", @"order_time", @"create_time"]) {
@@ -1086,6 +1185,9 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                                   intoCandidates:candidates];
             }
         }
+        if (candidates.count == 0) {
+            [self->_fileStatCache removeAllObjects];
+        }
     };
 
     NSString *probePath = _cachedContainerPath.length > 0 ? _cachedContainerPath : _cachedCacheDirPath;
@@ -1612,6 +1714,8 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         if ([tok isEqualToString:@"diem"] ||
             [tok isEqualToString:@"nhan"] ||
             [tok isEqualToString:@"giao"] ||
+            [tok isEqualToString:@"hang"] ||
+            [tok isEqualToString:@"khach"] ||
             [tok isEqualToString:@"don"] ||
             [tok isEqualToString:@"den"] ||
             [tok isEqualToString:@"viet"] ||
@@ -1669,14 +1773,18 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
           cand.pickupShortAddress ?: @"",
           cand.pickupName ?: @"",
           cand.pickupFullAddress ?: @"",
-          cand.pickupNote ?: @""
+          cand.pickupNote ?: @"",
+          cand.allAddressesCombined ?: @"",
+          cand.allNotesCombined ?: @""
       ]];
     BOOL dropoffCoherent = [self ocrText:dropoffText
        sharesMeaningfulTokensWithPayloadStrings:@[
            cand.dropoffShortAddress ?: @"",
            cand.dropoffName ?: @"",
            cand.dropoffFullAddress ?: @"",
-           cand.dropoffNote ?: @""
+           cand.dropoffNote ?: @"",
+           cand.allAddressesCombined ?: @"",
+           cand.allNotesCombined ?: @""
        ]];
 
     if (hasOCRPickup && !pickupCoherent) {
