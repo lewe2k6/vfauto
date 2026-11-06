@@ -1386,16 +1386,6 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         int watchedFds[5] = { -1, -1, -1, -1, -1 };
         NSString *watchedPaths[5] = { nil, nil, nil, nil, nil };
 
-        void (^closeAllWatched)(void) = ^{
-            for (int i = 0; i < 5; i++) {
-                if (watchedFds[i] >= 0) {
-                    close(watchedFds[i]);
-                    watchedFds[i] = -1;
-                }
-                watchedPaths[i] = nil;
-            }
-        };
-
         while (YES) {
             @autoreleasepool {
                 [self->_lock lock];
@@ -1405,7 +1395,13 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 
                 FilterConfig *cfg = cfgCopy();
                 if (!cfg || !cfg.masterEnabled) {
-                    closeAllWatched();
+                    for (int i = 0; i < 5; i++) {
+                        if (watchedFds[i] >= 0) {
+                            close(watchedFds[i]);
+                            watchedFds[i] = -1;
+                        }
+                        watchedPaths[i] = nil;
+                    }
                     usleep(500 * 1000);
                     continue;
                 }
@@ -1556,7 +1552,13 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
             }
         }
 
-        closeAllWatched();
+        for (int i = 0; i < 5; i++) {
+            if (watchedFds[i] >= 0) {
+                close(watchedFds[i]);
+                watchedFds[i] = -1;
+            }
+            watchedPaths[i] = nil;
+        }
         [self->_lock lock];
         if (self->_kqueueFd >= 0) {
             close(self->_kqueueFd);
