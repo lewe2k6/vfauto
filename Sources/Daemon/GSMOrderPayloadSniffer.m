@@ -234,6 +234,9 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         ? d[@"group_data"]
         : ([d[@"groupData"] isKindOfClass:[NSDictionary class]] ? d[@"groupData"] : nil);
     NSArray *ordersArr = [d[@"orders"] isKindOfClass:[NSArray class]] ? d[@"orders"] : nil;
+    if (!ordersArr && groupDataDict && [groupDataDict[@"orders"] isKindOfClass:[NSArray class]]) {
+        ordersArr = groupDataDict[@"orders"];
+    }
     NSDictionary *firstSubOrder = (ordersArr.count > 0 && [ordersArr.firstObject isKindOfClass:[NSDictionary class]])
         ? (NSDictionary *)ordersArr.firstObject
         : nil;
@@ -275,6 +278,11 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     if (!pathArr && [d[@"shuttlePath"] isKindOfClass:[NSArray class]]) {
         pathArr = d[@"shuttlePath"];
     }
+    if (!pathArr && groupDataDict) {
+        if ([groupDataDict[@"shuttle_path"] isKindOfClass:[NSArray class]]) pathArr = groupDataDict[@"shuttle_path"];
+        else if ([groupDataDict[@"shuttlePath"] isKindOfClass:[NSArray class]]) pathArr = groupDataDict[@"shuttlePath"];
+        else if ([groupDataDict[@"path"] isKindOfClass:[NSArray class]]) pathArr = groupDataDict[@"path"];
+    }
     if ((!pathArr || pathArr.count == 0) && firstSubOrder) {
         NSMutableArray *combinedSubPath = [NSMutableArray arrayWithCapacity:4];
         NSArray *firstPath = [firstSubOrder[@"path"] isKindOfClass:[NSArray class]] ? firstSubOrder[@"path"] : nil;
@@ -293,14 +301,16 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     }
 
     NSDictionary *feeDict = [d[@"fee"] isKindOfClass:[NSDictionary class]] ? d[@"fee"] : nil;
-    if (!feeDict && [d[@"fee_data"] isKindOfClass:[NSDictionary class]]) {
+    if (!feeDict && [d[@"fee_data"] isKindOfClass:[NSArray class]] == NO && [d[@"fee_data"] isKindOfClass:[NSDictionary class]]) {
         feeDict = d[@"fee_data"];
     }
     if (!feeDict && [d[@"feeData"] isKindOfClass:[NSDictionary class]]) {
         feeDict = d[@"feeData"];
     }
-    if (!feeDict && groupDataDict && [groupDataDict[@"fee"] isKindOfClass:[NSDictionary class]]) {
-        feeDict = groupDataDict[@"fee"];
+    if (!feeDict && groupDataDict) {
+        if ([groupDataDict[@"fee"] isKindOfClass:[NSDictionary class]]) feeDict = groupDataDict[@"fee"];
+        else if ([groupDataDict[@"fee_data"] isKindOfClass:[NSDictionary class]]) feeDict = groupDataDict[@"fee_data"];
+        else if ([groupDataDict[@"feeData"] isKindOfClass:[NSDictionary class]]) feeDict = groupDataDict[@"feeData"];
     }
     if (!feeDict && firstSubOrder && [firstSubOrder[@"fee"] isKindOfClass:[NSDictionary class]]) {
         feeDict = firstSubOrder[@"fee"];

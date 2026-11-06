@@ -31,7 +31,7 @@ jobs:
 
       - name: Run Native Objective-C Verification Suite (GSMOrderPayloadSniffer, HanoiFoodFilterEngine & StealthStatusPillHUD)
         run: |
-          clang -fobjc-arc -O2 -IShared -ISources/Daemon \
+          clang -fobjc-arc -O2 -Wno-deprecated-declarations -IShared -ISources/Daemon \
             scripts/verify_sniffer_suite.m \
             Sources/Daemon/GSMOrderPayloadSniffer.m \
             Sources/Daemon/HanoiFoodFilterEngine.m \
