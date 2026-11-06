@@ -100,7 +100,7 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 
 #define kHeapScanChunkBytes   (64 * 1024)
 #define kHeapScanOverlap      (8 * 1024)
-#define kMaxOrderJSONBytes    (32 * 1024)
+#define kMaxOrderJSONBytes    (48 * 1024)
 #define kMaxDiskTailReadBytes (256 * 1024)
 
 @implementation GSMOrderPayloadSniffer {
@@ -519,6 +519,11 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
             NSString *spNote = [sp[@"address_note"] isKindOfClass:[NSString class]] ? sp[@"address_note"] : ([sp[@"note"] isKindOfClass:[NSString class]] ? sp[@"note"] : @"");
             appendUniqueStr(noteParts, spNote);
             appendUniqueStr(noteParts, sp[@"note"]);
+            appendUniqueStr(noteParts, sp[@"delivery_note"]);
+            appendUniqueStr(noteParts, sp[@"sender_note"]);
+            appendUniqueStr(noteParts, sp[@"recipient_note"]);
+            appendUniqueStr(noteParts, sp[@"partner_note"]);
+            appendUniqueStr(noteParts, sp[@"remark"]);
             if (spNote.length > 0) {
                 if (ord.pickupNote.length == 0 && ([spType containsString:@"PICK"] || ord.dropoffNote.length == 0)) {
                     ord.pickupNote = spNote;
@@ -574,22 +579,34 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         collectInstructionsBlock(expDet[@"instructions"]);
     }
 
+    NSMutableArray<NSString *> *subIds = [NSMutableArray arrayWithCapacity:4];
     if (ordersArr.count > 0) {
         for (id subObj in ordersArr) {
             if (![subObj isKindOfClass:[NSDictionary class]]) continue;
             NSDictionary *subOrd = (NSDictionary *)subObj;
+            NSString *sid = [subOrd[@"id"] isKindOfClass:[NSString class]] ? subOrd[@"id"] : ([subOrd[@"order_id"] isKindOfClass:[NSString class]] ? subOrd[@"order_id"] : nil);
+            if (isValidGSMOrderULIDString(sid) && ![sid isEqualToString:orderId] && ![subIds containsObject:sid]) {
+                [subIds addObject:sid];
+            }
             collectStopsBlock(subOrd[@"path"]);
             collectStopsBlock(subOrd[@"shuttle_path"]);
             appendUniqueStr(noteParts, subOrd[@"note"]);
             appendUniqueStr(noteParts, subOrd[@"address_note"]);
+            appendUniqueStr(noteParts, subOrd[@"delivery_note"]);
+            appendUniqueStr(noteParts, subOrd[@"partner_note"]);
+            appendUniqueStr(noteParts, subOrd[@"remark"]);
             collectInstructionsBlock(subOrd[@"instructions"]);
             if ([subOrd[@"express_detail"] isKindOfClass:[NSDictionary class]]) {
                 NSDictionary *subExp = subOrd[@"express_detail"];
                 appendUniqueStr(noteParts, subExp[@"note"]);
                 appendUniqueStr(noteParts, subExp[@"address_note"]);
+                appendUniqueStr(noteParts, subExp[@"delivery_note"]);
                 collectInstructionsBlock(subExp[@"instructions"]);
             }
         }
+    }
+    if (subIds.count > 0) {
+        ord.subOrderIds = [subIds copy];
     }
 
     ord.allNotesCombined     = (noteParts.count > 0) ? [noteParts componentsJoinedByString:@" | "] : @"";
@@ -624,8 +641,9 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                                     sourceTag:(NSString *)sourceTag {
     if (!buf || bufLen < 40 || hitOffset >= bufLen) return nil;
 
-    // Walk backward from hitOffset up to 8 KB while bytes look like valid UTF-8 JSON text
-    size_t minScan = (hitOffset > 8192) ? (hitOffset - 8192) : 0;
+    // Walk backward from hitOffset up to 24 KB while bytes look like valid UTF-8 JSON text
+    // (24 KB ensures multi-order GroupOrder payloads are always captured from their outermost '{'!)
+    size_t minScan = (hitOffset > 24576) ? (hitOffset - 24576) : 0;
     size_t textStart = hitOffset;
     while (textStart > minScan && isLikelyJSONTextByte(buf[textStart - 1])) {
         textStart--;
@@ -1375,9 +1393,15 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 - (void)cacheParsedOrder:(GSMSniffedOrder *)ord {
     if (!ord || ord.orderId.length != 26) return;
     if (!_parsedOrderCache[ord.orderId]) {
-        if (_parsedOrderLRU.count >= 20) {
+        if (_parsedOrderLRU.count >= 24) {
             NSString *oldest = _parsedOrderLRU.firstObject;
             if (oldest) {
+                GSMSniffedOrder *oldOrd = _parsedOrderCache[oldest];
+                for (NSString *sid in oldOrd.subOrderIds) {
+                    if (_parsedOrderCache[sid] == oldOrd) {
+                        [_parsedOrderCache removeObjectForKey:sid];
+                    }
+                }
                 [_parsedOrderCache removeObjectForKey:oldest];
                 [_parsedOrderLRU removeObjectAtIndex:0];
             }
@@ -1385,24 +1409,45 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
         [_parsedOrderLRU addObject:ord.orderId];
     }
     _parsedOrderCache[ord.orderId] = ord;
+    for (NSString *sid in ord.subOrderIds) {
+        if (sid.length == 26) {
+            _parsedOrderCache[sid] = ord;
+        }
+    }
     _latestSniffedOrder = ord;
 }
 
-- (void)markOrderHandled:(NSString *)orderId {
-    if (!orderId || orderId.length == 0) return;
-    [_lock lock];
-    if (![_handledOrderIds containsObject:orderId]) {
-        if (_handledOrderQueue.count >= 36) {
+- (void)addSingleIdToHandledSet:(NSString *)uid {
+    if (!uid || uid.length == 0) return;
+    if (![_handledOrderIds containsObject:uid]) {
+        if (_handledOrderQueue.count >= 48) {
             NSString *oldest = _handledOrderQueue.firstObject;
             if (oldest) {
                 [_handledOrderIds removeObject:oldest];
                 [_handledOrderQueue removeObjectAtIndex:0];
             }
         }
-        [_handledOrderIds addObject:orderId];
-        [_handledOrderQueue addObject:orderId];
+        [_handledOrderIds addObject:uid];
+        [_handledOrderQueue addObject:uid];
     }
-    if ([_latestSniffedOrder.orderId isEqualToString:orderId]) {
+}
+
+- (void)markOrderHandled:(NSString *)orderId {
+    if (!orderId || orderId.length == 0) return;
+    [_lock lock];
+    GSMSniffedOrder *cached = _parsedOrderCache[orderId];
+    [self addSingleIdToHandledSet:orderId];
+    if (cached) {
+        if (cached.orderId.length == 26) {
+            [self addSingleIdToHandledSet:cached.orderId];
+        }
+        for (NSString *sid in cached.subOrderIds) {
+            [self addSingleIdToHandledSet:sid];
+        }
+    }
+    if (_latestSniffedOrder &&
+        ([_latestSniffedOrder.orderId isEqualToString:orderId] ||
+         [_latestSniffedOrder.subOrderIds containsObject:orderId])) {
         _latestSniffedOrder = nil;
     }
     [_lock unlock];
@@ -1429,11 +1474,21 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
             _latestSniffedOrder.orderId.length == 26 &&
             ![_handledOrderIds containsObject:_latestSniffedOrder.orderId]) {
             BOOL isInActivePrefs = [activeULIDs containsObject:_latestSniffedOrder.orderId];
+            if (!isInActivePrefs && _latestSniffedOrder.subOrderIds.count > 0) {
+                for (NSString *sid in _latestSniffedOrder.subOrderIds) {
+                    if ([activeULIDs containsObject:sid]) {
+                        isInActivePrefs = YES;
+                        break;
+                    }
+                }
+            }
             double orderAge = (_latestSniffedOrder.orderTimestampEpoch > 0.0) ? fabs(now - _latestSniffedOrder.orderTimestampEpoch) : fabs(now - _latestSniffedOrder.sniffedAtEpoch);
             double sniffAge = fabs(now - _latestSniffedOrder.sniffedAtEpoch);
             double effectiveAge = MIN(orderAge, sniffAge);
-            if ((isInActivePrefs || effectiveAge <= effectiveMaxAge) &&
-                (activeULIDs.count == 0 || [activeULIDs.firstObject isEqualToString:_latestSniffedOrder.orderId])) {
+            BOOL matchesFirstActive = (activeULIDs.count == 0 ||
+                                       [activeULIDs.firstObject isEqualToString:_latestSniffedOrder.orderId] ||
+                                       (_latestSniffedOrder.subOrderIds.count > 0 && [_latestSniffedOrder.subOrderIds containsObject:activeULIDs.firstObject]));
+            if ((isInActivePrefs || effectiveAge <= effectiveMaxAge) && matchesFirstActive) {
                 return _latestSniffedOrder;
             }
         }
@@ -1742,13 +1797,26 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                             nowEpoch:(double)now {
     if (!cand || cand.orderId.length != 26) return NO;
 
-    // LOCK 1: Consumed / Handled Order Blacklist
+    // LOCK 1: Consumed / Handled Order Blacklist (including GroupOrder child ULIDs)
     if ([_handledOrderIds containsObject:cand.orderId]) {
         return NO;
+    }
+    for (NSString *sid in cand.subOrderIds) {
+        if ([_handledOrderIds containsObject:sid]) {
+            return NO;
+        }
     }
 
     // LOCK 2: Freshness Window (Up to 45s so tapping a push banner from Home Screen 5-15s later works 100%!)
     BOOL isInActivePrefs = [activeULIDs containsObject:cand.orderId];
+    if (!isInActivePrefs && cand.subOrderIds.count > 0) {
+        for (NSString *sid in cand.subOrderIds) {
+            if ([activeULIDs containsObject:sid]) {
+                isInActivePrefs = YES;
+                break;
+            }
+        }
+    }
     double orderAge = (cand.orderTimestampEpoch > 0.0) ? fabs(now - cand.orderTimestampEpoch) : fabs(now - cand.sniffedAtEpoch);
     double sniffAge = fabs(now - cand.sniffedAtEpoch);
     double effectiveAge = MIN(orderAge, sniffAge);
@@ -1833,7 +1901,9 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
 
         // Fast Check 0: Does our in-memory cached order already match?
         if (_latestSniffedOrder &&
-            (activeULIDs.count == 0 || [activeULIDs.firstObject isEqualToString:_latestSniffedOrder.orderId])) {
+            (activeULIDs.count == 0 ||
+             [activeULIDs.firstObject isEqualToString:_latestSniffedOrder.orderId] ||
+             (_latestSniffedOrder.subOrderIds.count > 0 && [_latestSniffedOrder.subOrderIds containsObject:activeULIDs.firstObject]))) {
             if ([self candidateOrder:_latestSniffedOrder
                  passesThreeLocksWithActiveULIDs:activeULIDs
                                      ocrPriceVND:ocrPriceVND

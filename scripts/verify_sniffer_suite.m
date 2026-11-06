@@ -603,6 +603,15 @@ int main(int argc, const char *argv[]) {
         NSString *matchedLC2 = [scanner matchedBlockedExpressNoteInSniffedOrder:lcGroupOrd config:cfg];
         ASSERT_TRUE(matchedLC2 != nil && [matchedLC2 isEqualToString:@"TX đến Nhà Thuốc Long Châu"],
                     "GroupOrder Express 2H with 'TX đến Nhà Thuốc Long Châu...' nested inside orders[1].path[0].address_note must match");
+        ASSERT_TRUE(lcGroupOrd.subOrderIds.count == 2 &&
+                    [lcGroupOrd.subOrderIds containsObject:@"01HKCAB44HEK87D5KXJCFGBMX1"] &&
+                    [lcGroupOrd.subOrderIds containsObject:@"01HKCAB44HEK87D5KXJCFGBMX2"],
+                    "GroupOrder must extract child subOrderIds so child ULIDs are indexed and blacklisted together");
+        [sniffer cacheParsedOrder:lcGroupOrd];
+        [sniffer markOrderHandled:lcGroupOrd.orderId];
+        ASSERT_TRUE([sniffer isOrderIdHandled:@"01HKCAB44HEK87D5KXJCFGBMX1"] &&
+                    [sniffer isOrderIdHandled:@"01HKCAB44HEK87D5KXJCFGBMX2"],
+                    "Marking a GroupOrder handled must also blacklist all of its child subOrderIds");
 
         NSDictionary *normalNearLongChauJson = @{
             @"id": @"01HKCAB44HEK87D5KXJCFGBMX3",

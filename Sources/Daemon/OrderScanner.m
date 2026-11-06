@@ -56,6 +56,9 @@
     NSLock *_preEvalLock;
     NSMutableDictionary<NSString *, PreEvaluatedOrderEntry *> *_preEvalCache;
     NSMutableArray<NSString *> *_preEvalLRU;
+    NSString *_cachedExpressNoteKwSource;
+    NSArray<NSString *> *_cachedExpressNoteKwNorms;
+    NSArray<NSString *> *_cachedExpressNoteKwDisplays;
 }
 
 + (instancetype)sharedScanner {
@@ -360,18 +363,46 @@
     NSString *kwSource = (config.expressBlockedNoteKeywords.length > 0)
         ? config.expressBlockedNoteKeywords
         : kDefaultExpressBlockedNotes;
-    NSCharacterSet *sepSet = [NSCharacterSet characterSetWithCharactersInString:@",;\n"];
-    NSArray<NSString *> *parts = [kwSource componentsSeparatedByCharactersInSet:sepSet];
 
-    for (NSString *rawPart in parts) {
-        NSString *trimmed = [rawPart stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (trimmed.length < 3) continue;
-        NSString *normKw = NormalizeVNText(trimmed);
-        if (normKw.length >= 3 && [normNotes containsString:normKw]) {
-            if ([normKw isEqualToString:@"tx den nha thuoc long chau"]) {
-                return @"TX đến Nhà Thuốc Long Châu";
+    NSArray<NSString *> *normList = nil;
+    NSArray<NSString *> *dispList = nil;
+    [_preEvalLock lock];
+    if (_cachedExpressNoteKwSource && [_cachedExpressNoteKwSource isEqualToString:kwSource] &&
+        _cachedExpressNoteKwNorms && _cachedExpressNoteKwDisplays) {
+        normList = _cachedExpressNoteKwNorms;
+        dispList = _cachedExpressNoteKwDisplays;
+        [_preEvalLock unlock];
+    } else {
+        [_preEvalLock unlock];
+        NSCharacterSet *sepSet = [NSCharacterSet characterSetWithCharactersInString:@",;\n"];
+        NSArray<NSString *> *parts = [kwSource componentsSeparatedByCharactersInSet:sepSet];
+        NSMutableArray<NSString *> *builtNorms = [NSMutableArray arrayWithCapacity:parts.count];
+        NSMutableArray<NSString *> *builtDisps = [NSMutableArray arrayWithCapacity:parts.count];
+        for (NSString *rawPart in parts) {
+            NSString *trimmed = [rawPart stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (trimmed.length < 3) continue;
+            NSString *normKw = NormalizeVNText(trimmed);
+            if (normKw.length >= 3) {
+                [builtNorms addObject:normKw];
+                NSString *disp = [normKw isEqualToString:@"tx den nha thuoc long chau"]
+                    ? @"TX đến Nhà Thuốc Long Châu"
+                    : trimmed;
+                [builtDisps addObject:disp];
             }
-            return trimmed;
+        }
+        normList = [builtNorms copy];
+        dispList = [builtDisps copy];
+        [_preEvalLock lock];
+        _cachedExpressNoteKwSource   = [kwSource copy];
+        _cachedExpressNoteKwNorms    = normList;
+        _cachedExpressNoteKwDisplays = dispList;
+        [_preEvalLock unlock];
+    }
+
+    NSUInteger count = MIN(normList.count, dispList.count);
+    for (NSUInteger i = 0; i < count; i++) {
+        if ([normNotes containsString:normList[i]]) {
+            return dispList[i];
         }
     }
     return nil;
@@ -719,12 +750,23 @@
     for (OCRTextBlock *hb in headerBlocks) {
         [headerNormParts addObject:hb.normText];
         [headerRawParts addObject:hb.rawText];
-        if (!foodAnchorBlk && ([self headerNormMatchesFood:hb.normText] || [hb.normText containsString:@"green"])) {
+        if (!foodAnchorBlk &&
+            ([self headerNormMatchesFood:hb.normText] ||
+             [self headerNormMatchesNonFoodService:hb.normText] ||
+             [hb.normText containsString:@"green"])) {
             foodAnchorBlk = hb;
         }
     }
     if (!foodAnchorBlk) {
-        foodAnchorBlk = headerBlocks.lastObject;
+        for (OCRTextBlock *hb in headerBlocks) {
+            if (hb.uiCenter.y >= 32.0 && hb.uiCenter.y <= 68.0) {
+                foodAnchorBlk = hb;
+                break;
+            }
+        }
+        if (!foodAnchorBlk) {
+            foodAnchorBlk = headerBlocks.firstObject ?: headerBlocks.lastObject;
+        }
     }
 
     NSString *joinedHeaderNorm = [headerNormParts componentsJoinedByString:@" "];
@@ -1284,12 +1326,23 @@
     for (OCRTextBlock *hb in headerBlocks) {
         [headerNormParts addObject:hb.normText];
         [headerRawParts addObject:hb.rawText];
-        if (!foodAnchorBlk && ([self headerNormMatchesFood:hb.normText] || [hb.normText containsString:@"green"])) {
+        if (!foodAnchorBlk &&
+            ([self headerNormMatchesFood:hb.normText] ||
+             [self headerNormMatchesNonFoodService:hb.normText] ||
+             [hb.normText containsString:@"green"])) {
             foodAnchorBlk = hb;
         }
     }
     if (!foodAnchorBlk) {
-        foodAnchorBlk = headerBlocks.lastObject;
+        for (OCRTextBlock *hb in headerBlocks) {
+            if (hb.uiCenter.y >= 32.0 && hb.uiCenter.y <= 68.0) {
+                foodAnchorBlk = hb;
+                break;
+            }
+        }
+        if (!foodAnchorBlk) {
+            foodAnchorBlk = headerBlocks.firstObject ?: headerBlocks.lastObject;
+        }
     }
     NSString *joinedHeaderNorm = [headerNormParts componentsJoinedByString:@" "];
     NSString *joinedHeaderRaw  = [headerRawParts componentsJoinedByString:@" "];
