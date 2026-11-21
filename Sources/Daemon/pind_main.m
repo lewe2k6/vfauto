@@ -657,7 +657,9 @@ static NSString *buildPillToastSummaryForOrder(ScreenAnalysis *ana, BOOL isAccep
 
     NSString *svcTitle = (ana.detectedServiceTitle ?: @"").lowercaseString;
     NSString *svcShort = @"Bike";
-    if ([svcTitle containsString:@"2h"] || [svcTitle containsString:@"2 h"]) {
+    if ([svcTitle containsString:@"1h"] || [svcTitle containsString:@"1 h"]) {
+        svcShort = @"Exp 1H";
+    } else if ([svcTitle containsString:@"2h"] || [svcTitle containsString:@"2 h"]) {
         svcShort = @"Exp 2H";
     } else if ([svcTitle containsString:@"express"] || [svcTitle containsString:@"giao"]) {
         svcShort = @"Express";

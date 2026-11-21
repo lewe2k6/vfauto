@@ -94,7 +94,7 @@
                                                                      options:0
                                                                        error:nil];
         _nonFoodHeaderRegex = [NSRegularExpression regularExpressionWithPattern:
-            @"\\b(green\\s*bike|greenbike|xanh\\s*sm\\s*bike|xanh\\s*bike|sm\\s*bike|bike\\s*plus|bike|b1ke|blke|tiet\\s*kiem|tietkiem|uu\\s*tien|uutien|cho\\s*khach|xe\\s*may|green\\s*express|greenexpress|xanh\\s*express|sm\\s*express|express|expres|expre|2h|4h|sieu\\s*toc|sieutoc|giao\\s*hang|giaohang|gui\\s*hang|guihang|dong\\s*gia|donggia|don\\s*ghep|donghep|chuyen\\s*ghep|chuyenghep|green\\s*car|greencar|taxi)\\b"
+            @"\\b(green\\s*bike|greenbike|xanh\\s*sm\\s*bike|xanh\\s*bike|sm\\s*bike|bike\\s*plus|bike|b1ke|blke|tiet\\s*kiem|tietkiem|uu\\s*tien|uutien|cho\\s*khach|xe\\s*may|green\\s*express|greenexpress|xanh\\s*express|sm\\s*express|express|expres|expre|1h|2h|4h|sieu\\s*toc|sieutoc|giao\\s*hang|giaohang|gui\\s*hang|guihang|dong\\s*gia|donggia|don\\s*ghep|donghep|chuyen\\s*ghep|chuyenghep|green\\s*car|greencar|taxi)\\b"
                                                                         options:0
                                                                           error:nil];
         _foodPickupHintRegex = [NSRegularExpression regularExpressionWithPattern:
@@ -1682,6 +1682,7 @@
                                                    [joinedHeaderNorm containsString:@"guihang"] ||
                                                    [joinedHeaderNorm containsString:@"sieu toc"] ||
                                                    [joinedHeaderNorm containsString:@"sieutoc"] ||
+                                                   [joinedHeaderNorm containsString:@"1h"] ||
                                                    [joinedHeaderNorm containsString:@"2h"] ||
                                                    [joinedHeaderNorm containsString:@"4h"] ||
                                                    [joinedHeaderNorm containsString:@"don ghep"] ||

@@ -640,6 +640,51 @@ int main(int argc, const char *argv[]) {
         ASSERT_TRUE(matchedLC3 == nil,
                     "Normal Express order with 'Nhà Thuốc Long Châu' in pickupName/short_address/dropoffName but NOT 'TX đến Nhà Thuốc Long Châu' in address_note must NEVER be falsely rejected");
 
+        // ---------------------------------------------------------------------
+        // TEST 14: Green Express 1H (Single + Long Chau Note)
+        // ---------------------------------------------------------------------
+        NSDictionary *express1hJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMX4",
+            @"distance": @(4.20),
+            @"fee": @{ @"total_pay": @(31000) },
+            @"service": @{ @"display_name": @"Green Express 1h", @"service_type": @"EXPRESS-1H" },
+            @"path": @[
+                @{
+                    @"type": @"PICK UP",
+                    @"short_address": @"88 Trần Duy Hưng",
+                    @"address_note": @"Lấy gói hàng tại lễ tân"
+                },
+                @{
+                    @"type": @"DROP OFF",
+                    @"short_address": @"120 Cầu Giấy",
+                    @"address_note": @"Giao trong 1 giờ"
+                }
+            ]
+        };
+        GSMSniffedOrder *exp1hOrd = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:express1hJson sourceTag:@"TestExp1H"];
+        ASSERT_TRUE(exp1hOrd != nil && exp1hOrd.isBikeOrExpress && !exp1hOrd.isGreenFood && exp1hOrd.totalPayVND == 31000,
+                    "Green Express 1h must classify as isBikeOrExpress=YES, isGreenFood=NO, fare=31000");
+        ASSERT_TRUE([scanner matchedBlockedExpressNoteInSniffedOrder:exp1hOrd config:cfg] == nil,
+                    "Normal Green Express 1h must not trigger Long Chau block");
+
+        NSDictionary *express1hLCJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMX5",
+            @"distance": @(3.10),
+            @"fee": @{ @"total_pay": @(24000) },
+            @"service": @{ @"display_name": @"Green Express 1h", @"service_type": @"EXPRESS-1H" },
+            @"path": @[
+                @{
+                    @"type": @"PICK UP",
+                    @"short_address": @"125 Thái Hà",
+                    @"address_note": @"TX đến Nhà Thuốc Long Châu lấy đơn thuốc 1h"
+                }
+            ]
+        };
+        GSMSniffedOrder *exp1hLCOrd = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:express1hLCJson sourceTag:@"TestExp1HLC"];
+        NSString *matched1hLC = [scanner matchedBlockedExpressNoteInSniffedOrder:exp1hLCOrd config:cfg];
+        ASSERT_TRUE(matched1hLC != nil && [matched1hLC isEqualToString:@"TX đến Nhà Thuốc Long Châu"],
+                    "Green Express 1h with 'TX đến Nhà Thuốc Long Châu' in address_note must be rejected");
+
         printf("==> Verification Suite Complete: %d passed, %d failed.\n", gPasses, gFailures);
         return (gFailures == 0) ? 0 : 1;
     }
