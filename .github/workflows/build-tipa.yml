@@ -7,6 +7,8 @@ on:
       - "dist/**"
       - "docs/**"
       - ".github/workflows/deploy-pages.yml"
+      - "ZygiskTikTokWide/**"
+      - ".github/workflows/build-zygisk-tiktok-wide.yml"
   workflow_dispatch:
 
 permissions:

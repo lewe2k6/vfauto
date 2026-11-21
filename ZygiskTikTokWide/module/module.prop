@@ -1,0 +1,6 @@
+id=tiktok_wide_ndk
+name=TikTok Wide 0.6x NDK (Mi 9 SE)
+version=v1.0
+versionCode=1
+author=c4
+description=Zygisk native hook redirecting TikTok libcamera2ndk.so camera 0 to Ultra-Wide 0.6x (ID 3)
