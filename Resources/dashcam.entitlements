@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- C:/Users/Acer/.gemini/antigravity/scratch/pin-nhiet-do-ts/Resources/dashcam.entitlements -->
+<!-- Context: iOS Entitlements / ldid signing for iPhone 6 iOS 12 (Checkra1n/AppSync & Sideload) -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.developer.networking.wifi-info</key>
+    <true/>
+</dict>
+</plist>

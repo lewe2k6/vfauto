@@ -51,16 +51,18 @@ jobs:
             build/PinNhietDo_TS.ipa
             build/BanMap_TS.tipa
             build/BanMap_TS.ipa
+            build/CoolDash6.ipa
 
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v5.4.0-ts
-          name: "Pin & Nhiệt Độ v5.4.0 (Tự Động Từ Chối Đơn Gửi Hàng Long Châu 'TX đến Nhà Thuốc Long Châu' + Snipe kqueue 2 Pha)"
-          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.4.0 (Tự động bấm [X] từ chối đơn gửi hàng Express đơn lẻ & đơn ghép 2H có ghi chú chứa cụm 'TX đến Nhà Thuốc Long Châu' trong address_note mà không quét tên điểm nhận/gửi tránh nhầm lẫn, giữ nguyên trực tuyến không tắt app nghỉ 2 phút + Snipe kqueue 2 Pha + Dual-Strip Micro-OCR 15ms); (2) BanMap_TS.tipa / .ipa v1.0."
+          name: "Pin & Nhiệt Độ v5.4.0 + CoolDash6 v1.0 (Camera Hành Trình iPhone 6 iOS 12)"
+          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.4.0 (Tự động từ chối Express Long Châu + Snipe kqueue 2 Pha + Dual-Strip Micro-OCR 15ms); (2) BanMap_TS.tipa / .ipa v1.0; (3) CoolDash6.ipa v1.0 (Camera hành trình H.264 phần cứng siêu nhẹ mát máy cho iPhone 6 iOS 12, vòng lặp 30GB+6GB Locked, Blackout Mode 0% GPU, phân biệt Wi-Fi Nhà vs Hotspot Android 3.5GB/ngày, đồng bộ Telegram Zero-RAM)."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa
             build/PinNhietDo_TS.ipa
             build/BanMap_TS.tipa
             build/BanMap_TS.ipa
+            build/CoolDash6.ipa
