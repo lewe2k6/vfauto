@@ -36,13 +36,15 @@ jobs:
 
           git clone --depth=1 https://github.com/jmpews/Dobby.git /tmp/Dobby
           cmake -S /tmp/Dobby -B /tmp/Dobby/build-arm64 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk_dir }}/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
             -DDOBBY_BUILD_EXAMPLE=OFF \
             -DDOBBY_BUILD_TEST=OFF \
-            -DDOBBY_DEBUG=OFF
+            -DDOBBY_DEBUG=OFF \
+            -DPlugin.SymbolResolver=OFF
           cmake --build /tmp/Dobby/build-arm64 --target dobby_static -j$(nproc)
           cp /tmp/Dobby/include/dobby.h ZygiskTikTokWide/jni/dobby.h
           ls -lh /tmp/Dobby/build-arm64/libdobby.a
