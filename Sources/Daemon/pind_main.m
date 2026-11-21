@@ -51,9 +51,11 @@ typedef int (*posix_spawnattr_setjetsam_ext_f)(posix_spawnattr_t *attr, short fl
 #define MEMSTAT_CMD_SET_IS_FREEZABLE_V2  18
 #define MEMSTAT_FLAG_SET_PRIORITY_ASSERT 0x1
 #define POSIX_SPAWN_JETSAM_SET_FLAG      0x0001
-#define JETSAM_PRIO_CRITICAL             19
-#define JETSAM_PRIO_IMPORTANT            18
-#define JETSAM_PRIO_WORKER_SAFE          18
+// XNU bsd/sys/kern_memorystatus.h (iOS 15/16 uses 0..210 scale: BACKGROUND=30, FOREGROUND=100, HOME=160, IMPORTANT=180, CRITICAL=190!)
+// NEVER use 18/19 (legacy iOS 7 scale) — on iOS 15/16, 18/19 sits BELOW BACKGROUND (30) and gets killed FIRST on lock screen!
+#define JETSAM_PRIO_CRITICAL             190
+#define JETSAM_PRIO_IMPORTANT            170
+#define JETSAM_PRIO_WORKER_SAFE          170
 
 #define kExitCodeProactiveRAMTrim        42
 
@@ -451,8 +453,8 @@ static int runWatchdogMain(const char *execPath) {
 
                     double nowWall = [[NSDate date] timeIntervalSince1970];
                     if (nowWall - lastLoopWallEpoch > 3.0) {
-                        // Device just woke up from iOS deep sleep -> grant Worker 14s grace to refresh heartbeat
-                        wakeGraceUntilEpoch = nowWall + 14.0;
+                        // Device just woke up from iOS deep sleep -> grant Worker 25s grace to refresh heartbeat
+                        wakeGraceUntilEpoch = nowWall + 25.0;
                     }
                     lastLoopWallEpoch = nowWall;
 
@@ -479,7 +481,7 @@ static int runWatchdogMain(const char *execPath) {
                                     break;
                                 }
                             }
-                            if (nowWall > wakeGraceUntilEpoch) {
+                            if (nowWall > wakeGraceUntilEpoch && !isDeviceScreenLocked()) {
                                 RuntimeDaemonState *st = [RuntimeDaemonState loadState];
                                 if (st.workerHeartbeatEpoch > 0.0 && (nowWall - st.workerHeartbeatEpoch) > 35.0) {
                                     appendDaemonLog(@"[WATCHDOG] Worker phản hồi chậm >35s -> Tự làm mới tiến trình tức thì!");
@@ -1539,6 +1541,8 @@ static int runWorkerMain(void) {
                     lockedSinceEpoch = 0.0;
                     resetFrontmostAppMonitors();
                     [engine invalidateAnalyzedBaseline];
+                    // Rebuild CAContext cleanly on unlock in case backboardd/CARenderServer invalidated remote contexts during display sleep
+                    [[StealthStatusPillHUD sharedHUD] invalidateAndResetContext];
                     turboUntilEpoch = now + 3.0;
                     malloc_zone_pressure_relief(NULL, 0);
                     lastPressureReliefEpoch = now;

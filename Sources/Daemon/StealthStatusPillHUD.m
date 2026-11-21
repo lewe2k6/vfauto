@@ -221,12 +221,61 @@
 
 #pragma mark - CAContext WindowServer Setup (100% Read-Only Touch-Passthrough)
 
+- (BOOL)isCAContextStillValid:(id)ctx {
+    if (!ctx) return NO;
+    @try {
+        SEL validSel = NSSelectorFromString(@"valid");
+        if ([ctx respondsToSelector:validSel]) {
+            BOOL v = ((BOOL (*)(id, SEL))objc_msgSend)(ctx, validSel);
+            if (!v) return NO;
+        }
+        SEL idSel = NSSelectorFromString(@"contextId");
+        if ([ctx respondsToSelector:idSel]) {
+            uint32_t cid = ((uint32_t (*)(id, SEL))objc_msgSend)(ctx, idSel);
+            if (cid == 0) return NO;
+        }
+        return YES;
+    } @catch (NSException *ex) {
+        return NO;
+    }
+}
+
+- (void)invalidateAndResetContext {
+    @try {
+        if (_pillLayer) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            _pillLayer.hidden = YES;
+            _pillLayer.contents = nil;
+            [CATransaction commit];
+            [CATransaction flush];
+        }
+        if (_caContext) {
+            SEL invSel = NSSelectorFromString(@"invalidate");
+            if ([_caContext respondsToSelector:invSel]) {
+                ((void (*)(id, SEL))objc_msgSend)(_caContext, invSel);
+            }
+        }
+    } @catch (NSException *ex) {}
+    _caContext            = nil;
+    _rootLayer            = nil;
+    _pillLayer            = nil;
+    _contextInitialized   = NO;
+    _lastContextInitEpoch = 0.0;
+    _isCurrentlyHidden    = YES;
+    _lastRenderedKey      = @"";
+}
+
 - (BOOL)ensureCAContextReady {
     double now = [[NSDate date] timeIntervalSince1970];
     if (_contextInitialized && _caContext && _rootLayer && _pillLayer) {
-        return YES;
+        if ([self isCAContextStillValid:_caContext]) {
+            return YES;
+        }
+        // CARenderServer/backboardd invalidated our remote context during display sleep -> recreate immediately!
+        [self invalidateAndResetContext];
     }
-    if ((now - _lastContextInitEpoch) < 2.0) {
+    if ((now - _lastContextInitEpoch) < 1.5) {
         return NO;
     }
     _lastContextInitEpoch = now;

@@ -36,6 +36,9 @@ typedef NS_ENUM(NSInteger, StealthPillMode) {
 // Hide pill immediately (e.g. when screen locks or daemon stops)
 - (void)hideImmediately;
 
+// Tear down & force-recreate remote CAContext (e.g. right after display wake/unlock)
+- (void)invalidateAndResetContext;
+
 // Pure CoreGraphics + CoreText bitmap renderer (exposed for native unit test verification)
 + (CGImageRef)createPillBitmapWithText:(NSString *)text
                                isCompact:(BOOL)isCompact
