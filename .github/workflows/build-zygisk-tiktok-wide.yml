@@ -29,34 +29,24 @@ jobs:
           echo "NDK_DIR=$NDK_DIR"
           echo "ndk_dir=$NDK_DIR" >> $GITHUB_OUTPUT
 
-      - name: Fetch Official Zygisk API v4 Header & Build Dobby (arm64-v8a)
+      - name: Fetch Official Zygisk API v4 Header & And64InlineHook
         run: |
-          curl -sSL https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp \
+          curl -fsSL https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp \
             -o ZygiskTikTokWide/jni/zygisk.hpp
-
-          git clone --depth=1 https://github.com/jmpews/Dobby.git /tmp/Dobby
-          cmake -S /tmp/Dobby -B /tmp/Dobby/build-arm64 \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk_dir }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-29 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DDOBBY_BUILD_EXAMPLE=OFF \
-            -DDOBBY_BUILD_TEST=OFF \
-            -DDOBBY_DEBUG=OFF \
-            -DPlugin.SymbolResolver=OFF
-          cmake --build /tmp/Dobby/build-arm64 --target dobby_static -j$(nproc)
-          cp /tmp/Dobby/include/dobby.h ZygiskTikTokWide/jni/dobby.h
-          ls -lh /tmp/Dobby/build-arm64/libdobby.a
+          curl -fsSL https://raw.githubusercontent.com/Rprop/And64InlineHook/master/And64InlineHook.hpp \
+            -o ZygiskTikTokWide/jni/And64InlineHook.hpp
+          curl -fsSL https://raw.githubusercontent.com/Rprop/And64InlineHook/master/And64InlineHook.cpp \
+            -o ZygiskTikTokWide/jni/And64InlineHook.cpp
 
       - name: Compile Zygisk Native Module (arm64-v8a.so)
         run: |
           CXX="${{ steps.ndk.outputs.ndk_dir }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++"
           mkdir -p ZygiskTikTokWide/module/zygisk
           "$CXX" -std=c++17 -O2 -fPIC -shared -fvisibility=hidden -fvisibility-inlines-hidden \
+            -Wno-unused-function -Wno-deprecated-declarations \
             -IZygiskTikTokWide/jni \
             ZygiskTikTokWide/jni/main.cpp \
-            /tmp/Dobby/build-arm64/libdobby.a \
+            ZygiskTikTokWide/jni/And64InlineHook.cpp \
             -llog -ldl \
             -Wl,--gc-sections,-s \
             -o ZygiskTikTokWide/module/zygisk/arm64-v8a.so

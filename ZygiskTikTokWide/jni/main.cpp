@@ -8,7 +8,7 @@
 #include <string>
 #include <unistd.h>
 #include "zygisk.hpp"
-#include "dobby.h"
+#include "And64InlineHook.hpp"
 
 #define LOG_TAG "TikTokWideNDK"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -72,15 +72,15 @@ static void installCameraNdkHooks() {
     void *symChars = dlsym(handle, "ACameraManager_getCameraCharacteristics");
 
     if (symOpen) {
-        int r = DobbyHook(symOpen, (dobby_dummy_func_t)hooked_openCamera, (dobby_dummy_func_t *)&orig_openCamera);
-        LOGI("DobbyHook ACameraManager_openCamera (%p) -> ret=%d", symOpen, r);
+        A64HookFunction(symOpen, (void *)hooked_openCamera, (void **)&orig_openCamera);
+        LOGI("A64HookFunction ACameraManager_openCamera (%p) -> orig=%p", symOpen, (void *)orig_openCamera);
     } else {
         LOGE("dlsym ACameraManager_openCamera not found");
     }
 
     if (symChars) {
-        int r = DobbyHook(symChars, (dobby_dummy_func_t)hooked_getCameraCharacteristics, (dobby_dummy_func_t *)&orig_getCameraCharacteristics);
-        LOGI("DobbyHook ACameraManager_getCameraCharacteristics (%p) -> ret=%d", symChars, r);
+        A64HookFunction(symChars, (void *)hooked_getCameraCharacteristics, (void **)&orig_getCameraCharacteristics);
+        LOGI("A64HookFunction ACameraManager_getCameraCharacteristics (%p) -> orig=%p", symChars, (void *)orig_getCameraCharacteristics);
     } else {
         LOGE("dlsym ACameraManager_getCameraCharacteristics not found");
     }
