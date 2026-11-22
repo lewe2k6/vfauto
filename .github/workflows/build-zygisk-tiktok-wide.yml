@@ -41,8 +41,10 @@ jobs:
       - name: Compile Zygisk Native Module (arm64-v8a.so)
         run: |
           CXX="${{ steps.ndk.outputs.ndk_dir }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++"
+          READELF="${{ steps.ndk.outputs.ndk_dir }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           mkdir -p ZygiskTikTokWide/module/zygisk
           "$CXX" -std=c++17 -O2 -fPIC -shared -fvisibility=hidden -fvisibility-inlines-hidden \
+            -static-libstdc++ -fno-exceptions -fno-rtti \
             -Wno-unused-function -Wno-deprecated-declarations \
             -IZygiskTikTokWide/jni \
             ZygiskTikTokWide/jni/main.cpp \
@@ -51,6 +53,10 @@ jobs:
             -Wl,--gc-sections,-s \
             -o ZygiskTikTokWide/module/zygisk/arm64-v8a.so
           ls -lh ZygiskTikTokWide/module/zygisk/arm64-v8a.so
+          "$READELF" -d ZygiskTikTokWide/module/zygisk/arm64-v8a.so | grep NEEDED
+          if "$READELF" -d ZygiskTikTokWide/module/zygisk/arm64-v8a.so | grep -q "libc++_shared"; then
+            echo "ERROR: libc++_shared.so dependency detected!" && exit 1
+          fi
 
       - name: Package Magisk Zygisk Module ZIP
         run: |
