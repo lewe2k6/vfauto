@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 @property (nonatomic, assign) BOOL hasOrderPopup;
 @property (nonatomic, assign) OrderActionType orderAction;
 @property (nonatomic, assign) BOOL isGreenFood;
+@property (nonatomic, assign) BOOL isPassengerBike;
 @property (nonatomic, copy)   NSString *detectedServiceTitle;
 @property (nonatomic, assign) NSInteger detectedPriceVND;
 @property (nonatomic, assign) CGPoint orderTargetPoint;
@@ -68,6 +69,10 @@ typedef NS_ENUM(NSInteger, OrderActionType) {
 
 - (NSString *)matchedBlockedExpressNoteInSniffedOrder:(GSMSniffedOrder *)sniffed
                                                config:(FilterConfig *)config;
+
+- (OrderActionType)evaluateNonFoodActionForSniffedOrder:(GSMSniffedOrder *)sniffed
+                                                 config:(FilterConfig *)config
+                                              outReason:(NSString * __strong *)outReason;
 
 - (ScreenAnalysis *)analyzeScreenImage:(CIImage *)ciImage
                             screenSize:(CGSize)screenSize

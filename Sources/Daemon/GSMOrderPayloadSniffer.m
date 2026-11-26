@@ -348,20 +348,40 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
     NSString *normType = NormalizeVNText(svcTypeRaw);
     NSString *normDisp = NormalizeVNText(svcDispRaw);
 
-    BOOL explicitNonFood = ([normType containsString:@"express"] ||
-                            [normType containsString:@"bike"] ||
-                            [normType containsString:@"ride"] ||
-                            [normType containsString:@"taxi"] ||
-                            [normType containsString:@"car"] ||
-                            [normType containsString:@"shuttle"] ||
-                            [normType containsString:@"share"] ||
+    BOOL hasExpressDetailObj = ([d[@"express_detail"] isKindOfClass:[NSDictionary class]] && [(NSDictionary *)d[@"express_detail"] count] > 0) ||
+                               (firstSubOrder && [firstSubOrder[@"express_detail"] isKindOfClass:[NSDictionary class]] && [(NSDictionary *)firstSubOrder[@"express_detail"] count] > 0);
+
+    BOOL explicitExpress = ([normType containsString:@"express"] ||
                             [normType containsString:@"truck"] ||
-                            [normDisp containsString:@"bike"] ||
+                            ([normType containsString:@"delivery"] && ![normType containsString:@"food"]) ||
                             [normDisp containsString:@"express"] ||
                             [normDisp containsString:@"sieu toc"] ||
                             [normDisp containsString:@"giao hang"] ||
-                            [normDisp containsString:@"taxi"] ||
-                            [normDisp containsString:@"car"]);
+                            [normDisp containsString:@"gui hang"] ||
+                            [normDisp containsString:@"dong gia"] ||
+                            [normDisp containsString:@"don ghep"] ||
+                            [normDisp containsString:@"chuyen ghep"] ||
+                            [normDisp containsString:@"1h"] ||
+                            [normDisp containsString:@"2h"] ||
+                            [normDisp containsString:@"4h"] ||
+                            hasExpressDetailObj);
+
+    BOOL explicitPassenger = (!explicitExpress &&
+                              ([normType containsString:@"bike"] ||
+                               [normType containsString:@"ride"] ||
+                               [normType containsString:@"taxi"] ||
+                               [normType containsString:@"car"] ||
+                               [normType containsString:@"shuttle"] ||
+                               [normType containsString:@"share"] ||
+                               [normDisp containsString:@"bike"] ||
+                               [normDisp containsString:@"tiet kiem"] ||
+                               [normDisp containsString:@"uu tien"] ||
+                               [normDisp containsString:@"cho khach"] ||
+                               [normDisp containsString:@"xe may"] ||
+                               [normDisp containsString:@"taxi"] ||
+                               [normDisp containsString:@"car"]));
+
+    BOOL explicitNonFood = (explicitExpress || explicitPassenger);
 
     BOOL hasFoodDetailObj = ([d[@"food_detail"] isKindOfClass:[NSDictionary class]] && [(NSDictionary *)d[@"food_detail"] count] > 0) ||
                             ([d[@"food_fee"] isKindOfClass:[NSDictionary class]] && [(NSDictionary *)d[@"food_fee"] count] > 0) ||
@@ -376,19 +396,34 @@ static inline BOOL isLikelyJSONTextByte(uint8_t b) {
                          (!explicitNonFood && hasFoodDetailObj));
 
     if (explicitFood) {
-        ord.isGreenFood     = YES;
-        ord.isBikeOrExpress = NO;
+        ord.isGreenFood       = YES;
+        ord.isPassengerBike   = NO;
+        ord.isExpressDelivery = NO;
+        ord.isBikeOrExpress   = NO;
         if (ord.serviceDisplayName.length == 0) ord.serviceDisplayName = @"Green Food";
-    } else if (explicitNonFood) {
-        ord.isGreenFood     = NO;
-        ord.isBikeOrExpress = YES;
+    } else if (explicitExpress) {
+        ord.isGreenFood       = NO;
+        ord.isPassengerBike   = NO;
+        ord.isExpressDelivery = YES;
+        ord.isBikeOrExpress   = YES;
         if (ord.serviceDisplayName.length == 0) {
-            ord.serviceDisplayName = [normType containsString:@"express"] ? @"Green Express" : @"Green Bike";
+            ord.serviceDisplayName = isGroup ? @"Express Ghép" : @"Green Express";
+        }
+    } else if (explicitPassenger) {
+        ord.isGreenFood       = NO;
+        ord.isPassengerBike   = YES;
+        ord.isExpressDelivery = NO;
+        ord.isBikeOrExpress   = YES;
+        if (ord.serviceDisplayName.length == 0) {
+            ord.serviceDisplayName = @"Green Bike";
         }
     } else {
-        // Unknown service_type -> require either food_detail or path inspection
-        ord.isGreenFood     = hasFoodDetailObj;
-        ord.isBikeOrExpress = !hasFoodDetailObj && (svcTypeRaw.length > 0 || svcDispRaw.length > 0 || isGroup);
+        // Unknown service_type -> group orders default to Express delivery; non-group non-food defaults to Passenger Bike
+        ord.isGreenFood       = hasFoodDetailObj;
+        BOOL isOtherNonFood   = !hasFoodDetailObj && (svcTypeRaw.length > 0 || svcDispRaw.length > 0 || isGroup);
+        ord.isExpressDelivery = isOtherNonFood && isGroup;
+        ord.isPassengerBike   = isOtherNonFood && !isGroup;
+        ord.isBikeOrExpress   = isOtherNonFood;
         if (ord.isBikeOrExpress && ord.serviceDisplayName.length == 0) {
             ord.serviceDisplayName = isGroup ? @"Express Ghép" : @"Green Bike";
         }

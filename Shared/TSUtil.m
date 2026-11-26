@@ -365,6 +365,9 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
         _masterEnabled            = NO;
 #endif
         _autoAcceptBike             = YES;
+        _filterBikeEnabled          = NO;
+        _rejectAllBike              = NO;
+        _minBikePriceVND            = 50000;
         _expressBlockLongChau       = YES;
         _expressBlockedNoteKeywords = kDefaultExpressBlockedNotes;
         _rejectAllFood              = NO;
@@ -460,6 +463,9 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
 
     if (dict[@"masterEnabled"])          cfg.masterEnabled          = [dict[@"masterEnabled"] boolValue];
     if (dict[@"autoAcceptBike"])         cfg.autoAcceptBike         = [dict[@"autoAcceptBike"] boolValue];
+    if (dict[@"filterBikeEnabled"])      cfg.filterBikeEnabled      = [dict[@"filterBikeEnabled"] boolValue];
+    if (dict[@"rejectAllBike"])          cfg.rejectAllBike          = [dict[@"rejectAllBike"] boolValue];
+    if (dict[@"minBikePriceVND"])        cfg.minBikePriceVND        = [dict[@"minBikePriceVND"] integerValue];
     if (dict[@"expressBlockLongChau"])   cfg.expressBlockLongChau   = [dict[@"expressBlockLongChau"] boolValue];
     if ([dict[@"expressBlockedNoteKeywords"] isKindOfClass:[NSString class]]) {
         NSString *savedExpNotes = [dict[@"expressBlockedNoteKeywords"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -571,6 +577,8 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
     if (cfg.foodMaxMerchantOrders > 200000) cfg.foodMaxMerchantOrders = 200000;
     if (cfg.minFoodDistanceKm < 0.5) cfg.minFoodDistanceKm = 0.5;
     if (cfg.minFoodDistanceKm > 25.0) cfg.minFoodDistanceKm = 25.0;
+    if (cfg.minBikePriceVND < 5000) cfg.minBikePriceVND = 5000;
+    if (cfg.minBikePriceVND > 1000000) cfg.minBikePriceVND = 1000000;
 
     if (generatedNewTopic && geteuid() != 0) {
         [cfg saveToDiskAndNotify:NO];
@@ -588,6 +596,9 @@ NSString *sanitizeBarkKeyOrURL(NSString *rawInput) {
     NSDictionary *dict = @{
         @"masterEnabled":              @(self.masterEnabled),
         @"autoAcceptBike":             @(self.autoAcceptBike),
+        @"filterBikeEnabled":          @(self.filterBikeEnabled),
+        @"rejectAllBike":              @(self.rejectAllBike),
+        @"minBikePriceVND":            @(self.minBikePriceVND),
         @"expressBlockLongChau":       @(self.expressBlockLongChau),
         @"expressBlockedNoteKeywords": self.expressBlockedNoteKeywords ?: kDefaultExpressBlockedNotes,
         @"rejectAllFood":              @(self.rejectAllFood),

@@ -22,6 +22,11 @@
     UISwitch *_swSmartCool;
     UISwitch *_swStatusPillHUD;
     UISwitch *_swAutoBike;
+    UISwitch *_swFilterBike;
+    UIStackView *_bikeFilterGroup;
+    UISwitch *_swRejectAllBike;
+    UILabel  *_lblMinBikePrice;
+    UIView   *_bikePriceControlRow;
     UISwitch *_swExpressBlockLongChau;
     UISwitch *_swRejectAllFood;
     UILabel  *_lblMinFoodPrice;
@@ -545,8 +550,57 @@
 
     _swAutoBike = [self addSwitchRowTo:sec1
                                  title:@"Tự động [Nhận] Bike, Express, Express 2H..."
-                              subtitle:@"Đớp trọn mọi đơn chở khách & giao hàng (chỉ lọc riêng Green Food & ghi chú cấm Express)"
+                              subtitle:@"Đớp trọn mọi đơn chở khách & giao hàng (chỉ lọc riêng Green Food, Không chở người & ghi chú cấm Express)"
                                 action:@selector(generalControlChanged)];
+
+    _swFilterBike = [self addSwitchRowTo:sec1
+                                   title:@"Không chở người (Lọc giá đơn Bike)"
+                                subtitle:@"Bật để ưu tiên đơn chở hàng: Bike thấp hơn ngưỡng giá sẽ tự bấm [X] (KHÔNG nghỉ 2p), Express vẫn nhận mọi giá"
+                                  action:@selector(generalControlChanged)];
+
+    UIStackView *bikeGroup = [[UIStackView alloc] init];
+    bikeGroup.axis = UILayoutConstraintAxisVertical;
+    bikeGroup.alignment = UIStackViewAlignmentFill;
+    bikeGroup.spacing = 10;
+    bikeGroup.layoutMargins = UIEdgeInsetsMake(10, 10, 10, 10);
+    bikeGroup.layoutMarginsRelativeArrangement = YES;
+    bikeGroup.backgroundColor = [UIColor colorWithRed:0.16 green:0.17 blue:0.22 alpha:1.0];
+    bikeGroup.layer.cornerRadius = 10;
+    bikeGroup.clipsToBounds = YES;
+
+    _swRejectAllBike = [self addSwitchRowTo:bikeGroup
+                                      title:@"Hủy sạch 100% đơn Bike (Mọi giá)"
+                                   subtitle:@"Từ chối toàn bộ đơn chở người kể cả giá cao; tắt để nhận đơn Bike từ mức giá bên dưới"
+                                     action:@selector(generalControlChanged)];
+
+    UIStackView *bikePriceWrap = [[UIStackView alloc] init];
+    bikePriceWrap.axis = UILayoutConstraintAxisVertical;
+    bikePriceWrap.alignment = UIStackViewAlignmentFill;
+    bikePriceWrap.spacing = 8;
+
+    _lblMinBikePrice = [[UILabel alloc] init];
+    _lblMinBikePrice.font = [UIFont monospacedDigitSystemFontOfSize:13.5 weight:UIFontWeightBold];
+    _lblMinBikePrice.textColor = [UIColor systemTealColor];
+    [self configureResponsiveLabel:_lblMinBikePrice];
+    _lblMinBikePrice.userInteractionEnabled = YES;
+    [_lblMinBikePrice addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(promptExactBikePrice)]];
+    [bikePriceWrap addArrangedSubview:_lblMinBikePrice];
+
+    UIStackView *bikeBtnRow = [[UIStackView alloc] init];
+    bikeBtnRow.axis = UILayoutConstraintAxisHorizontal;
+    bikeBtnRow.distribution = UIStackViewDistributionFillEqually;
+    bikeBtnRow.spacing = 6;
+    [bikeBtnRow addArrangedSubview:[self makeStepButton:@"-5k" tag:-5000 action:@selector(stepBikePrice:)]];
+    [bikeBtnRow addArrangedSubview:[self makeStepButton:@"-1k" tag:-1000 action:@selector(stepBikePrice:)]];
+    [bikeBtnRow addArrangedSubview:[self makeStepButton:@"+1k" tag:1000  action:@selector(stepBikePrice:)]];
+    [bikeBtnRow addArrangedSubview:[self makeStepButton:@"+5k" tag:5000  action:@selector(stepBikePrice:)]];
+    [bikeBtnRow addArrangedSubview:[self makeStepButton:@"Nhập" tag:0    action:@selector(promptExactBikePrice)]];
+    [bikePriceWrap addArrangedSubview:bikeBtnRow];
+
+    _bikePriceControlRow = bikePriceWrap;
+    [bikeGroup addArrangedSubview:bikePriceWrap];
+    _bikeFilterGroup = bikeGroup;
+    [sec1 addArrangedSubview:bikeGroup];
 
     _swExpressBlockLongChau = [self addSwitchRowTo:sec1
                                              title:@"Từ chối đơn Gửi Hàng có ghi chú Long Châu"
@@ -864,6 +918,8 @@
     _swSmartCool.on     = _cfg.smartCoolMode;
     _swStatusPillHUD.on = _cfg.statusPillHUDEnabled;
     _swAutoBike.on      = _cfg.autoAcceptBike;
+    _swFilterBike.on    = _cfg.filterBikeEnabled;
+    _swRejectAllBike.on = _cfg.rejectAllBike;
     _swExpressBlockLongChau.on = _cfg.expressBlockLongChau;
     _swRejectAllFood.on = _cfg.rejectAllFood;
     _swHaptic.on        = _cfg.hapticEnabled;
@@ -979,6 +1035,12 @@
 }
 
 - (void)updateValueLabels {
+    _bikeFilterGroup.hidden = !_cfg.filterBikeEnabled;
+    _bikePriceControlRow.alpha = _cfg.rejectAllBike ? 0.35 : 1.0;
+    _bikePriceControlRow.userInteractionEnabled = !_cfg.rejectAllBike;
+    _lblMinBikePrice.text = [NSString stringWithFormat:@"Giá tối thiểu nhận đơn Bike (Chở người): %@\n(Đơn Bike >= mức này vẫn tự Nhận; thấp hơn tự bấm [X], Express vẫn nhận mọi giá)",
+                             [self formatVND:_cfg.minBikePriceVND]];
+
     _priceControlRow.alpha = _cfg.rejectAllFood ? 0.35 : 1.0;
     _priceControlRow.userInteractionEnabled = !_cfg.rejectAllFood;
     _foodSmartFilterCardBody.alpha = _cfg.rejectAllFood ? 0.35 : 1.0;
@@ -1089,6 +1151,8 @@
     _cfg.smartCoolMode          = _swSmartCool.isOn;
     _cfg.statusPillHUDEnabled   = _swStatusPillHUD.isOn;
     _cfg.autoAcceptBike         = _swAutoBike.isOn;
+    _cfg.filterBikeEnabled      = _swFilterBike.isOn;
+    _cfg.rejectAllBike          = _swRejectAllBike.isOn;
     _cfg.expressBlockLongChau   = _swExpressBlockLongChau.isOn;
     _cfg.rejectAllFood          = _swRejectAllFood.isOn;
     _cfg.foodBlockMallAndBasement = _swBlockMall.isOn;
@@ -1163,6 +1227,37 @@
         _hasPendingSliderSave = NO;
         [_cfg saveToDiskAndNotify:YES];
     }
+}
+
+- (void)stepBikePrice:(UIButton *)sender {
+    NSInteger next = _cfg.minBikePriceVND + sender.tag;
+    _cfg.minBikePriceVND = MAX(5000, MIN(500000, next));
+    [self updateValueLabels];
+    [_cfg saveToDiskAndNotify:YES];
+    _lastGmapsCheckEpoch = 0.0;
+    [self refreshStatusAndLogs];
+}
+
+- (void)promptExactBikePrice {
+    if (!_cfg.filterBikeEnabled || _cfg.rejectAllBike) return;
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Mức Giá Tối Thiểu Đơn Bike"
+                                                                message:@"Ví dụ gõ 50000 (hoặc gõ tắt 50): Đơn Bike từ 50.000đ trở lên vẫn tự Nhận, dưới 50.000đ sẽ tự bấm [X]"
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.keyboardType = UIKeyboardTypeNumberPad;
+        tf.text = [NSString stringWithFormat:@"%ld", (long)self->_cfg.minBikePriceVND];
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Hủy" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Lưu" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSInteger val = [ac.textFields.firstObject.text integerValue];
+        if (val > 0 && val < 1000) val *= 1000;
+        if (val >= 5000 && val <= 1000000) {
+            self->_cfg.minBikePriceVND = val;
+            [self updateValueLabels];
+            [self->_cfg saveToDiskAndNotify:YES];
+        }
+    }]];
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)stepFoodPrice:(UIButton *)sender {

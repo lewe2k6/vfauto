@@ -11,6 +11,9 @@
     if (self) {
         _masterEnabled              = YES;
         _autoAcceptBike             = YES;
+        _filterBikeEnabled          = NO;
+        _rejectAllBike              = NO;
+        _minBikePriceVND            = 50000;
         _expressBlockLongChau       = YES;
         _expressBlockedNoteKeywords = kDefaultExpressBlockedNotes;
         _rejectAllFood              = NO;
@@ -684,6 +687,97 @@ int main(int argc, const char *argv[]) {
         NSString *matched1hLC = [scanner matchedBlockedExpressNoteInSniffedOrder:exp1hLCOrd config:cfg];
         ASSERT_TRUE(matched1hLC != nil && [matched1hLC isEqualToString:@"TX đến Nhà Thuốc Long Châu"],
                     "Green Express 1h with 'TX đến Nhà Thuốc Long Châu' in address_note must be rejected");
+
+        // ---------------------------------------------------------------------
+        // TEST 15: Passenger Bike Filter ("Không chở người") vs Express Delivery
+        // ---------------------------------------------------------------------
+        NSDictionary *bikeSmallJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMX6",
+            @"distance": @(2.60),
+            @"fee": @{ @"total_pay": @(24000) },
+            @"service": @{ @"display_name": @"Green Bike", @"service_type": @"BIKE" },
+            @"path": @[
+                @{ @"type": @"PICK UP", @"short_address": @"302 Cầu Giấy" },
+                @{ @"type": @"DROP OFF", @"short_address": @"120 Xuân Thủy" }
+            ]
+        };
+        NSDictionary *bike50kJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMX7",
+            @"distance": @(7.40),
+            @"fee": @{ @"total_pay": @(50000) },
+            @"service": @{ @"display_name": @"Green Bike", @"service_type": @"BIKE" },
+            @"path": @[
+                @{ @"type": @"PICK UP", @"short_address": @"54 Liễu Giai" },
+                @{ @"type": @"DROP OFF", @"short_address": @"458 Minh Khai" }
+            ]
+        };
+        NSDictionary *bike85kJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMX8",
+            @"distance": @(12.50),
+            @"fee": @{ @"total_pay": @(85000) },
+            @"service": @{ @"display_name": @"Green Bike Plus", @"service_type": @"RIDE-BIKE" },
+            @"path": @[
+                @{ @"type": @"PICK UP", @"short_address": @"272 Võ Chí Công" },
+                @{ @"type": @"DROP OFF", @"short_address": @"27 Cổ Linh" }
+            ]
+        };
+        NSDictionary *expressSmallJson = @{
+            @"id": @"01HKCAB44HEK87D5KXJCFGBMX9",
+            @"distance": @(2.10),
+            @"fee": @{ @"total_pay": @(18000) },
+            @"service": @{ @"display_name": @"Siêu tốc", @"service_type": @"EXPRESS-ONDEMAND" },
+            @"path": @[
+                @{ @"type": @"PICK UP", @"short_address": @"15 Chùa Bộc" },
+                @{ @"type": @"DROP OFF", @"short_address": @"88 Thái Hà" }
+            ]
+        };
+
+        GSMSniffedOrder *bikeSmallOrd    = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:bikeSmallJson sourceTag:@"TestBike24k"];
+        GSMSniffedOrder *bike50kOrd      = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:bike50kJson sourceTag:@"TestBike50k"];
+        GSMSniffedOrder *bike85kOrd      = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:bike85kJson sourceTag:@"TestBike85k"];
+        GSMSniffedOrder *expressSmallOrd = [GSMOrderPayloadSniffer parseOrderFromJSONDictionary:expressSmallJson sourceTag:@"TestExp18k"];
+
+        ASSERT_TRUE(bikeSmallOrd.isPassengerBike && !bikeSmallOrd.isExpressDelivery && !bikeSmallOrd.isGreenFood,
+                    "Green Bike 24k must classify as isPassengerBike=YES, isExpressDelivery=NO");
+        ASSERT_TRUE(expressSmallOrd.isExpressDelivery && !expressSmallOrd.isPassengerBike && !expressSmallOrd.isGreenFood,
+                    "Express Siêu tốc 18k must classify as isExpressDelivery=YES, isPassengerBike=NO");
+        ASSERT_TRUE(exp1hOrd.isExpressDelivery && !exp1hOrd.isPassengerBike,
+                    "Green Express 1h must classify as isExpressDelivery=YES, isPassengerBike=NO");
+
+        // 15A: filterBikeEnabled = NO (default) -> small Bike 24k ACCEPTED
+        cfg.autoAcceptBike    = YES;
+        cfg.filterBikeEnabled = NO;
+        cfg.rejectAllBike     = NO;
+        cfg.minBikePriceVND   = 50000;
+        NSString *rBikeOff = nil;
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:bikeSmallOrd config:cfg outReason:&rBikeOff] == OrderActionTapAccept,
+                    "When filterBikeEnabled=NO, Green Bike 24k must still be accepted");
+
+        // 15B: filterBikeEnabled = YES, minBikePriceVND = 50000 -> Bike 24k REJECTED, Bike 50k & 85k ACCEPTED, Express 18k & 1h ACCEPTED
+        cfg.filterBikeEnabled = YES;
+        cfg.rejectAllBike     = NO;
+        cfg.minBikePriceVND   = 50000;
+        NSString *rBike24 = nil, *rBike50 = nil, *rBike85 = nil, *rExp18 = nil, *rExp1h = nil, *rExpLC = nil;
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:bikeSmallOrd config:cfg outReason:&rBike24] == OrderActionTapRejectX,
+                    "When filterBikeEnabled=YES (min 50k), Green Bike 24k must be rejected [X]");
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:bike50kOrd config:cfg outReason:&rBike50] == OrderActionTapAccept,
+                    "When filterBikeEnabled=YES (min 50k), Green Bike 50k must be accepted");
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:bike85kOrd config:cfg outReason:&rBike85] == OrderActionTapAccept,
+                    "When filterBikeEnabled=YES (min 50k), Green Bike Plus 85k must be accepted");
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:expressSmallOrd config:cfg outReason:&rExp18] == OrderActionTapAccept,
+                    "When filterBikeEnabled=YES (min 50k), Express 18k must STILL be accepted (never blocked as Bike)");
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:exp1hOrd config:cfg outReason:&rExp1h] == OrderActionTapAccept,
+                    "When filterBikeEnabled=YES (min 50k), Green Express 1h 31k must STILL be accepted");
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:exp1hLCOrd config:cfg outReason:&rExpLC] == OrderActionTapRejectX,
+                    "When filterBikeEnabled=YES, Green Express 1h with Long Chau note must still be rejected [X]");
+
+        // 15C: rejectAllBike = YES -> even Bike 85k REJECTED, Express 18k STILL ACCEPTED
+        cfg.rejectAllBike = YES;
+        NSString *rBikeAll85 = nil, *rExpAll18 = nil;
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:bike85kOrd config:cfg outReason:&rBikeAll85] == OrderActionTapRejectX,
+                    "When rejectAllBike=YES, Green Bike Plus 85k must be rejected [X]");
+        ASSERT_TRUE([scanner evaluateNonFoodActionForSniffedOrder:expressSmallOrd config:cfg outReason:&rExpAll18] == OrderActionTapAccept,
+                    "When rejectAllBike=YES, Express 18k must STILL be accepted");
 
         printf("==> Verification Suite Complete: %d passed, %d failed.\n", gPasses, gFailures);
         return (gFailures == 0) ? 0 : 1;

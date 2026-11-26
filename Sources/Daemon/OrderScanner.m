@@ -31,6 +31,7 @@
 @property (nonatomic, copy)   NSString *orderId;
 @property (nonatomic, strong) GSMSniffedOrder *sniffedOrder;
 @property (nonatomic, assign) BOOL isGreenFood;
+@property (nonatomic, assign) BOOL isPassengerBike;
 @property (nonatomic, assign) OrderActionType orderAction;
 @property (nonatomic, copy)   NSString *orderReason;
 @property (nonatomic, assign) double estimatedDistanceKm;
@@ -197,6 +198,45 @@
     return ([_nonFoodHeaderRegex firstMatchInString:hNorm options:0 range:NSMakeRange(0, hNorm.length)] != nil);
 }
 
+- (BOOL)headerNormIndicatesExpress:(NSString *)hNorm {
+    if (!hNorm || hNorm.length == 0) return NO;
+    return ([hNorm containsString:@"express"] ||
+            [hNorm containsString:@"expres"] ||
+            [hNorm containsString:@"expre"] ||
+            [hNorm containsString:@"giao hang"] ||
+            [hNorm containsString:@"giaohang"] ||
+            [hNorm containsString:@"gui hang"] ||
+            [hNorm containsString:@"guihang"] ||
+            [hNorm containsString:@"sieu toc"] ||
+            [hNorm containsString:@"sieutoc"] ||
+            [hNorm containsString:@"1h"] ||
+            [hNorm containsString:@"2h"] ||
+            [hNorm containsString:@"4h"] ||
+            [hNorm containsString:@"don ghep"] ||
+            [hNorm containsString:@"donghep"] ||
+            [hNorm containsString:@"chuyen ghep"] ||
+            [hNorm containsString:@"chuyenghep"] ||
+            [hNorm containsString:@"dong gia"] ||
+            [hNorm containsString:@"donggia"]);
+}
+
+- (BOOL)headerNormIndicatesPassengerBike:(NSString *)hNorm {
+    if (!hNorm || hNorm.length == 0) return NO;
+    if ([self headerNormIndicatesExpress:hNorm]) return NO;
+    return ([hNorm containsString:@"bike"] ||
+            [hNorm containsString:@"b1ke"] ||
+            [hNorm containsString:@"blke"] ||
+            [hNorm containsString:@"tiet kiem"] ||
+            [hNorm containsString:@"tietkiem"] ||
+            [hNorm containsString:@"uu tien"] ||
+            [hNorm containsString:@"uutien"] ||
+            [hNorm containsString:@"cho khach"] ||
+            [hNorm containsString:@"xe may"] ||
+            [hNorm containsString:@"green car"] ||
+            [hNorm containsString:@"greencar"] ||
+            [hNorm containsString:@"taxi"]);
+}
+
 - (void)splitStopLines:(NSArray<OCRMergedRouteLine *> *)lines
               outTitle:(NSString * __strong *)outTitle
            outSubtitle:(NSString * __strong *)outSubtitle {
@@ -322,8 +362,11 @@
 
 - (NSString *)configSignatureForConfig:(FilterConfig *)config {
     if (!config) return @"nil";
-    return [NSString stringWithFormat:@"%d|%d|%lu|%d|%ld|%d|%d|%ld|%d|%.2f|%lu|%lu",
+    return [NSString stringWithFormat:@"%d|%d|%d|%ld|%d|%lu|%d|%ld|%d|%d|%ld|%d|%.2f|%lu|%lu",
             config.autoAcceptBike ? 1 : 0,
+            config.filterBikeEnabled ? 1 : 0,
+            config.rejectAllBike ? 1 : 0,
+            (long)config.minBikePriceVND,
             config.expressBlockLongChau ? 1 : 0,
             (unsigned long)(config.expressBlockedNoteKeywords.hash),
             config.rejectAllFood ? 1 : 0,
@@ -408,6 +451,78 @@
     return nil;
 }
 
+- (OrderActionType)evaluateNonFoodActionForSniffedOrder:(GSMSniffedOrder *)sniffed
+                                                 config:(FilterConfig *)config
+                                              outReason:(NSString * __strong *)outReason {
+    if (!sniffed || !config || sniffed.isGreenFood) {
+        if (outReason) *outReason = @"";
+        return OrderActionNone;
+    }
+
+    NSInteger fare = sniffed.totalPayVND;
+    NSString *svcLabel = sniffed.serviceDisplayName.length > 0
+        ? sniffed.serviceDisplayName
+        : (sniffed.isPassengerBike ? @"Green Bike" : @"Green Express");
+
+    // 1. Express Blocked Note check (Long Châu) — never applies to Passenger Bike
+    if (!sniffed.isPassengerBike) {
+        NSString *blockedNoteKw = [self matchedBlockedExpressNoteInSniffedOrder:sniffed config:config];
+        if (blockedNoteKw.length > 0) {
+            if (outReason) {
+                *outReason = (fare > 0)
+                    ? [NSString stringWithFormat:@"%@ (%ldđ - Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, (long)fare, blockedNoteKw]
+                    : [NSString stringWithFormat:@"%@ (Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, blockedNoteKw];
+            }
+            return OrderActionTapRejectX;
+        }
+    }
+
+    // 2. Passenger Bike ("Không chở người") Price Filter — NEVER affects Express parcel delivery!
+    if (sniffed.isPassengerBike && config.filterBikeEnabled) {
+        if (config.rejectAllBike) {
+            if (outReason) {
+                *outReason = (fare > 0)
+                    ? [NSString stringWithFormat:@"%@ (%ldđ - Không chở người: Hủy sạch Bike) -> BẤM [X]", svcLabel, (long)fare]
+                    : [NSString stringWithFormat:@"%@ (Không chở người: Hủy sạch Bike) -> BẤM [X]", svcLabel];
+            }
+            return OrderActionTapRejectX;
+        }
+        if (fare <= 0) {
+            if (outReason) *outReason = @"Đang chờ giá đơn Bike...";
+            return OrderActionWaitRetryPrice;
+        }
+        if (fare < config.minBikePriceVND) {
+            if (outReason) {
+                *outReason = [NSString stringWithFormat:@"%@ (%ldđ < %ldđ - Không chở người) -> BẤM [X]",
+                              svcLabel, (long)fare, (long)config.minBikePriceVND];
+            }
+            return OrderActionTapRejectX;
+        }
+        if (!config.autoAcceptBike) {
+            if (outReason) *outReason = [NSString stringWithFormat:@"%@ (%ldđ >= %ldđ, Tự nhận đang TẮT)",
+                                         svcLabel, (long)fare, (long)config.minBikePriceVND];
+            return OrderActionSkipDisabled;
+        }
+        if (outReason) {
+            *outReason = [NSString stringWithFormat:@"%@ (%ldđ >= %ldđ) -> NHẬN CHUYẾN",
+                          svcLabel, (long)fare, (long)config.minBikePriceVND];
+        }
+        return OrderActionTapAccept;
+    }
+
+    // 3. Standard Auto-Accept for Express Delivery & Unfiltered Bike
+    if (!config.autoAcceptBike) {
+        if (outReason) *outReason = [NSString stringWithFormat:@"%@ (Tự nhận đang TẮT)", svcLabel];
+        return OrderActionSkipDisabled;
+    }
+    if (outReason) {
+        *outReason = (fare > 0)
+            ? [NSString stringWithFormat:@"%@ (%ldđ) -> NHẬN CHUYẾN", svcLabel, (long)fare]
+            : [NSString stringWithFormat:@"%@ -> NHẬN CHUYẾN", svcLabel];
+    }
+    return OrderActionTapAccept;
+}
+
 - (PreEvaluatedOrderEntry *)evaluateOrFetchCachedOrder:(GSMSniffedOrder *)sniffed
                                             withConfig:(FilterConfig *)config {
     if (!sniffed || sniffed.orderId.length != 26 || !config) return nil;
@@ -436,6 +551,7 @@
     entry.orderId          = sniffed.orderId;
     entry.sniffedOrder     = sniffed;
     entry.isGreenFood      = sniffed.isGreenFood;
+    entry.isPassengerBike  = sniffed.isPassengerBike;
     entry.pickupTitle      = pTit ?: @"";
     entry.pickupSubtitle   = pSub ?: @"";
     entry.dropoffTitle     = dTit ?: @"";
@@ -472,22 +588,13 @@
             entry.orderReason = eval.reasonSummary;
         }
     } else {
-        NSString *svcLabel = sniffed.serviceDisplayName.length > 0 ? sniffed.serviceDisplayName : @"Bike/Express";
-        NSString *blockedNoteKw = [self matchedBlockedExpressNoteInSniffedOrder:sniffed config:config];
-        if (blockedNoteKw.length > 0) {
-            entry.orderAction = OrderActionTapRejectX;
-            entry.orderReason = (fare > 0)
-                ? [NSString stringWithFormat:@"%@ (%ldđ - Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, (long)fare, blockedNoteKw]
-                : [NSString stringWithFormat:@"%@ (Ghi chú cấm: '%@') -> BẤM [X]", svcLabel, blockedNoteKw];
-        } else if (!config.autoAcceptBike) {
-            entry.orderAction = OrderActionSkipDisabled;
-            entry.orderReason = [NSString stringWithFormat:@"%@ (Tự nhận đang TẮT)", svcLabel];
-        } else {
-            entry.orderAction = OrderActionTapAccept;
-            entry.orderReason = (fare > 0)
-                ? [NSString stringWithFormat:@"%@ (%ldđ) -> NHẬN CHUYẾN", svcLabel, (long)fare]
-                : [NSString stringWithFormat:@"%@ -> NHẬN CHUYẾN", svcLabel];
+        NSString *nfReason = nil;
+        OrderActionType nfAction = [self evaluateNonFoodActionForSniffedOrder:sniffed config:config outReason:&nfReason];
+        if (nfAction == OrderActionNone || nfAction == OrderActionWaitRetryPrice) {
+            return nil;
         }
+        entry.orderAction = nfAction;
+        entry.orderReason = nfReason ?: @"";
     }
 
     [_preEvalLock lock];
@@ -793,6 +900,7 @@
     res.onlineStartPoint       = CGPointMake(config.manualOnlineX, config.manualOnlineY);
     res.hasOrderPopup          = YES;
     res.isGreenFood            = freshOrder.isGreenFood;
+    res.isPassengerBike        = preEval.isPassengerBike;
     res.sniffedOrderId         = freshOrder.orderId;
     res.priceVerifiedByPayload = YES;
     res.detectedPriceVND       = freshOrder.totalPayVND;
@@ -1637,6 +1745,20 @@
         BOOL isConfirmedBikeByBody = (hasPassengerRoute && !hasDeliveryRoute);
         if (isHeaderNonFood || isConfirmedBikeByBody) {
             res.isGreenFood = NO;
+
+            BOOL isExpressDeliveryOnScreen = NO;
+            BOOL isPassengerBikeOnScreen   = NO;
+            if (sniffed && (sniffed.isExpressDelivery || sniffed.isPassengerBike)) {
+                isExpressDeliveryOnScreen = sniffed.isExpressDelivery;
+                isPassengerBikeOnScreen   = sniffed.isPassengerBike;
+            } else {
+                isExpressDeliveryOnScreen = (!isConfirmedBikeByBody &&
+                                             (hasDeliveryRoute || [self headerNormIndicatesExpress:joinedHeaderNorm]));
+                isPassengerBikeOnScreen   = (!isExpressDeliveryOnScreen &&
+                                             (isConfirmedBikeByBody || [self headerNormIndicatesPassengerBike:joinedHeaderNorm]));
+            }
+            res.isPassengerBike = isPassengerBikeOnScreen;
+
             NSString *baseFp = [self buildOrderFingerprintForFood:NO
                                                          priceVND:detectedFare
                                                       pickupTitle:(pTit.length > 0 ? pTit : pSub)
@@ -1646,10 +1768,10 @@
                 : baseFp;
             NSString *svcLabel = joinedHeaderRaw.length > 0
                 ? joinedHeaderRaw
-                : (isConfirmedBikeByBody ? @"Green Bike" : @"Bike/Express");
+                : (isPassengerBikeOnScreen ? @"Green Bike" : @"Green Express");
 
-            // Check Express Blocked Delivery Note ("TX đến Nhà Thuốc Long Châu") ONLY in JSON note fields!
-            if (config.expressBlockLongChau) {
+            // 1. Check Express Blocked Delivery Note ("TX đến Nhà Thuốc Long Châu") ONLY on non-passenger Express orders!
+            if (!isPassengerBikeOnScreen && config.expressBlockLongChau) {
                 NSString *blockedNoteKw = [self matchedBlockedExpressNoteInSniffedOrder:sniffed config:config];
                 if (blockedNoteKw.length > 0) {
                     if (headerWasCoveredByBanner && retryCount < 4) {
@@ -1671,29 +1793,84 @@
 
                 // If this is an Express / Delivery popup (NOT passenger Bike) and JSON payload hasn't flushed at frame 0-1,
                 // wait up to 2 fast ticks (~220ms) so Cache.db-wal / fsCachedData can confirm address_note before tapping [Nhận]!
-                BOOL isExpressDeliveryOnScreen = (!isConfirmedBikeByBody &&
-                                                  (hasDeliveryRoute ||
-                                                   [joinedHeaderNorm containsString:@"express"] ||
-                                                   [joinedHeaderNorm containsString:@"expres"] ||
-                                                   [joinedHeaderNorm containsString:@"expre"] ||
-                                                   [joinedHeaderNorm containsString:@"giao hang"] ||
-                                                   [joinedHeaderNorm containsString:@"giaohang"] ||
-                                                   [joinedHeaderNorm containsString:@"gui hang"] ||
-                                                   [joinedHeaderNorm containsString:@"guihang"] ||
-                                                   [joinedHeaderNorm containsString:@"sieu toc"] ||
-                                                   [joinedHeaderNorm containsString:@"sieutoc"] ||
-                                                   [joinedHeaderNorm containsString:@"1h"] ||
-                                                   [joinedHeaderNorm containsString:@"2h"] ||
-                                                   [joinedHeaderNorm containsString:@"4h"] ||
-                                                   [joinedHeaderNorm containsString:@"don ghep"] ||
-                                                   [joinedHeaderNorm containsString:@"donghep"] ||
-                                                   [joinedHeaderNorm containsString:@"chuyen ghep"] ||
-                                                   [joinedHeaderNorm containsString:@"dong gia"]));
                 if (!sniffed && isExpressDeliveryOnScreen && retryCount < 2) {
                     res.orderAction = OrderActionWaitRetryPrice;
                     res.orderReason = @"Đang đọc ghi chú ngầm đơn Express (Kiểm tra 'TX đến Nhà Thuốc Long Châu')...";
                     return res;
                 }
+            }
+
+            // 2. Passenger Bike ("Không chở người") Price Filter — NEVER affects Express delivery!
+            if (isPassengerBikeOnScreen && config.filterBikeEnabled) {
+                if (config.rejectAllBike) {
+                    if (headerWasCoveredByBanner && retryCount < 4) {
+                        res.orderAction = OrderActionHeaderCovered;
+                        res.orderReason = @"Đơn Bike cần bấm [X] (Không chở người) nhưng Banner đang che góc trên -> Vuốt hất Banner trước...";
+                        return res;
+                    }
+                    res.orderAction = OrderActionTapRejectX;
+                    res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
+                                                                     cuocPhiBlock:cuocPhiBlock
+                                                                       screenSize:screenSize
+                                                                           config:config];
+                    res.orderReason = (detectedFare > 0)
+                        ? [NSString stringWithFormat:@"%@ (%ldđ - Không chở người: Hủy sạch Bike) -> BẤM [X]", svcLabel, (long)detectedFare]
+                        : [NSString stringWithFormat:@"%@ (Không chở người: Hủy sạch Bike) -> BẤM [X]", svcLabel];
+                    return res;
+                }
+
+                if (detectedFare <= 0) {
+                    if (retryCount < 6) {
+                        res.orderAction = OrderActionWaitRetryPrice;
+                        res.orderReason = @"Đang chờ load giá đơn Bike (Kiểm tra ngưỡng Không chở người)...";
+                        return res;
+                    } else {
+                        if (headerWasCoveredByBanner && retryCount < 4) {
+                            res.orderAction = OrderActionHeaderCovered;
+                            res.orderReason = @"Đơn Bike cần bấm [X] nhưng Banner đang che góc trên -> Vuốt hất Banner trước...";
+                            return res;
+                        }
+                        res.orderAction = OrderActionTapRejectX;
+                        res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
+                                                                         cuocPhiBlock:cuocPhiBlock
+                                                                           screenSize:screenSize
+                                                                               config:config];
+                        res.orderReason = [NSString stringWithFormat:@"%@ (Không rõ giá sau 6 nhịp - Không chở người) -> BẤM [X]", svcLabel];
+                        return res;
+                    }
+                }
+
+                if (detectedFare < config.minBikePriceVND) {
+                    if (headerWasCoveredByBanner && retryCount < 4) {
+                        res.orderAction = OrderActionHeaderCovered;
+                        res.orderReason = [NSString stringWithFormat:@"%@ (%ldđ < %ldđ) nhưng Banner đang che nút [X] -> Vuốt hất Banner trước...",
+                                           svcLabel, (long)detectedFare, (long)config.minBikePriceVND];
+                        return res;
+                    }
+                    res.orderAction = OrderActionTapRejectX;
+                    res.orderTargetPoint = [self computeClosePointWithHeaderBlock:foodAnchorBlk
+                                                                     cuocPhiBlock:cuocPhiBlock
+                                                                       screenSize:screenSize
+                                                                           config:config];
+                    res.orderReason = [NSString stringWithFormat:@"%@ (%ldđ < %ldđ - Không chở người) -> BẤM [X]",
+                                       svcLabel, (long)detectedFare, (long)config.minBikePriceVND];
+                    return res;
+                }
+
+                if (!config.autoAcceptBike) {
+                    res.orderAction = OrderActionSkipDisabled;
+                    res.orderReason = [NSString stringWithFormat:@"%@ (%ldđ >= %ldđ, Tự nhận đang TẮT)",
+                                       svcLabel, (long)detectedFare, (long)config.minBikePriceVND];
+                    return res;
+                }
+
+                res.orderAction = OrderActionTapAccept;
+                res.orderTargetPoint = [self computeAcceptPointWithAcceptBlock:acceptBlock
+                                                                    screenSize:screenSize
+                                                                        config:config];
+                res.orderReason = [NSString stringWithFormat:@"%@ (%ldđ >= %ldđ) -> NHẬN CHUYẾN",
+                                   svcLabel, (long)detectedFare, (long)config.minBikePriceVND];
+                return res;
             }
 
             if (!config.autoAcceptBike) {

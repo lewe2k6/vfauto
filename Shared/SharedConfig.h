@@ -7,7 +7,7 @@
 #ifdef MAP_RELAY_STANDALONE
 #define kAppBundleID            @"com.vn.utility.maprelay"
 #define kAppBundleFolderName    @"BanMapXanh.app"
-#define kCurrentDaemonVersion   @"5.4.0"
+#define kCurrentDaemonVersion   @"5.5.0"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.maprelay.maprelay.plist"
@@ -28,7 +28,7 @@
 #else
 #define kAppBundleID            @"com.vn.utility.batterycheck"
 #define kAppBundleFolderName    @"PinNhietDo.app"
-#define kCurrentDaemonVersion   @"5.4.0"
+#define kCurrentDaemonVersion   @"5.5.0"
 #define kConfigPlistPath        @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.plist"
 #define kRuntimeStatePath       @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.state.plist"
 #define kMapRelayQueuePath      @"/var/mobile/Library/Preferences/com.vn.utility.batterycheck.maprelay.plist"
@@ -91,6 +91,9 @@ typedef NS_ENUM(NSInteger, CoordMode) {
 // 1. Master, Price Filter & Smart-Cool Toggles
 @property (nonatomic, assign) BOOL masterEnabled;
 @property (nonatomic, assign) BOOL autoAcceptBike;             // Auto-accept Bike, Express, Express 2H, etc.
+@property (nonatomic, assign) BOOL filterBikeEnabled;          // Default NO ("Không chở người": filter Passenger Bike by minBikePriceVND; never affects Express delivery)
+@property (nonatomic, assign) BOOL rejectAllBike;              // Default NO (Hard-reject [X] 100% Passenger Bike at any price when filterBikeEnabled == YES)
+@property (nonatomic, assign) NSInteger minBikePriceVND;       // Default 50000 (Accept Passenger Bike if fare >= minBikePriceVND, reject [X] if < minBikePriceVND)
 @property (nonatomic, assign) BOOL expressBlockLongChau;       // Default YES (Hard-reject [X] Express orders whose address_note matches expressBlockedNoteKeywords)
 @property (nonatomic, copy)   NSString *expressBlockedNoteKeywords; // Default "tx den nha thuoc long chau" (ONLY checks note fields, NEVER pickup/dropoff name)
 @property (nonatomic, assign) BOOL rejectAllFood;

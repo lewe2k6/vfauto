@@ -9,7 +9,9 @@
 @property (nonatomic, copy)   NSString *orderId;             // 26-char ULID (e.g. "01HJN66X4T48BY3M7NA34XZZJW")
 @property (nonatomic, copy)   NSArray<NSString *> *subOrderIds; // Child 26-char ULIDs when isGroupOrder == YES
 @property (nonatomic, assign) BOOL isGreenFood;              // YES = Green Food; NO = Bike / Express / Ride
-@property (nonatomic, assign) BOOL isBikeOrExpress;          // YES = Bike / Express / Express 2H / Taxi / Car
+@property (nonatomic, assign) BOOL isBikeOrExpress;          // YES = Bike / Express / Express 2H / Taxi / Car (isPassengerBike || isExpressDelivery)
+@property (nonatomic, assign) BOOL isPassengerBike;          // YES = Passenger ride (Green Bike, Bike Plus, Tiết kiệm, Ưu tiên, Taxi/Car) — NOT Express/Food
+@property (nonatomic, assign) BOOL isExpressDelivery;        // YES = Parcel/Cargo delivery (Express, Express 1h/2h/4h, Siêu tốc, Giao hàng, Đơn ghép)
 @property (nonatomic, assign) BOOL isGroupOrder;             // YES = MDModels.GroupOrder (Express 2H / Grouped Food)
 @property (nonatomic, copy)   NSString *serviceTypeRaw;      // e.g. "EXPRESS-ONDEMAND", "FOOD-DELIVERY", "RIDE-TAXI"
 @property (nonatomic, copy)   NSString *serviceDisplayName;  // e.g. "Green Bike", "Express", "Green Food"

@@ -671,6 +671,11 @@ static NSString *buildPillToastSummaryForOrder(ScreenAnalysis *ana, BOOL isAccep
 
     if (!isAccept) {
         NSString *reasonNorm = NormalizeVNText(ana.orderReason ?: @"");
+        if (ana && ana.isPassengerBike) {
+            return (priceStr.length > 0)
+                ? [NSString stringWithFormat:@"%@ %@ • %@", verb, svcShort, priceStr]
+                : [NSString stringWithFormat:@"%@ %@", verb, svcShort];
+        }
         if ([reasonNorm containsString:@"long chau"]) {
             return (priceStr.length > 0)
                 ? [NSString stringWithFormat:@"%@ %@ Long Châu • %@", verb, svcShort, priceStr]
@@ -1834,9 +1839,13 @@ static int runWorkerMain(void) {
                     if (ana.orderAction == OrderActionTapAccept || ana.orderAction == OrderActionTapRejectX) {
                         uint32_t spentVerifyMs = 0;
 
-                        // KHÓA KIỂM CHỨNG GIÁ 2 KHUNG HÌNH CHO ĐƠN GREEN FOOD (CHỐNG NHÒE 17k -> 77k KHI DÙNG OCR THUẦN)
+                        // KHÓA KIỂM CHỨNG GIÁ 2 KHUNG HÌNH CHO ĐƠN GREEN FOOD & BIKE LỌC GIÁ (CHỐNG NHÒE 17k -> 77k KHI DÙNG OCR THUẦN)
                         // Nếu đã xác thực giá số nguyên 100% từ gói tin ngầm GSM (priceVerifiedByPayload), bỏ qua chờ 95ms để đớp/hủy tức thì!
-                        if (ana.isGreenFood && !config.rejectAllFood && !ana.priceVerifiedByPayload) {
+                        BOOL needsTwoFrameFareVerify =
+                            ((ana.isGreenFood && !config.rejectAllFood) ||
+                             (ana.isPassengerBike && config.filterBikeEnabled && !config.rejectAllBike)) &&
+                            !ana.priceVerifiedByPayload;
+                        if (needsTwoFrameFareVerify) {
                             double tVerifyStart = CFAbsoluteTimeGetCurrent();
                             usleep(95000);
                             if (gShouldExit) break;
@@ -1859,7 +1868,7 @@ static int runWorkerMain(void) {
                                     bannerSwipeCountForPopup = 0;
                                     continue;
                                 }
-                                if (verifyAna.isGreenFood && verifyAna.detectedPriceVND > 0) {
+                                if ((verifyAna.isGreenFood || verifyAna.isPassengerBike) && verifyAna.detectedPriceVND > 0) {
                                     if (verifyAna.detectedPriceVND != ana.detectedPriceVND && retryCount < 2) {
                                         // Giá đang dao động do trượt bảng -> Đợi nhịp kế tiếp lấy số đứng im
                                         retryCount++;
