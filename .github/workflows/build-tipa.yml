@@ -58,9 +58,9 @@ jobs:
       - name: Publish Direct Download Release for Safari iPhone
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v5.4.0-ts
-          name: "Pin & Nhiệt Độ v5.4.0 + CoolDash6 v1.0 (Camera Hành Trình iPhone 6 iOS 12)"
-          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.4.0 (Tự động từ chối Express Long Châu + Snipe kqueue 2 Pha + Dual-Strip Micro-OCR 15ms); (2) BanMap_TS.tipa / .ipa v1.0; (3) CoolDash6.ipa v1.0 (Camera hành trình H.264 phần cứng siêu nhẹ mát máy cho iPhone 6 iOS 12, vòng lặp 30GB+6GB Locked, Blackout Mode 0% GPU, phân biệt Wi-Fi Nhà vs Hotspot Android 3.5GB/ngày, đồng bộ Telegram Zero-RAM)."
+          tag_name: v5.5.0-ts
+          name: "Pin & Nhiệt Độ v5.5.0 (Lọc Không Chở Người Bike) + CoolDash6 v1.0"
+          body: "Bao gồm: (1) PinNhietDo_TS.tipa / .ipa v5.5.0 (Chế độ Không chở người lọc giá đơn Bike mặc định 50k + tách riêng Express chở hàng + từ chối Express Long Châu + Snipe kqueue 2 Pha + Dual-Strip Micro-OCR 15ms); (2) BanMap_TS.tipa / .ipa v1.0; (3) CoolDash6.ipa v1.0."
           prerelease: false
           files: |
             build/PinNhietDo_TS.tipa

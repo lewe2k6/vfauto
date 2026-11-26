@@ -409,10 +409,10 @@ int main(int argc, const char *argv[]) {
                     elapsedOfflineMs);
 
         // ---------------------------------------------------------------------
-        // TEST 11: v5.4.0 Regression Guards — Food Pause 'NGHỈ 120s' & Active Trip 'TRONG CUỐC' Pill Rendering
+        // TEST 11: v5.5.0 Regression Guards — Food Pause 'NGHỈ 120s' & Active Trip 'TRONG CUỐC' Pill Rendering
         // ---------------------------------------------------------------------
-        ASSERT_TRUE([kCurrentDaemonVersion isEqualToString:@"5.4.0"],
-                    "kCurrentDaemonVersion must be 5.4.0 (got %s)", [kCurrentDaemonVersion UTF8String]);
+        ASSERT_TRUE([kCurrentDaemonVersion isEqualToString:@"5.5.0"],
+                    "kCurrentDaemonVersion must be 5.5.0 (got %s)", [kCurrentDaemonVersion UTF8String]);
         CGImageRef imgPause = [StealthStatusPillHUD createPillBitmapWithText:@"NGHỈ 120s"
                                                                    isCompact:YES
                                                                        bgRed:0.15 bgGreen:0.10 bgBlue:0.03 bgAlpha:0.91
